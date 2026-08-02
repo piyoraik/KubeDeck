@@ -41,7 +41,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
-        NSHumanReadableCopyright: ""
+        NSHumanReadableCopyright: "© 2026 piyoraik — MIT License"
         # 更新の配信元。GitHub Releases の `latest` は常に最新の
         # プレリリースでないリリースを指すので、URL を版ごとに変えなくてよい。
         SUFeedURL: https://github.com/piyoraik/KubeDeck/releases/latest/download/appcast.xml

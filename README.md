@@ -146,3 +146,11 @@ Foundation, CC BY 4.0）で、「これは Kubernetes を見ている」とい�
 | `Design/kubedeck-icon.svg` | App アイコン（角丸の下地に白い舵輪） |
 | `Design/kubedeck-mark.svg` | マーク単体・青一色・背景なし |
 | `Design/kubedeck-mark-mono.svg` | 同上、色は `currentColor` に従う |
+
+## ライセンス
+
+MIT（[LICENSE](LICENSE)）。
+
+画面内で使っている Kubernetes 公式ロゴは CNCF / The Linux Foundation のもので、
+CC BY 4.0 の下で「Kubernetes を指すしるし」として使っている。App アイコンの舵輪は
+独自に引いたもので、公式ロゴの図形は使っていない。
