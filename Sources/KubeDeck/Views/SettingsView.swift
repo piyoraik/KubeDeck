@@ -1,0 +1,466 @@
+import SwiftUI
+
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettings()
+                .tabItem { Label("一般", systemImage: "gearshape") }
+            LogSettings()
+                .tabItem { Label("ログ", systemImage: "text.alignleft") }
+            MetricsSettings()
+                .tabItem { Label("メトリクス", systemImage: "chart.line.uptrend.xyaxis") }
+            ConnectionSettings()
+                .tabItem { Label("接続", systemImage: "network") }
+            UpdateSettings()
+                .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+        }
+        // 高さを決めておかないと、下の項目が畳まれて見えない。
+        .frame(width: 560, height: 640)
+    }
+}
+
+// MARK: - 一般
+
+private struct GeneralSettings: View {
+    @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
+    @State private var confirmsReset = false
+
+    var body: some View {
+        @Bindable var preferences = preferences
+
+        Form {
+            Section("起動") {
+                Picker("開く画面", selection: $preferences.startupScreen) {
+                    ForEach(StartupScreen.allCases) { screen in
+                        Text(screen.title).tag(screen)
+                    }
+                }
+            }
+
+            Section("サイドバー") {
+                Toggle("種別ごとの件数を出す", isOn: $preferences.showsSidebarCounts)
+                Toggle("カスタムリソース（CRD）を出す", isOn: $preferences.showsCustomResources)
+                Toggle("件数が 0 の種別を隠す", isOn: $preferences.hidesEmptyKinds)
+            }
+
+            Section {
+                ForEach(ResourceCategory.allCases) { category in
+                    DisclosureGroup(category.title) {
+                        ForEach(ResourceKind.kinds(in: category)) { kind in
+                            Toggle(isOn: Binding(
+                                get: { preferences.isVisible(kind) },
+                                set: { preferences.setVisible(kind, $0) })
+                            ) {
+                                Label(kind.displayName, systemImage: kind.symbol)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text("出す種別")
+            } footer: {
+                HStack {
+                    Text("外した種別はサイドバーに出ません。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("すべて出す") { preferences.hiddenKinds = [] }
+                        .controlSize(.small)
+                        .disabled(preferences.hiddenKinds.isEmpty)
+                }
+            }
+
+            Section {
+                Picker("行の詰め方", selection: $preferences.rowDensity) {
+                    ForEach(RowDensity.allCases) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("一覧")
+            } footer: {
+                Text("行の高さと文字の大きさが変わります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Button("すべて既定値に戻す", role: .destructive) { confirmsReset = true }
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog(
+            "すべての設定を既定値に戻しますか？",
+            isPresented: $confirmsReset
+        ) {
+            Button("戻す", role: .destructive) { preferences.resetAll() }
+            Button("やめる", role: .cancel) {}
+        } message: {
+            Text("接続先のコンテキストや Namespace の選択は残ります。")
+        }
+    }
+}
+
+// MARK: - ログ
+
+private struct LogSettings: View {
+    @State private var preferences = Preferences.shared
+
+    var body: some View {
+        @Bindable var preferences = preferences
+
+        Form {
+            Section {
+                Toggle("Pod を選んだらログも切り替える", isOn: $preferences.followsSelectionForLogs)
+            } footer: {
+                Text("パネルの ✕ で閉じると、この設定も切れます。もう一度ログを開くと戻ります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("開いたときの既定") {
+                Toggle("末尾に追従する", isOn: $preferences.logFollowsByDefault)
+                Toggle("長い行を折り返す", isOn: $preferences.logWrapsByDefault)
+                Toggle("時刻を出す", isOn: $preferences.logShowsTimestamps)
+            }
+
+            Section {
+                Picker("遡って読む行数", selection: $preferences.logTailLines) {
+                    ForEach([100, 500, 1_000, 5_000], id: \.self) { count in
+                        Text("\(count) 行").tag(count)
+                    }
+                }
+                Picker("画面に残す上限", selection: $preferences.logBufferLines) {
+                    ForEach([1_000, 5_000, 20_000, 100_000], id: \.self) { count in
+                        Text("\(count) 行").tag(count)
+                    }
+                }
+            } header: {
+                Text("行数")
+            } footer: {
+                Text("上限を超えたぶんは古いほうから捨てます。大きくすると、長く追従したときに使うメモリが増えます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - メトリクス
+
+private struct MetricsSettings: View {
+    @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
+
+    @State private var isSearching = false
+    @State private var manualNamespace = ""
+    @State private var manualService = ""
+    @State private var manualPort = "9090"
+    @State private var manualResult: String?
+    @State private var isChecking = false
+
+    var body: some View {
+        @Bindable var store = store
+        @Bindable var preferences = preferences
+
+        Form {
+            Section {
+                Picker("取得元", selection: $store.metricsPreference) {
+                    ForEach(MetricsSourcePreference.allCases) { preference in
+                        Text(preference.title).tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(store.metricsPreference.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                // 選んだ先が使えないときに黙って別の値を出さない。
+                if let problem = store.metricsSourceProblem {
+                    Label(problem, systemImage: StatusLevel.warning.symbol)
+                        .font(.caption)
+                        .foregroundStyle(Palette.textColor(for: .warning))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                LabeledContent("いま使っている先") {
+                    Text(store.activeMetricsSource.isAvailable
+                        ? store.activeMetricsSource.label : "なし")
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("現在値の取得元")
+            }
+
+            Section {
+                Picker("範囲", selection: $preferences.historyWindowMinutes) {
+                    ForEach([15, 30, 60, 180], id: \.self) { minutes in
+                        Text(minutes < 60 ? "\(minutes) 分" : "\(minutes / 60) 時間").tag(minutes)
+                    }
+                }
+                Picker("取り直す間隔", selection: $preferences.historyRefreshSeconds) {
+                    ForEach([30, 60, 180, 300], id: \.self) { seconds in
+                        Text(seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分").tag(seconds)
+                    }
+                }
+            } header: {
+                Text("推移（Prometheus）")
+            } footer: {
+                Text("範囲クエリは 1 回につき kubectl を 1 本起こすので、一覧の更新とは別の間隔にしてあります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("注意", selection: $preferences.usageWarningPercent) {
+                    ForEach([60, 70, 80, 90], id: \.self) { Text("\($0)%").tag($0) }
+                }
+                Picker("異常", selection: $preferences.usageCriticalPercent) {
+                    ForEach([80, 90, 95, 99], id: \.self) { Text("\($0)%").tag($0) }
+                }
+            } header: {
+                Text("使用率のしきい値")
+            } footer: {
+                Text("ノードの CPU / メモリ列と、使用量の棒の色が変わる境目です。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                LabeledContent("metrics-server") {
+                    availability(store.metricsServerAvailable)
+                }
+                LabeledContent("Prometheus") {
+                    if let endpoint = store.prometheus {
+                        Text(endpoint.display).foregroundStyle(.secondary)
+                    } else {
+                        availability(false)
+                    }
+                }
+                Button {
+                    isSearching = true
+                    Task {
+                        await store.rediscoverMetricsSources()
+                        isSearching = false
+                    }
+                } label: {
+                    if isSearching {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("探しています…")
+                        }
+                    } else {
+                        Text("もう一度探す")
+                    }
+                }
+                .disabled(isSearching || store.currentContext.isEmpty)
+            } header: {
+                Text("このクラスタで使えるもの")
+            }
+
+            Section {
+                TextField("Namespace", text: $manualNamespace)
+                TextField("Service", text: $manualService)
+                TextField("ポート", text: $manualPort)
+                HStack {
+                    Button("確認して使う") { checkManualEndpoint() }
+                        .disabled(isChecking || manualNamespace.isEmpty || manualService.isEmpty)
+                    if isChecking { ProgressView().controlSize(.small) }
+                    if let manualResult {
+                        Text(manualResult).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Prometheus を手で指定する")
+            } footer: {
+                Text("自動で見つからないときに使います。API サーバのプロキシ経由で繋ぐので、ポートは Service のポート番号です（port-forward は不要）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            guard let endpoint = store.prometheus, manualNamespace.isEmpty else { return }
+            manualNamespace = endpoint.namespace
+            manualService = endpoint.service
+            manualPort = "\(endpoint.port)"
+        }
+    }
+
+    private func checkManualEndpoint() {
+        guard let port = Int(manualPort) else {
+            manualResult = "ポート番号が数値ではありません。"
+            return
+        }
+        let endpoint = PrometheusEndpoint(
+            namespace: manualNamespace.trimmingCharacters(in: .whitespaces),
+            service: manualService.trimmingCharacters(in: .whitespaces),
+            port: port)
+
+        isChecking = true
+        manualResult = nil
+        Task {
+            let ok = await store.useManualPrometheus(endpoint)
+            isChecking = false
+            // 応答しない場所を「設定した」と言わない。
+            manualResult = ok ? "つながりました。" : "応答がありません。"
+        }
+    }
+
+    @ViewBuilder
+    private func availability(_ available: Bool?) -> some View {
+        switch available {
+        case true:
+            Label("使える", systemImage: StatusLevel.good.symbol)
+                .foregroundStyle(Palette.textColor(for: .good))
+        case false:
+            Label("見つからない", systemImage: StatusLevel.neutral.symbol)
+                .foregroundStyle(.secondary)
+        case nil:
+            Text("確認中").foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - 接続
+
+private struct ConnectionSettings: View {
+    @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
+    @State private var resolvedPath: String?
+
+    var body: some View {
+        @Bindable var store = store
+        @Bindable var preferences = preferences
+
+        Form {
+            Section {
+                Toggle("自動更新", isOn: $store.autoRefresh)
+                Picker("間隔", selection: $store.refreshInterval) {
+                    ForEach([5.0, 10.0, 30.0, 60.0], id: \.self) { seconds in
+                        Text("\(Int(seconds)) 秒").tag(seconds)
+                    }
+                }
+                .disabled(!store.autoRefresh)
+            } header: {
+                Text("一覧の更新")
+            }
+
+            Section {
+                Picker("待ち上限", selection: $preferences.requestTimeoutSeconds) {
+                    ForEach([5, 10, 20, 60], id: \.self) { Text("\($0) 秒").tag($0) }
+                }
+            } header: {
+                Text("kubectl の待ち時間")
+            } footer: {
+                Text("到達できないクラスタを選んだときに、この時間で諦めます。遅い回線越しのクラスタでは長めにしてください。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("空なら自動で探す", text: $preferences.kubectlPathOverride)
+                LabeledContent("いま使っている kubectl") {
+                    Text(resolvedPath ?? "確認中")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("kubectl の場所")
+            } footer: {
+                Text("Homebrew・krew・gcloud SDK の場所は自動で探します。指定した場所が実行できないときは、自動探索に戻ります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .task(id: preferences.kubectlPathOverride) {
+            resolvedPath = await Kubectl.shared.resolvedExecutablePath() ?? "見つかりません"
+        }
+    }
+}
+
+// MARK: - 更新
+
+private struct UpdateSettings: View {
+    @State private var preferences = Preferences.shared
+    @State private var updater = UpdateController.shared
+
+    var body: some View {
+        @Bindable var preferences = preferences
+
+        Form {
+            Section {
+                LabeledContent("いまの版") {
+                    Text(updater.currentVersion)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("最後の確認") {
+                    // 「まだ確認していない」「最新だった」「更新がある」
+                    // 「確認できなかった」を混ぜない。
+                    switch updater.lastOutcome {
+                    case .never:
+                        Text("まだ確認していません").foregroundStyle(.secondary)
+                    case .upToDate:
+                        Label("最新です", systemImage: StatusLevel.good.symbol)
+                            .foregroundStyle(Palette.textColor(for: .good))
+                    case .updateAvailable(_, let version):
+                        Label("\(version) が出ています", systemImage: "arrow.down.circle")
+                            .foregroundStyle(Palette.textColor(for: .warning))
+                    case .failed(_, let reason):
+                        Label(reason, systemImage: StatusLevel.warning.symbol)
+                            .foregroundStyle(Palette.textColor(for: .warning))
+                            .lineLimit(2)
+                    }
+                }
+                if let date = updater.lastOutcome.date {
+                    LabeledContent("確認した時刻") {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("いまアップデートを確認") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            } header: {
+                Text("バージョン")
+            }
+
+            Section {
+                Toggle("新しい版が出ていないか自動で確認する", isOn: $preferences.checksForUpdates)
+                Picker("確認する間隔", selection: $preferences.updateCheckIntervalHours) {
+                    Text("1 日").tag(24)
+                    Text("1 週間").tag(168)
+                }
+                .disabled(!preferences.checksForUpdates)
+                Toggle("見つけたら先にダウンロードしておく",
+                       isOn: $preferences.downloadsUpdatesAutomatically)
+                    .disabled(!preferences.checksForUpdates)
+            } header: {
+                Text("自動で確認する")
+            } footer: {
+                Text("確認では GitHub の Releases に置いた更新情報を読むだけで、クラスタの情報や利用状況は送りません。入れ替えるかどうかは必ず尋ねます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
+                Link("リリース一覧を開く", destination: UpdateController.releasesURL)
+            } footer: {
+                Text("配布は ad-hoc 署名で、Apple の公証は通していません。手で入れ替えるときは、初回だけ隔離属性を外す必要があります（README に手順があります）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}

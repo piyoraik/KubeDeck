@@ -1,0 +1,52 @@
+name: ビルド
+
+# 壊れたまま タグを打たないための番。リリースと同じ Release 構成で建てる。
+# **Debug で確かめない。** 配るのは Release なので、最適化で出る問題は
+# ここで拾えないと、タグを打った後に気付くことになる。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 道具の版を控える
+        run: xcodebuild -version
+
+      - name: xcodegen を入れる
+        run: brew install xcodegen
+
+      - name: 建てる
+        run: |
+          xcodegen generate
+          mkdir -p build
+          # **出力を head に通さない。** パイプを早く閉じると xcodebuild が居残る。
+          set +e
+          xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
+            -configuration Release -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            build > build/xcodebuild.log 2>&1
+          STATUS=$?
+          set -e
+          grep -E "error:|warning:" build/xcodebuild.log | grep "Sources/KubeDeck" || true
+          if [[ $STATUS -ne 0 ]]; then
+            tail -60 build/xcodebuild.log
+            exit $STATUS
+          fi
+
+      - name: 署名が崩れていないこと
+        # Sparkle は「署名付きだったものが署名無しになる」更新を拒む。
+        # ad-hoc であっても、崩れていると次の版から更新できなくなる。
+        run: codesign --verify --deep --strict build/DerivedData/Build/Products/Release/KubeDeck.app
+
+      - name: ビルドの記録を残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log

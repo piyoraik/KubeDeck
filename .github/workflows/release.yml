@@ -1,0 +1,101 @@
+name: リリース
+
+# タグを打つと、そのタグの版で焼いて GitHub Releases に上げる。
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# 上がるもの
+#   KubeDeck-<版>.dmg   人が手で入れるもの
+#   KubeDeck-<版>.zip   Sparkle が落としてくるもの
+#   appcast.xml         更新の目録
+#
+# アプリの SUFeedURL は releases/latest/download/appcast.xml を指している。
+# **プレリリースとして出すと latest はそれを指さない。** 試し焼きをしたいときは
+# --prerelease を付ければ、既存の利用者には配られない。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版（例 0.2.0）"
+        required: true
+      prerelease:
+        description: "プレリリースとして出す（既存の利用者には配られない）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 版を決める
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${VERSION#v}"
+          # 焼いたものが名乗る版になるので、形が違うものは先に弾く。
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "版の形が違います: $VERSION（例 0.2.0）" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 道具の版を控える
+        run: xcodebuild -version
+
+      - name: xcodegen を入れる
+        run: brew install xcodegen
+
+      - name: 焼く
+        env:
+          # 秘密鍵。手元の login キーチェーンから
+          # `generate_keys -x` で書き出したものを Secrets に入れてある。
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "SPARKLE_PRIVATE_KEY が設定されていません。" >&2
+            echo "署名の無い更新は Sparkle が拒むので、ここで止めます。" >&2
+            exit 1
+          fi
+          ./Scripts/release.sh "${{ steps.version.outputs.version }}"
+
+      - name: ビルドの記録を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild-*.log
+          if-no-files-found: ignore
+
+      - name: リリースを作る
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ARGS=(--title "KubeDeck $VERSION" --generate-notes)
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          # workflow_dispatch のときはタグがまだ無いので、ここで作らせる。
+          # **git の状態で判断しない。** checkout がタグを持ってくるかどうかは
+          # 設定次第で、有無を取り違えるとタグの指す先がずれる。
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ARGS+=(--target "$GITHUB_SHA")
+          fi
+          gh release create "v$VERSION" "${ARGS[@]}" \
+            "dist/KubeDeck-$VERSION.dmg" \
+            "dist/KubeDeck-$VERSION.zip" \
+            "dist/appcast.xml"

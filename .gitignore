@@ -1,0 +1,9 @@
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+# XcodeGen の生成物
+KubeDeck.xcodeproj/
+Resources/Info.plist
+dist/

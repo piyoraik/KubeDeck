@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="KubeDeck">
+  <title>KubeDeck</title>
+  <defs>
+    <linearGradient id="kd-tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A8AF7"/>
+      <stop offset="1" stop-color="#12388F"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185.4" fill="url(#kd-tile)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="512" cy="512" r="216.781" stroke-width="62.362"/>
+    <path d="M512 512L512 295.219M512 512L681.486 376.839M512 512L723.346 560.238M512 512L606.058 707.313M512 512L417.942 707.313M512 512L300.654 560.238M512 512L342.514 376.839" stroke-width="30.884"/>
+    <path d="M512 310.067L512 237.312M669.877 386.097L726.76 340.735M708.87 556.934L779.801 573.124M599.615 693.935L631.183 759.485M424.385 693.935L392.817 759.485M315.13 556.934L244.199 573.124M354.123 386.097L297.24 340.735" stroke-width="44.544"/>
+  </g>
+  <circle cx="512" cy="512" r="59.392" fill="#FFFFFF"/>
+</svg>

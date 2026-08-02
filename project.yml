@@ -1,0 +1,64 @@
+name: KubeDeck
+options:
+  bundleIdPrefix: com.piyoraik
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # 配布は ad-hoc 署名で固定する。Automatic のままだと Apple Developer
+    # アカウントを設定しているマシンで、相手のチームに ID を登録しようとして落ちる。
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    # リリースでは Scripts/release.sh が xcodebuild の引数で上書きする。
+    # ここの値は「タグを打たずに手元で建てたもの」の版として残る。
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "0.1.0"
+
+packages:
+  # アプリ内更新。ad-hoc 署名でも EdDSA 署名だけで検証が通る
+  # （Sparkle は新旧の公開鍵が一致すれば署名 identity の変化を許す）。
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.4"
+
+targets:
+  KubeDeck:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/KubeDeck
+      - path: Resources/Assets.xcassets
+    dependencies:
+      - package: Sparkle
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: KubeDeck
+        # XcodeGen は指定が無いと 1.0 / 1 を書き込むので、ビルド設定を参照させる。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSHumanReadableCopyright: ""
+        # 更新の配信元。GitHub Releases の `latest` は常に最新の
+        # プレリリースでないリリースを指すので、URL を版ごとに変えなくてよい。
+        SUFeedURL: https://github.com/piyoraik/KubeDeck/releases/latest/download/appcast.xml
+        # 秘密鍵は login キーチェーンの「Private key for signing Sparkle updates」。
+        # CI では Secrets の SPARKLE_PRIVATE_KEY から渡す。
+        SUPublicEDKey: VccRF2b3DKHj1A5TpxT2lSCx3KnqpeHd14n+q66f2GM=
+        # 確認するかどうかと間隔は Preferences が持つ（設定は 1 か所に集める）。
+        # このキーを置くと Sparkle 自身の「自動で確認しますか？」の問い合わせが
+        # 出なくなる。置かないと、設定にも同じ項目があるのに起動 2 回目に
+        # 別の聞き方で尋ねられ、どちらが効いているのか分からなくなる。
+        SUEnableAutomaticChecks: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piyoraik.KubeDeck
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # kubectl を子プロセスで起動するので App Sandbox は使わない。
+        # Hardened Runtime も外す（署名が ad-hoc のため）。
+        ENABLE_HARDENED_RUNTIME: false
+        SWIFT_STRICT_CONCURRENCY: complete

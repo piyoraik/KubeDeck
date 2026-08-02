@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="KubeDeck">
+  <title>KubeDeck</title>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="512" cy="512" r="373.76" stroke-width="107.52"/>
+    <path d="M512 512L512 138.24M512 512L804.217 278.964M512 512L876.389 595.169M512 512L674.168 848.746M512 512L349.832 848.746M512 512L147.611 595.169M512 512L219.783 278.964" stroke-width="53.248"/>
+    <path d="M512 163.84L512 38.4M784.202 294.926L882.275 216.715M851.431 589.473L973.726 617.386M663.061 825.681L717.487 938.699M360.939 825.681L306.513 938.699M172.569 589.473L50.274 617.386M239.798 294.926L141.725 216.715" stroke-width="76.8"/>
+  </g>
+  <circle cx="512" cy="512" r="102.4" fill="currentColor"/>
+</svg>
