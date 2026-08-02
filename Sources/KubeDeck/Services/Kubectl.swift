@@ -30,6 +30,9 @@ actor Kubectl {
     static let shared = Kubectl()
 
     private var cachedEnvironment: KubectlEnvironment?
+    /// ログインシェルから写した環境。取るのに 0.5〜1 秒かかるので、
+    /// kubectl の場所を変えられたぐらいでは取り直さない（別に持つ）。
+    private var cachedLoginShell: [String: String]?
 
     /// 一覧取得の待ち上限。到達できないクラスタを選んだときに
     /// UI が固まったままにならないようにする。設定から差し替えられる。
@@ -51,7 +54,8 @@ actor Kubectl {
     func environment() throws -> KubectlEnvironment {
         if let cachedEnvironment { return cachedEnvironment }
 
-        let searchPath = Self.searchPath()
+        let loginShell = loginShellEnvironment()
+        let searchPath = Self.searchPath(loginShellPath: loginShell["PATH"])
         // 手で指定されていればそれを使う。実行できなければ自動探索に戻す
         // （消えたパスを覚えたまま「見つかりません」と言い続けない）。
         let executable: String
@@ -70,12 +74,12 @@ actor Kubectl {
             // 認証プラグインが対話プロンプトを出すと待ち続けるので、非対話に倒す。
             "TERM": "dumb",
         ]
-        // kubeconfig の場所をユーザが変えている場合はそれに従う。
-        for key in ["KUBECONFIG", "AWS_PROFILE", "AWS_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
-                    "CLOUDSDK_CONFIG", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"] {
-            if let value = ProcessInfo.processInfo.environment[key] {
-                variables[key] = value
-            }
+        // 認証プラグインが見る変数だけを選んで渡す（環境をまるごと渡さない）。
+        // ログインシェルの値を土台に、アプリ自身の環境で上書きする。
+        // ターミナルから `.app` を起動して変数を指定したときは、そちらを採る。
+        for key in Self.inheritedKeys {
+            if let value = loginShell[key] { variables[key] = value }
+            if let value = ProcessInfo.processInfo.environment[key] { variables[key] = value }
         }
 
         let resolved = KubectlEnvironment(executable: executable, variables: variables)
@@ -83,21 +87,60 @@ actor Kubectl {
         return resolved
     }
 
+    /// 子プロセスへ持ち込む変数。
+    private static let inheritedKeys = [
+        // kubeconfig の場所をユーザが変えている場合はそれに従う。
+        "KUBECONFIG",
+        // EKS の exec プラグイン（aws）。
+        "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+        "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+        // GKE の exec プラグイン（gke-gcloud-auth-plugin）と、それが呼ぶ gcloud。
+        // CLOUDSDK_PYTHON を落とすと、python を mise や pyenv でしか入れていない
+        // 環境で gcloud 側が起動できず、ターミナルでは通るのに `.app` では
+        // 認証だけ失敗する、という切り分けの難しい壊れ方をする。
+        "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
+        "CLOUDSDK_PYTHON", "CLOUDSDK_PYTHON_SITEPACKAGES",
+        "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_PROJECT",
+        "USE_GKE_GCLOUD_AUTH_PLUGIN",
+        // 共通。
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+        "https_proxy", "http_proxy", "no_proxy",
+    ]
+
+    /// ログインシェルの環境。1 度取ったら使い回す。
+    private func loginShellEnvironment() -> [String: String] {
+        if let cachedLoginShell { return cachedLoginShell }
+        let harvested = LoginShell.environment()
+        cachedLoginShell = harvested
+        return harvested
+    }
+
     /// Finder から起動したアプリの PATH は `/usr/bin:/bin:/usr/sbin:/sbin` しかない。
     /// kubectl 本体だけでなく、kubeconfig の exec プラグイン（aws,
     /// gke-gcloud-auth-plugin など）も PATH から引かれるので、ここで補う。
-    private static func searchPath() -> [String] {
+    ///
+    /// **ログインシェルの PATH を先頭に置く。** 同じ名前の実行ファイルが複数ある
+    /// とき、ターミナルで選ばれるものと同じものを選ぶため。決め打ちの一覧を先に
+    /// 置くと、ターミナルでは通るのに `.app` では別の実体が動く。
+    private static func searchPath(loginShellPath: String?) -> [String] {
         let home = NSHomeDirectory()
-        var directories = [
+        var directories = loginShellPath?.split(separator: ":").map(String.init) ?? []
+        directories += [
             "/opt/homebrew/bin", "/opt/homebrew/sbin",
             "/usr/local/bin", "/usr/local/sbin",
             "/usr/bin", "/bin", "/usr/sbin", "/sbin",
             "\(home)/.krew/bin",
             "\(home)/bin",
             "\(home)/.local/bin",
+            // gcloud SDK は展開先が決まっていない。ログインシェルが読めなかった
+            // ときの最後の頼みとして、よくある置き場所だけ並べる。
             "\(home)/google-cloud-sdk/bin",
+            "\(home)/Downloads/google-cloud-sdk/bin",
             "/usr/local/share/google-cloud-sdk/bin",
             "/opt/homebrew/share/google-cloud-sdk/bin",
+            "/opt/homebrew/Caskroom/google-cloud-sdk/latest/google-cloud-sdk/bin",
+            "/Applications/google-cloud-sdk/bin",
         ]
         if let inherited = ProcessInfo.processInfo.environment["PATH"] {
             directories += inherited.split(separator: ":").map(String.init)
@@ -135,7 +178,7 @@ actor Kubectl {
             throw CommandError(
                 command: "kubectl " + fullArguments.joined(separator: " "),
                 exitCode: result.exitCode,
-                message: result.stderr)
+                message: Self.explain(result.stderr))
         }
         return result
     }
@@ -143,6 +186,64 @@ actor Kubectl {
     /// いま使っている kubectl の場所。設定画面に出す。
     func resolvedExecutablePath() -> String? {
         (try? environment())?.executable
+    }
+
+    /// 子プロセスに渡している PATH。認証プラグインが見つからないときの
+    /// 切り分けに要るので、設定画面に出す。
+    func resolvedSearchPath() -> String? {
+        (try? environment())?.variables["PATH"]
+    }
+
+    // MARK: - 失敗の言い換え
+
+    /// 認証まわりの失敗は原因と対処が決まっているので、日本語の説明を頭に足す。
+    ///
+    /// **元の文言を捨てない。** 言い換えだけにすると、当てはまらなかったときに
+    /// 何が起きたのか確かめる手段が無くなる。
+    private static func explain(_ stderr: String) -> String {
+        guard let hint = authenticationHint(for: stderr) else { return stderr }
+        return hint + "\n\n" + condense(stderr)
+    }
+
+    private static func authenticationHint(for stderr: String) -> String? {
+        // kubeconfig が要求する exec 認証プラグインが PATH に無い。
+        if let match = stderr.firstMatch(of: /executable (\S+) not found/) {
+            let plugin = String(match.1)
+            var lines = [
+                "kubeconfig が exec 認証プラグイン `\(plugin)` を要求していますが、"
+                    + "見つかりませんでした。",
+            ]
+            if plugin.contains("gke-gcloud-auth-plugin") {
+                lines.append("入っていなければ `gcloud components install gke-gcloud-auth-plugin` "
+                    + "で入ります。")
+            }
+            lines.append("入っているのにここで見つからないときは、KubeDeck から見える PATH に "
+                + "その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。")
+            return lines.joined(separator: "\n")
+        }
+
+        // kubectl 1.26 で in-tree の GCP 認証が消えている。kubeconfig が古い。
+        if stderr.contains("gcp auth plugin has been removed") {
+            return "kubeconfig がこのクラスタを古い `auth-provider: gcp` 形式で持っています。"
+                + "kubectl 1.26 以降はこの形式を読めません。\n"
+                + "`gcloud container clusters get-credentials <クラスタ名> "
+                + "--region <リージョン>` で作り直してください。"
+        }
+
+        return nil
+    }
+
+    /// kubectl は同じ失敗を何度も書き出す（API グループの一覧を引くたびに 1 回）。
+    /// 同じ行を並べても読めないので、重複を落とす。
+    private static func condense(_ stderr: String) -> String {
+        var seen = Set<String>()
+        return stderr
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return trimmed.isEmpty || seen.insert(trimmed).inserted
+            }
+            .joined(separator: "\n")
     }
 
     // MARK: - kubeconfig

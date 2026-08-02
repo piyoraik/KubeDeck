@@ -333,6 +333,7 @@ private struct ConnectionSettings: View {
     @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
     @State private var resolvedPath: String?
+    @State private var searchPath: String?
 
     var body: some View {
         @Bindable var store = store
@@ -379,10 +380,25 @@ private struct ConnectionSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                Text(searchPath ?? "確認中")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(6)
+            } header: {
+                Text("子プロセスに渡している PATH")
+            } footer: {
+                Text("kubeconfig の exec 認証プラグイン（GKE の gke-gcloud-auth-plugin、EKS の aws）は、ここから探されます。ログインシェルの PATH を写しているので、シェルの設定ファイルで足した場所も入ります。プラグインが見つからないと言われたら、その置き場所がここにあるか確かめてください。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .task(id: preferences.kubectlPathOverride) {
             resolvedPath = await Kubectl.shared.resolvedExecutablePath() ?? "見つかりません"
+            searchPath = await Kubectl.shared.resolvedSearchPath() ?? "確認できません"
         }
     }
 }

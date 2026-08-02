@@ -28,7 +28,33 @@ open "$(xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
 
 API サーバを直接叩かず、`kubectl ... -o json` の標準出力を読む（`Services/Kubectl.swift`）。**この方針を変えない。** kubeconfig の exec 認証プラグイン（EKS の `aws`、GKE の `gke-gcloud-auth-plugin`）、クライアント証明書、OIDC のトークン更新、プロキシ設定を、すべて kubectl に肩代わりさせるため。自前で URLSession を張ると、この認証まわりを全部実装することになる。
 
-**`PATH` を子プロセスに明示して渡す。** Finder から起動した GUI アプリの `PATH` は `/usr/bin:/bin:/usr/sbin:/sbin` しかなく、Homebrew の kubectl も、kubeconfig が呼ぶ認証プラグインも見つからない。`Kubectl.searchPath()` が Homebrew / krew / gcloud SDK の場所を足している。ここを削るとターミナルからは動くのに `.app` からは動かない、という切り分けの難しい壊れ方をする。
+**`PATH` を子プロセスに明示して渡す。** Finder から起動した GUI アプリの `PATH` は `/usr/bin:/bin:/usr/sbin:/sbin` しかなく、Homebrew の kubectl も、kubeconfig が呼ぶ認証プラグインも見つからない。`Kubectl.searchPath(loginShellPath:)` がログインシェルの `PATH` と、Homebrew / krew / gcloud SDK の決め打ちの場所を足している。ここを削るとターミナルからは動くのに `.app` からは動かない、という切り分けの難しい壊れ方をする。
+
+### exec 認証プラグインの場所は決め打ちで当てられない
+
+kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfig の exec 認証プラグイン（GKE の `gke-gcloud-auth-plugin`、EKS の `aws`）はそうはいかない。gcloud SDK は tarball を好きな場所へ展開して `path.zsh.inc` をシェルの設定から読ませる手順が公式にあり、置き場所がユーザごとに違う。**候補の一覧を足していくやり方では追いつかない。** `LoginShell.environment()` がログインシェルを起こして `PATH` を写す。
+
+- **`-l` だけでは足りない。** `path.zsh.inc` を読む行が書かれるのは `.zshrc` で、非対話のログインシェルには現れない。実測でも `-lc` では `.zshrc` で足した場所が丸ごと落ちた。対話ログインシェルで起こすこと。
+- **フラグをまとめて渡さない。** `-ilc` は zsh / bash では通るが fish では通らない。`-i` `-l` `-c` と分ける。
+- **目印から後ろだけ読む。** 対話シェルは起動時に何か書き出す（p10k の instant prompt など）。`env -0` を NUL 区切りで読むのは、値に改行が入っていても壊れないようにするため。
+- **待ち上限を付ける。** 相手はユーザの設定ファイルを読むシェルで、対話入力を求めて止まることがある。
+- **繰り返し起こさない。** rc を全部読むので 0.5〜1 秒かかる。`Kubectl` が 1 度だけ取って持ち回る（kubectl の場所を変えられたぐらいでは取り直さない）。
+- **ログインシェルの `PATH` を先頭に置く。** 同じ名前の実行ファイルが複数あるとき、ターミナルで選ばれるものと同じ実体を選ぶため。
+
+**環境変数はまるごと渡さず、認証プラグインが見るものだけ選ぶ**（`Kubectl.inheritedKeys`）。`CLOUDSDK_PYTHON` を落とすと、python を mise や pyenv でしか入れていない環境で gcloud 側が起動できず、ここでもターミナルでは通るのに `.app` では認証だけ失敗する。
+
+確認は、Finder 相当の最小環境でアプリを起こして子プロセスの環境を見る。`env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=... SHELL=/bin/zsh KubeDeck.app/Contents/MacOS/KubeDeck` で起動し、`ps -Ewwp <kubectl の pid>` の `PATH` に**シェルの設定でしか足されない場所**（このマシンなら `~/.bun/bin`）が入っていること。
+
+### 認証の失敗は言い換える
+
+`Kubectl.explain(_:)` が、原因と対処の決まっている失敗に日本語の説明を頭に足す。いまは 2 つ。
+
+- exec プラグインが見つからない（`executable ... not found`）— 入れ方と、PATH を確かめる場所を出す。
+- 古い `auth-provider: gcp` 形式（kubectl 1.26 で in-tree の GCP 認証が消えた）— `get-credentials` で作り直すよう出す。
+
+**元の文言を捨てない。** 言い換えだけにすると、当てはまらなかったときに何が起きたのか確かめる手段が無くなる。kubectl は同じ失敗を API グループの一覧を引くたびに書き出すので、重複行だけ落とす。
+
+実クラスタなしで確かめられる。合成した kubeconfig を `KUBECONFIG` に足せば（`kubectl config get-contexts` に出る）、到達できない GKE のコンテキストとして両方の経路を通せる。
 
 **取得系には必ず `--request-timeout` を付ける。** 到達できないコンテキストを選んだとき、付いていないと kubectl が待ち続け、UI が読み込み中のまま固まる。
 

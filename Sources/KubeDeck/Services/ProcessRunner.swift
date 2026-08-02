@@ -73,6 +73,20 @@ enum ProcessRunner {
         }
     }
 
+    /// 呼び出したスレッドを止めて待つ。`LoginShell` が同期の文脈から使う。
+    /// **待ち上限を必ず渡すこと。** 相手はユーザの設定ファイルを読むシェルで、
+    /// 対話入力を求めて止まることがある。
+    static func runBlocking(
+        executable: String,
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval
+    ) throws -> CommandResult {
+        try runSynchronously(
+            executable: executable, arguments: arguments,
+            environment: environment, timeout: timeout)
+    }
+
     private final class DataBox: @unchecked Sendable {
         var data = Data()
     }
@@ -80,7 +94,8 @@ enum ProcessRunner {
     private static func runSynchronously(
         executable: String,
         arguments: [String],
-        environment: [String: String]
+        environment: [String: String],
+        timeout: TimeInterval? = nil
     ) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -97,19 +112,32 @@ enum ProcessRunner {
 
         // stdout と stderr は同時に読む。片方だけ読んでいると、もう片方の
         // パイプバッファが埋まった時点で kubectl が書き込みで止まる。
+        let outputBox = DataBox()
         let errorBox = DataBox()
         let group = DispatchGroup()
         queue.async(group: group) {
             errorBox.data = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
         }
-        let outputData = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
-        group.wait()
+        queue.async(group: group) {
+            outputBox.data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+        }
+
+        if let timeout {
+            if group.wait(timeout: .now() + timeout) == .timedOut {
+                // 殺せばパイプが閉じ、読み手が EOF で戻る。それを待たずに抜けると
+                // 読みかけの Data を掴んだまま結果を組み立てることになる。
+                process.terminate()
+                _ = group.wait(timeout: .now() + 2)
+            }
+        } else {
+            group.wait()
+        }
         process.waitUntilExit()
 
         let stderr = String(decoding: errorBox.data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return CommandResult(
-            exitCode: process.terminationStatus, stdout: outputData, stderr: stderr)
+            exitCode: process.terminationStatus, stdout: outputBox.data, stderr: stderr)
     }
 
     // MARK: - 逐次読み出し
