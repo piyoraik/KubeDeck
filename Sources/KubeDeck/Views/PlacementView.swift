@@ -789,25 +789,95 @@ private struct Branch {
 /// 決まっているので、列に並べるだけでよい。線を自由に引く仕組みを持つと、
 /// 図のためだけにレイアウトの実装を抱えることになる。
 private struct BranchTree: View {
+    @Environment(ClusterStore.self) private var store
     let branch: Branch
 
+    private var pods: [K8sObject] { branch.controllers.flatMap(\.pods) }
+
     var body: some View {
-        DiagramBox(
-            title: namespaceTitle, symbol: ResourceKind.namespace.symbol,
-            tint: .secondary
-        ) {
-            HStack(alignment: .center, spacing: 0) {
-                owner
-                // ここから各世代へ枝分かれする。
-                DiagramArrow(length: 22)
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(branch.controllers) { controller in
-                        generation(controller)
+        VStack(alignment: .leading, spacing: 14) {
+            DiagramBox(
+                title: namespaceTitle, symbol: ResourceKind.namespace.symbol,
+                tint: .secondary
+            ) {
+                HStack(alignment: .center, spacing: 0) {
+                    // 入口から順に。**無いものは出さない。** Service を持たない
+                    // ワークロードはふつうにあり、空の器を置くと「あるはずの
+                    // ものが欠けている」ように見える。
+                    entryPoints
+                    owner
+                    // ここから各世代へ枝分かれする。
+                    DiagramArrow(length: 22)
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(branch.controllers) { controller in
+                            generation(controller)
+                        }
                     }
                 }
             }
+            storage
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 入口（Ingress → Service）。図は左から右へ流れる。
+    @ViewBuilder
+    private var entryPoints: some View {
+        let services = WorkloadRelations.services(for: pods, among: store.placementRelated)
+        let ingresses = WorkloadRelations.ingresses(for: services, among: store.placementRelated)
+
+        if !ingresses.isEmpty {
+            column(ingresses, kind: .ingress)
+            DiagramArrow(length: 22)
+        }
+        if !services.isEmpty {
+            column(services, kind: .service)
+            DiagramArrow(length: 22)
+        }
+    }
+
+    /// 使っているストレージ。**Pod の右に置かない。** 流れの先ではなく
+    /// 付属物なので、図の下に別の帯として置く。
+    @ViewBuilder
+    private var storage: some View {
+        let claims = WorkloadRelations.claims(for: pods, among: store.placementRelated)
+        if !claims.isEmpty {
+            HStack(alignment: .center, spacing: 10) {
+                Text("使っているストレージ")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                ForEach(claims) { claim in
+                    node(claim, kind: .persistentVolumeClaim, tint: .secondary)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func column(_ objects: [K8sObject], kind: ResourceKind) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(objects) { object in
+                node(object, kind: kind)
+            }
+        }
+    }
+
+    private func node(
+        _ object: K8sObject, kind: ResourceKind, tint: Color = .accentColor
+    ) -> some View {
+        HStack(spacing: 7) {
+            ResourceGlyph(symbol: kind.symbol, size: 28, tint: tint)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(object.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(kind.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: 150, alignment: .leading)
+        }
     }
 
     private var namespaceTitle: String {
@@ -877,7 +947,7 @@ private struct PodBranchRow: View {
                             .font(.caption2)
                             .foregroundStyle(Palette.textColor(for: status.level))
                     }
-                    .frame(width: 190, alignment: .leading)
+                    .frame(width: 210, alignment: .leading)
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -897,11 +967,15 @@ private struct PodBranchRow: View {
             HStack(spacing: 6) {
                 ResourceGlyph(
                     symbol: ResourceKind.node.symbol, size: 26, tint: .secondary)
+                // **行き先の欄は幅を決める。** 決めないと、伸び縮みする列の
+                // 中でいちばん後ろのこの文字から先に潰れ、名前が消える
+                // （実際、矢印の先が空になった）。
                 Text(PlacementView.nodeName(of: pod) ?? "未スケジュール")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .frame(width: 170, alignment: .leading)
             }
         }
     }

@@ -102,6 +102,9 @@ final class ClusterStore {
     /// **ReplicaSet 名で束ねない。** `<Deployment 名>-<ハッシュ>` なので、
     /// 更新のたびに別のまとまりに見える。
     var placementControllers: [K8sObject] = []
+    /// 図に添えるもの（Service・Ingress・PVC）。関係は API に無いので、
+    /// 取ってきたものどうしを突き合わせて結ぶ（`WorkloadRelations`）。
+    var placementRelated: [K8sObject] = []
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
 
@@ -374,7 +377,8 @@ final class ClusterStore {
                     // 別々に投げるとプロセスがそのぶん増え、片方だけ新しい
                     // 状態が混ざる（同じ時点の絵にならない）。
                     let loaded = try await self.kubectl.list(
-                        kinds: [.pod, .node, .replicaSet, .job],
+                        kinds: [.pod, .node, .replicaSet, .job,
+                                .service, .ingress, .persistentVolumeClaim],
                         context: context, namespace: namespace)
                     guard token == self.generation else { return }
                     self.objects = Self.sorted(
@@ -384,6 +388,10 @@ final class ClusterStore {
                         .sorted { $0.name < $1.name }
                     self.placementControllers = loaded.filter {
                         $0.kind == .replicaSet || $0.kind == .job
+                    }
+                    self.placementRelated = loaded.filter {
+                        $0.kind == .service || $0.kind == .ingress
+                            || $0.kind == .persistentVolumeClaim
                     }
                 case .resource(let target):
                     let loaded: [K8sObject]
