@@ -434,7 +434,8 @@ final class ClusterStore {
         let context = currentContext
         guard !context.isEmpty else { return }
 
-        metricsServerAvailable = await kubectl.metricsServerAvailable(context: context)
+        metricsServerAvailable = await kubectl.metricsServerAvailable(
+            context: context, namespace: selectedNamespace)
 
         // Prometheus の探索は Service を全部見て順に叩くので時間がかかる。
         // 保存してある場所があればそれを先に確かめ、駄目なときだけ探し直す。

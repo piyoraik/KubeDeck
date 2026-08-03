@@ -501,16 +501,29 @@ actor Kubectl {
     ///
     /// APIService が登録されていても実体が落ちていれば取得は失敗するので、
     /// 登録の有無ではなく実際に一覧を引いて確かめる。
-    func metricsServerAvailable(context: String) async -> Bool {
-        do {
-            _ = try await run(
-                ["get", "--raw", "/apis/metrics.k8s.io/v1beta1/nodes",
-                 "--request-timeout=\(requestTimeout)"],
-                context: context)
-            return true
-        } catch {
-            return false
+    ///
+    /// **ノードだけで判定しない。** 管理されたクラスタ（GKE の Warden など）は
+    /// ノードの指標や全 Namespace の一覧を拒みつつ、Pod の指標は通すことがある。
+    /// `kubectl top` は見えるのに KubeDeck では列が出ない、という食い違いは
+    /// これで起きていた。**1 つでも引けたなら「入っている」。**
+    func metricsServerAvailable(context: String, namespace: String? = nil) async -> Bool {
+        var paths = [
+            "/apis/metrics.k8s.io/v1beta1/nodes",
+            // limit を付けるのは、判定のためだけに全件を運ばせないため。
+            "/apis/metrics.k8s.io/v1beta1/pods?limit=1",
+        ]
+        if let namespace, !namespace.isEmpty {
+            paths.append("/apis/metrics.k8s.io/v1beta1/namespaces/\(namespace)/pods?limit=1")
         }
+
+        for path in paths {
+            if (try? await run(
+                ["get", "--raw", path, "--request-timeout=\(requestTimeout)"],
+                context: context)) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     /// Pod と Node の現在の使用量。

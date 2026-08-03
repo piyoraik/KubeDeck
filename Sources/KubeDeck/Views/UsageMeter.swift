@@ -170,6 +170,16 @@ struct ClusterUsageCard: View {
     private var unavailableReason: String {
         if let problem = store.metricsSourceProblem { return problem }
         if store.metricsServerAvailable == nil { return "取得元を確認しています。" }
+        // **取得元が無いことにしない。** 取得元はあるのにノードの使用量だけ
+        // 引けないことがある（GKE の Warden など、管理されたクラスタは
+        // ノードの指標を拒みつつ Pod の指標は通す）。そこで「見つかりません」と
+        // 書くと、入れれば直ると読めてしまう。
+        if store.activeMetricsSource.isAvailable {
+            return "取得元は \(store.activeMetricsSource.label) です。"
+                + "ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。"
+                + "管理されたクラスタでは、ノードの指標だけ拒まれることがあります。"
+                + "Pod ごとの使用量は一覧の列に出ます。"
+        }
         return "このクラスタには metrics-server も Prometheus も見つかりません。どちらかを入れると CPU とメモリの使用量が出ます。"
     }
 
