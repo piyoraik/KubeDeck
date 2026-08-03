@@ -153,11 +153,23 @@ actor Kubectl {
             fullArguments.insert(contentsOf: ["--context", context], at: 0)
         }
 
+        // **プロセスごと上限を掛ける。** `--request-timeout` は API への要求しか
+        // 縛らない。kubeconfig の exec 認証プラグインが返らないと（gcloud が
+        // 再認証の入力を待つ、プロキシの向こうで詰まる）kubectl はいつまでも
+        // 待ち、UI が読み込み中のまま固まる。実際にそうなった。
+        // API 側の待ちより少し長くして、先に kubectl 自身に諦めさせる。
         let result = try await ProcessRunner.run(
             executable: environment.executable,
             arguments: fullArguments,
-            environment: environment.variables)
+            environment: environment.variables,
+            timeout: TimeInterval(timeoutSeconds + 10))
 
+        guard !result.timedOut else {
+            throw CommandError(
+                command: "kubectl " + fullArguments.joined(separator: " "),
+                exitCode: result.exitCode,
+                message: Self.timeoutMessage(seconds: timeoutSeconds + 10, stderr: result.stderr))
+        }
         guard result.exitCode == 0 else {
             throw CommandError(
                 command: "kubectl " + fullArguments.joined(separator: " "),
@@ -165,6 +177,19 @@ actor Kubectl {
                 message: Self.explain(result.stderr))
         }
         return result
+    }
+
+    /// 打ち切ったときの文言。**「取れなかった」と混ぜない。**
+    /// 応答が無いのと、応答が失敗なのとでは見るところが違う。
+    private static func timeoutMessage(seconds: Int, stderr: String) -> String {
+        let head = "kubectl が \(seconds) 秒のあいだ返ってこなかったので打ち切りました。\n"
+            + "待ち上限（`--request-timeout`）は API への要求しか縛りません。"
+            + "kubeconfig の exec 認証プラグイン（`gke-gcloud-auth-plugin` など）が"
+            + "返ってこないと、ここで打ち切るまで待つことになります。\n"
+            + "ターミナルで同じコンテキストに `kubectl get pods` を実行し、"
+            + "そちらも返ってこないなら、止まっているのは認証プラグインです"
+            + "（再認証の入力を待っている、プロキシの向こうで詰まっている、など）。"
+        return stderr.isEmpty ? head : head + "\n\n" + condense(stderr)
     }
 
     /// いま使っている kubectl の場所。設定画面に出す。

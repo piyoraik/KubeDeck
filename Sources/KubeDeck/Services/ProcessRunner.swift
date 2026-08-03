@@ -4,6 +4,9 @@ struct CommandResult: Sendable {
     let exitCode: Int32
     let stdout: Data
     let stderr: String
+    /// 待ち上限で打ち切ったか。終了コードだけでは、相手が自分で失敗したのか
+    /// こちらが殺したのかが区別できない。
+    var timedOut = false
 
     var stdoutText: String { String(decoding: stdout, as: UTF8.self) }
 }
@@ -58,13 +61,15 @@ enum ProcessRunner {
     static func run(
         executable: String,
         arguments: [String],
-        environment: [String: String]
+        environment: [String: String],
+        timeout: TimeInterval? = nil
     ) async throws -> CommandResult {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     let result = try runSynchronously(
-                        executable: executable, arguments: arguments, environment: environment)
+                        executable: executable, arguments: arguments,
+                        environment: environment, timeout: timeout)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -122,12 +127,19 @@ enum ProcessRunner {
             outputBox.data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
         }
 
+        var timedOut = false
         if let timeout {
             if group.wait(timeout: .now() + timeout) == .timedOut {
+                timedOut = true
                 // 殺せばパイプが閉じ、読み手が EOF で戻る。それを待たずに抜けると
                 // 読みかけの Data を掴んだまま結果を組み立てることになる。
                 process.terminate()
-                _ = group.wait(timeout: .now() + 2)
+                if group.wait(timeout: .now() + 2) == .timedOut {
+                    // terminate を無視するものは殺すしかない。認証プラグインが
+                    // 孫プロセスとしてパイプを掴んだまま残ることがある。
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = group.wait(timeout: .now() + 2)
+                }
             }
         } else {
             group.wait()
@@ -137,7 +149,8 @@ enum ProcessRunner {
         let stderr = String(decoding: errorBox.data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return CommandResult(
-            exitCode: process.terminationStatus, stdout: outputBox.data, stderr: stderr)
+            exitCode: process.terminationStatus, stdout: outputBox.data, stderr: stderr,
+            timedOut: timedOut)
     }
 
     // MARK: - 逐次読み出し
