@@ -160,10 +160,14 @@ struct PlacementView: View {
     /// ワークロード 1 つが、どのノードに何個載っているか。
     struct Spread: Identifiable {
         let name: String
+        /// **名前だけで束ねない。** 別の Namespace に同じ名前の Deployment が
+        /// あるのはふつうで、名前で束ねると無関係なものが 1 つに合体する
+        /// （実際、2 つの Deployment が 1 つの箱に混ざった）。
+        let namespace: String?
         /// ノード名ごとの Pod。多い順。
         let byNode: [(node: String, pods: [K8sObject])]
 
-        var id: String { name }
+        var id: String { "\(namespace ?? "-")/\(name)" }
         var podCount: Int { byNode.reduce(0) { $0 + $1.pods.count } }
         var nodeCount: Int { byNode.count }
 
@@ -176,12 +180,14 @@ struct PlacementView: View {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
         for pod in store.filteredObjects {
-            byOwner[Self.owner(of: pod, controllers: index) ?? "単体の Pod", default: []]
-                .append(pod)
+            let owner = Self.owner(of: pod, controllers: index) ?? "単体の Pod"
+            byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
         }
 
         var result: [Spread] = []
-        for (name, pods) in byOwner {
+        for (key, pods) in byOwner {
+            let name = String(key.drop(while: { $0 != "/" }).dropFirst())
+            let namespace = pods.first?.namespace
             var byNode: [String: [K8sObject]] = [:]
             for pod in pods {
                 let node = Self.nodeName(of: pod) ?? "未スケジュール"
@@ -195,13 +201,13 @@ struct PlacementView: View {
                 left.pods.count == right.pods.count
                     ? left.node < right.node : left.pods.count > right.pods.count
             }
-            result.append(Spread(name: name, byNode: ordered))
+            result.append(Spread(name: name, namespace: namespace, byNode: ordered))
         }
         // 固まっているものを先に。次に数の多い順。見たいものが上に来る。
         result.sort { lhs, rhs in
             if lhs.isConcentrated != rhs.isConcentrated { return lhs.isConcentrated }
             if lhs.podCount != rhs.podCount { return lhs.podCount > rhs.podCount }
-            return lhs.name < rhs.name
+            return lhs.id < rhs.id
         }
         return result
     }
@@ -327,8 +333,11 @@ private struct NodeCard: View {
                     .foregroundStyle(.tertiary)
             } else if preferences.placementGrouping == .nodeByWorkload {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(workloads, id: \.name) { workload in
-                        LabeledTiles(label: workload.name, count: workload.pods.count) {
+                    ForEach(workloads) { workload in
+                        LabeledTiles(
+                            label: workload.name, namespace: workload.namespace,
+                            count: workload.pods.count
+                        ) {
                             PodTileGrid(pods: workload.pods)
                         }
                     }
@@ -369,15 +378,22 @@ private struct NodeCard: View {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
         for pod in group.pods {
-            byOwner[PlacementView.owner(of: pod, controllers: index) ?? "単体の Pod", default: []]
-                .append(pod)
+            let owner = PlacementView.owner(of: pod, controllers: index) ?? "単体の Pod"
+            byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
         }
-        return byOwner
-            .map { Workload(name: $0.key, pods: $0.value) }
-            .sorted {
-                $0.pods.count == $1.pods.count
-                    ? $0.name < $1.name : $0.pods.count > $1.pods.count
-            }
+        var result: [Workload] = []
+        for (key, pods) in byOwner {
+            result.append(
+                Workload(
+                    name: String(key.drop(while: { $0 != "/" }).dropFirst()),
+                    namespace: pods.first?.namespace,
+                    pods: pods))
+        }
+        result.sort {
+            $0.pods.count == $1.pods.count
+                ? $0.id < $1.id : $0.pods.count > $1.pods.count
+        }
+        return result
     }
 }
 
@@ -500,9 +516,11 @@ private struct WorkloadCard: View {
 
 struct Workload: Identifiable {
     let name: String
+    /// 名前だけで束ねない。1 つのノードには複数の Namespace の Pod が載る。
+    let namespace: String?
     let pods: [K8sObject]
 
-    var id: String { name }
+    var id: String { "\(namespace ?? "-")/\(name)" }
 }
 
 /// 左に名前と件数、右にタイル。
@@ -512,20 +530,31 @@ struct Workload: Identifiable {
 /// まとめるのは見出しだけ。
 private struct LabeledTiles<Content: View>: View {
     let label: String
+    var namespace: String?
     let count: Int
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            HStack(spacing: 4) {
-                Text(label)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("×\(count)")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4) {
+                    Text(label)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("×\(count)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                // **同じ名前が並ぶことがある。** どの Namespace のものか
+                // 添えないと、見分けが付かない。
+                if let namespace {
+                    Text(namespace)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             .frame(width: 200, alignment: .leading)
 
@@ -702,57 +731,72 @@ private struct WorkloadMap: View {
     /// 左の一覧。**多い順のまま出す。** 探しているのはたいてい大きいもの。
     private var picker: some View {
         List(selection: Binding(get: { focus }, set: { focus = $0 })) {
-            ForEach(spreads, id: \.id) { spread in
-                HStack(spacing: 6) {
-                    Text(spread.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 6)
-                    Text("\(spread.podCount)")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            ForEach(spreads) { spread in
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 6) {
+                        Text(spread.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        Text("\(spread.podCount)")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    // 同じ名前が別の Namespace に居ることがある。添えないと選べない。
+                    if let namespace = spread.namespace {
+                        Text(namespace)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
-                .tag(spread.name)
+                // **名前ではなく id で選ぶ。** 名前は重複しうる。
+                .tag(spread.id)
             }
         }
         .frame(width: 240)
-        .onAppear { if focus == nil { focus = spreads.first?.name } }
-        // 選んでいたものが消えたら先頭へ。空のまま固まらせない。
-        .onChange(of: spreads.map(\.name)) { _, names in
-            if let focus, !names.contains(focus) { self.focus = names.first }
+        // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
+        // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。
+        // 一覧が変わるたびに、選択が無効なら選び直す。
+        .onChange(of: spreads.map(\.id), initial: true) { _, ids in
+            if focus == nil || !ids.contains(focus!) { focus = ids.first }
         }
     }
 
     private var branch: Branch? {
-        guard let focus, let spread = spreads.first(where: { $0.name == focus }) else { return nil }
+        guard let focus, let spread = spreads.first(where: { $0.id == focus }) else { return nil }
         let pods = spread.byNode.flatMap(\.pods)
 
         // 直接の所有者（ReplicaSet / Job）ごとに割る。世代が分かる。
+        // 名前だけで束ねない。別の Namespace に同じ名前の ReplicaSet がある。
         var byController: [String: [K8sObject]] = [:]
         for pod in pods {
-            byController[Self.directOwner(of: pod) ?? "（所有者なし）", default: []].append(pod)
+            let owner = Self.directOwner(of: pod) ?? "（所有者なし）"
+            byController["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
         }
 
         // Pod が 0 の ReplicaSet も出す。入れ替わりの途中や、古い世代が
-        // 残っていることが分かる。
+        // 残っていることが分かる。**この Namespace のものだけ**を足す。
         for controller in store.placementControllers {
-            guard Self.ownerName(of: controller) == focus else { continue }
-            if byController[controller.name] == nil {
-                byController[controller.name] = []
-            }
+            guard controller.namespace == spread.namespace,
+                  Self.ownerName(of: controller) == spread.name else { continue }
+            let key = "\(controller.namespace ?? "-")/\(controller.name)"
+            if byController[key] == nil { byController[key] = [] }
         }
 
         var groups: [Branch.Controller] = []
-        for (name, pods) in byController {
-            groups.append(Branch.Controller(name: name, pods: pods))
+        for (key, pods) in byController {
+            groups.append(
+                Branch.Controller(
+                    name: String(key.drop(while: { $0 != "/" }).dropFirst()), pods: pods))
         }
         groups.sort { left, right in
             left.pods.count == right.pods.count
                 ? left.name < right.name : left.pods.count > right.pods.count
         }
-        return Branch(name: focus, controllers: groups)
+        return Branch(name: spread.name, controllers: groups)
     }
 
     private static func directOwner(of pod: K8sObject) -> String? {

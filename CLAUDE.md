@@ -360,6 +360,28 @@ Pod を掴み、Ingress は backend の名前で Service を指し、Pod は
 あり、無いことは異常ではない。**空の器も置かない** — 置くと「あるはずのものが
 欠けている」ように見える。
 
+### 名前だけで束ねない（配置全体）
+
+**別の Namespace に同じ名前の Deployment / ReplicaSet があるのはふつう。**
+名前を `id` にしていたら、**無関係な 2 つのワークロードが 1 つの箱に合体した**
+（`kubedeck-test-a/dup-test` と `kubedeck-test-b/dup-test` を作って再現）。
+`Spread` / `Workload` / 世代の集計は `Namespace/名前` を鍵にする。同名が並ぶので、
+一覧と見出しには Namespace を添える。
+
+`ForEach` の `id` が重なると SwiftUI は行を取り違える。**種別をまたいで名前を
+鍵にしない。**
+
+### 一覧の選択を `onAppear` だけで初期化しない
+
+読み込みが終わる前に画面を開くと一覧が空で、そのまま何も選ばれず右が空で固まる。
+`onChange(of:initial:true)` にして、**一覧が変わるたびに選択が有効かを見直す**
+（消えたものを選んだままにもしない）。「たどるが崩れるときがある」というのは
+この時間差だった。
+
+確認は、同名のワークロードを 2 つの Namespace に作って開く。
+`kubectl create namespace ...` と `create deployment ... --image=registry.k8s.io/pause:3.9`
+で足りる。**確かめたら消すこと。**
+
 ### カードの作りを揃える
 
 概要の 3 枚（状態 / リソース使用量 / 最近のイベント）は同じ形にしてある。
