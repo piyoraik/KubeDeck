@@ -31,6 +31,7 @@ final class Preferences {
         static let placementHidesEmptyNodes = "placementHidesEmptyNodes"
         static let placementGrouping = "placementGrouping"
         static let placementMetric = "placementMetric"
+        static let placementGroupsByWorkload = "placementGroupsByWorkload"
 
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
@@ -108,7 +109,7 @@ final class Preferences {
 
     /// 何を箱にするか。ノードを箱にすると「どこに載っているか」、
     /// ワークロードを箱にすると「どこに散っているか」が見える。
-    var placementGrouping: PlacementGrouping = .nodeByWorkload {
+    var placementGrouping: PlacementGrouping = .node {
         didSet { store.set(placementGrouping.rawValue, forKey: Key.placementGrouping) }
     }
 
@@ -116,6 +117,13 @@ final class Preferences {
     /// 片方しか見ないなら並べても場所を食うだけ。
     var placementMetric: PlacementMetric = .both {
         didSet { store.set(placementMetric.rawValue, forKey: Key.placementMetric) }
+    }
+
+    /// ノード別のとき、Pod を所有者（Deployment など）でまとめるか。
+    /// **既定はまとめる。** レプリカが並ぶだけの Pod 名を数百並べても読めない。
+    /// Pod が少ないクラスタでは、まとめるほうが縦に伸びるので切れるようにする。
+    var placementGroupsByWorkload = true {
+        didSet { store.set(placementGroupsByWorkload, forKey: Key.placementGroupsByWorkload) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -275,9 +283,11 @@ final class Preferences {
             store.object(forKey: Key.placementHidesEmptyNodes) as? Bool ?? false
         placementGrouping =
             PlacementGrouping(rawValue: store.string(forKey: Key.placementGrouping) ?? "")
-            ?? .nodeByWorkload
+            ?? .node
         placementMetric =
             PlacementMetric(rawValue: store.string(forKey: Key.placementMetric) ?? "") ?? .both
+        placementGroupsByWorkload =
+            store.object(forKey: Key.placementGroupsByWorkload) as? Bool ?? true
 
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
@@ -337,8 +347,9 @@ final class Preferences {
         placementTileSize = .medium
         placementNodeOrder = .name
         placementHidesEmptyNodes = false
-        placementGrouping = .nodeByWorkload
+        placementGrouping = .node
         placementMetric = .both
+        placementGroupsByWorkload = true
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
@@ -467,9 +478,13 @@ enum PlacementNodeOrder: String, CaseIterable, Identifiable, Sendable {
 
 
 /// 配置画面で何を箱にするか。
+/// 配置画面で何を箱にするか。
+///
+/// **「まとめる／まとめない」をここに入れない。** 箱も答える問いも同じで、
+/// 中の並べ方が違うだけ。見方が 1 つ増えたように見えて、選ぶときに迷う。
+/// 表示の詰め方は設定（`placementGroupsByWorkload`）が持つ。
 enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
     case node
-    case nodeByWorkload
     case workload
     case map
 
@@ -478,7 +493,6 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .node: return "ノード別"
-        case .nodeByWorkload: return "ノード別・まとめ"
         case .workload: return "ワークロード別"
         case .map: return "たどる"
         }
@@ -486,9 +500,7 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
 
     var help: String {
         switch self {
-        case .node: return "ノードごとに、載っている Pod をそのまま並べます。"
-        case .nodeByWorkload:
-            return "ノードごとに、Pod を Deployment などでまとめて並べます。"
+        case .node: return "ノードごとに、載っている Pod を並べます。"
         case .workload:
             return "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。"
         case .map:
@@ -497,7 +509,7 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// 箱がノードかどうか。
-    var isNodeFirst: Bool { self == .node || self == .nodeByWorkload }
+    var isNodeFirst: Bool { self == .node }
 }
 
 

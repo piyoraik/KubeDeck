@@ -331,7 +331,7 @@ private struct NodeCard: View {
                 Text("このノードに Pod はありません。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-            } else if preferences.placementGrouping == .nodeByWorkload {
+            } else if preferences.placementGroupsByWorkload {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(workloads) { workload in
                         LabeledTiles(
@@ -711,7 +711,14 @@ private struct WorkloadMap: View {
     var body: some View {
         HStack(spacing: 0) {
             picker
-            Divider()
+            // **横並びの中に `Divider` を置かない。** 高さが定まらず、
+            // `NavigationSplitView` と `.inspector` ですでに `NSSplitView` が
+            // 入れ子になっているこの窓では、レイアウト中の例外の芽になる。
+            // 見た目は同じなので、太さの決まった矩形にする。
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(width: 1)
+                .frame(maxHeight: .infinity)
             if let branch = branch {
                 ScrollView {
                     BranchTree(branch: branch)
