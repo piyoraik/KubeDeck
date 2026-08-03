@@ -219,14 +219,18 @@ publish している。同じ必要が出たら同じやり方にする。
 
 ## メトリクスは 2 系統ある
 
-- **metrics-server**（`Kubectl.metrics`）— いまの値。`/apis/metrics.k8s.io/v1beta1` を `kubectl get --raw` で叩く。`kubectl top` と同じ出どころ。
+- **metrics-server**（`Kubectl.metrics`）— いまの値。`kubectl get nodes.metrics.k8s.io` / `pods.metrics.k8s.io` を `-o json` で引く。`kubectl top` と同じ出どころ。
 - **Prometheus**（`Services/PrometheusClient.swift`）— 履歴。スパークラインの元。
 
 **どちらも「入っていなければ列ごと出さない」。** 空の列や 0 を並べると、値が 0 なのか取得できていないのか区別が付かない。一覧の CPU 列で値が引けないセルは `0` ではなく `—` を出す。
 
 **APIService の登録ではなく、実際に引いて存在を判定する。** 登録が残ったまま実体が落ちていることがある。
 
-**ノードだけで判定しない。** 管理されたクラスタ（GKE の Warden など）は、ノードの指標や全 Namespace の一覧を拒みつつ Pod の指標は通すことがある。`/nodes` だけを見ていたので、`kubectl top` は見えるのに KubeDeck では列が出ない、という食い違いが起きた。`metricsServerAvailable` は `/nodes` → `/pods?limit=1` → 選択中の Namespace の `/pods?limit=1` の順に試し、**1 つでも引けたら「入っている」**とする。判定のためだけに全件を運ばせないよう `limit` を付ける。
+**メトリクスを `--raw` で引かない。** `kubectl get --raw` は discovery を通らない素の HTTP GET で、**Connect Gateway 越しの GKE では `/apis/metrics.k8s.io/v1beta1/pods` が 404 になる**（実測。`kubectl top` は同じクラスタで通る）。`kubectl get <resource>` は discovery を通るので `top` と同じ経路になり、`top` で見えるものは必ず引ける。返る JSON は `--raw` と同じ `List`（`items[].usage` / `items[].containers[].usage`）なので、読む側は変えなくてよい。
+
+`raw()` 自体は残してある。Prometheus は Service のプロキシ（`/api/v1/namespaces/.../proxy/...`）を叩くもので、こちらは種別として引けない。
+
+**ノードだけで判定しない。** 管理されたクラスタ（GKE の Warden など）は、ノードの指標や全 Namespace の一覧を拒みつつ Pod の指標は通すことがある。`metricsServerAvailable` は `nodes.metrics.k8s.io` → 全 Namespace の `pods.metrics.k8s.io` → 選択中の Namespace の順に試し、**1 つでも引けたら「入っている」**とする。
 
 **取得元が無いことにしない。** 取得元はあるのにノードの使用量だけ引けないとき、使用量カードに「metrics-server も Prometheus も見つかりません」と書くと、入れれば直ると読めてしまう。`UsageMeter.unavailableReason` が「取得元は○○だが、ノードの使用量が引けない」と書き分ける。これも「無い」と「取れていない」を混ぜないという同じ話。
 

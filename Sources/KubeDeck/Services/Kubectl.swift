@@ -502,23 +502,26 @@ actor Kubectl {
     /// APIService が登録されていても実体が落ちていれば取得は失敗するので、
     /// 登録の有無ではなく実際に一覧を引いて確かめる。
     ///
-    /// **ノードだけで判定しない。** 管理されたクラスタ（GKE の Warden など）は
-    /// ノードの指標や全 Namespace の一覧を拒みつつ、Pod の指標は通すことがある。
-    /// `kubectl top` は見えるのに KubeDeck では列が出ない、という食い違いは
-    /// これで起きていた。**1 つでも引けたなら「入っている」。**
+    /// **`--raw` で引かない。** `--raw` は discovery を通らない素の HTTP GET で、
+    /// Connect Gateway 越しの GKE では `/apis/metrics.k8s.io/v1beta1/pods` が
+    /// 404 になる（`kubectl top` は見えるのに、である）。`kubectl get <resource>`
+    /// なら discovery を通るので `top` と同じ経路になり、そこで見えるものは必ず
+    /// 引ける。返る JSON の形は `--raw` と同じなので、読む側は変わらない。
+    ///
+    /// **ノードだけで判定しない。** 管理されたクラスタはノードの指標を拒みつつ
+    /// Pod の指標は通すことがある。**1 つでも引けたなら「入っている」。**
     func metricsServerAvailable(context: String, namespace: String? = nil) async -> Bool {
-        var paths = [
-            "/apis/metrics.k8s.io/v1beta1/nodes",
-            // limit を付けるのは、判定のためだけに全件を運ばせないため。
-            "/apis/metrics.k8s.io/v1beta1/pods?limit=1",
+        var attempts: [[String]] = [
+            ["get", "nodes.metrics.k8s.io", "-o", "name"],
+            ["get", "pods.metrics.k8s.io", "-o", "name", "--all-namespaces"],
         ]
         if let namespace, !namespace.isEmpty {
-            paths.append("/apis/metrics.k8s.io/v1beta1/namespaces/\(namespace)/pods?limit=1")
+            attempts.append(["get", "pods.metrics.k8s.io", "-o", "name", "-n", namespace])
         }
 
-        for path in paths {
+        for attempt in attempts {
             if (try? await run(
-                ["get", "--raw", path, "--request-timeout=\(requestTimeout)"],
+                attempt + ["--request-timeout=\(requestTimeout)"],
                 context: context)) != nil {
                 return true
             }
@@ -533,7 +536,10 @@ actor Kubectl {
     func metrics(context: String, namespace: String?) async -> MetricsSnapshot {
         var snapshot = MetricsSnapshot()
 
-        if let data = try? await raw("/apis/metrics.k8s.io/v1beta1/nodes", context: context),
+        if let data = try? await run(
+            ["get", "nodes.metrics.k8s.io", "-o", "json",
+             "--request-timeout=\(requestTimeout)"],
+            context: context).stdout,
            let root = try? JSONDecoder().decode(JSONValue.self, from: data) {
             for item in root["items"]?.arrayValue ?? [] {
                 guard let name = item.path("metadata.name")?.stringValue else { continue }
@@ -541,9 +547,14 @@ actor Kubectl {
             }
         }
 
-        let podsPath = namespace.map { "/apis/metrics.k8s.io/v1beta1/namespaces/\($0)/pods" }
-            ?? "/apis/metrics.k8s.io/v1beta1/pods"
-        if let data = try? await raw(podsPath, context: context),
+        var podArguments = ["get", "pods.metrics.k8s.io", "-o", "json",
+                            "--request-timeout=\(requestTimeout)"]
+        if let namespace, !namespace.isEmpty {
+            podArguments += ["-n", namespace]
+        } else {
+            podArguments.append("--all-namespaces")
+        }
+        if let data = try? await run(podArguments, context: context).stdout,
            let root = try? JSONDecoder().decode(JSONValue.self, from: data) {
             for item in root["items"]?.arrayValue ?? [] {
                 guard let name = item.path("metadata.name")?.stringValue else { continue }
