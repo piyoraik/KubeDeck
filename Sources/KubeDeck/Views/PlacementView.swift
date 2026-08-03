@@ -778,142 +778,131 @@ private struct Branch {
     let controllers: [Controller]
 }
 
+/// ワークロードを図にする。
+///
+/// 参考にしているのは Kubernetes の構成図（七角形の器・範囲の囲み・矢印）。
+/// **罫線の木ではなく図にする。** 木は階層は表せるが「Namespace の中に
+/// Deployment があり、そこから Pod が出て、それぞれ別のノードに載っている」
+/// という**入れ子と行き先**が同時には見えない。
+///
+/// **自動でレイアウトしない。** 段は「ワークロード → 世代 → Pod → ノード」で
+/// 決まっているので、列に並べるだけでよい。線を自由に引く仕組みを持つと、
+/// 図のためだけにレイアウトの実装を抱えることになる。
 private struct BranchTree: View {
     let branch: Branch
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(branch.name)
-                .font(.headline)
-                .textSelection(.enabled)
-
-            ForEach(Array(branch.controllers.enumerated()), id: \.element.id) { index, controller in
-                let isLast = index == branch.controllers.count - 1
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 0) {
-                        BranchConnector(isLast: isLast, drawsTrunk: true)
-                        HStack(spacing: 8) {
-                            Image(systemName: "square.stack")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                            Text(controller.name)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            CountPill(
-                                text: "\(controller.pods.count) Pod",
-                                tint: controller.pods.isEmpty
-                                    ? nil : Palette.color(for: .good))
-                        }
-                    }
-
-                    ForEach(Array(controller.pods.enumerated()), id: \.element.id) { podIndex, pod in
-                        HStack(spacing: 0) {
-                            // 親が最後の枝なら、その下に縦線は伸びない。
-                            BranchTrunk(visible: !isLast)
-                            PodBranchRow(
-                                pod: pod,
-                                isLast: podIndex == controller.pods.count - 1)
-                        }
+        DiagramBox(
+            title: namespaceTitle, symbol: ResourceKind.namespace.symbol,
+            tint: .secondary
+        ) {
+            HStack(alignment: .center, spacing: 0) {
+                owner
+                // ここから各世代へ枝分かれする。
+                DiagramArrow(length: 22)
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(branch.controllers) { controller in
+                        generation(controller)
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-}
 
-/// 枝の縦線と、行へ伸びる横線。
-///
-/// **罫線の文字で描かない。** 等幅の記号は本文の字送りと合わず、行ごとに
-/// 微妙にずれる。太さも外観設定で変わらない。細い矩形で引く。
-private struct BranchConnector: View {
-    let isLast: Bool
-    var drawsTrunk = false
+    private var namespaceTitle: String {
+        let namespaces = Set(branch.controllers.flatMap { $0.pods.compactMap(\.namespace) })
+        guard namespaces.count == 1, let only = namespaces.first else { return "Namespace" }
+        return only
+    }
 
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            // 縦線。最後の枝なら、横線の高さで止める。
-            Rectangle()
-                .fill(Palette.cardStroke)
-                .frame(width: 1)
-                .frame(maxHeight: isLast ? 11 : .infinity, alignment: .top)
-            // 横線。
-            Rectangle()
-                .fill(Palette.cardStroke)
-                .frame(width: 9, height: 1)
-                .offset(x: 1, y: 10)
+    private var owner: some View {
+        VStack(spacing: 6) {
+            ResourceGlyph(symbol: ResourceKind.deployment.symbol, size: 40)
+            Text(branch.name)
+                .font(.caption.weight(.medium))
+                .multilineTextAlignment(.center)
+                .frame(width: 120)
+                .lineLimit(2)
         }
-        .frame(width: 18)
-        .opacity(drawsTrunk ? 1 : 1)
+    }
+
+    /// ReplicaSet / Job 1 世代ぶん。**Pod が 0 の世代も囲みごと出す。**
+    /// 入れ替わりの途中や、古い世代が残っていることが分かる。
+    private func generation(_ controller: Branch.Controller) -> some View {
+        DiagramBox(
+            title: controller.name, symbol: ResourceKind.replicaSet.symbol,
+            tint: controller.pods.isEmpty ? .secondary : .accentColor
+        ) {
+            if controller.pods.isEmpty {
+                Text("Pod はありません（古い世代）")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(height: 34)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(controller.pods) { pod in
+                        PodBranchRow(pod: pod)
+                    }
+                }
+            }
+        }
     }
 }
 
-/// 親の枝がまだ続いているときに、子の左に伸ばす縦線。
-private struct BranchTrunk: View {
-    let visible: Bool
-
-    var body: some View {
-        Rectangle()
-            .fill(visible ? Palette.cardStroke : .clear)
-            .frame(width: 1)
-            .frame(width: 18)
-    }
-}
-
+/// Pod 1 つと、その載っているノード。
 private struct PodBranchRow: View {
     @Environment(ClusterStore.self) private var store
     let pod: K8sObject
-    let isLast: Bool
 
     private var isSelected: Bool { store.selectedObjectID == pod.id }
 
     var body: some View {
         let status = StatusResolver.health(for: pod)
 
-        HStack(spacing: 0) {
-            BranchConnector(isLast: isLast)
+        HStack(spacing: 8) {
             Button {
                 store.selectedObjectID = pod.id
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: status.level.symbol)
-                        .font(.system(size: 8))
-                        .foregroundStyle(Palette.color(for: status.level))
-                    Text(pod.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(status.text)
-                        .font(.caption2)
-                        .foregroundStyle(Palette.textColor(for: status.level))
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 7))
-                        .foregroundStyle(.tertiary)
-                    Label(
-                        PlacementView.nodeName(of: pod) ?? "未スケジュール",
-                        systemImage: "server.rack")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
+                    ResourceGlyph(
+                        symbol: ResourceKind.pod.symbol, size: 30,
+                        badge: status.level)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pod.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(status.text)
+                            .font(.caption2)
+                            .foregroundStyle(Palette.textColor(for: status.level))
+                    }
+                    .frame(width: 190, alignment: .leading)
                 }
+                .padding(.horizontal, 6)
                 .padding(.vertical, 4)
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isSelected
-                            ? Palette.color(for: status.level).opacity(0.20)
-                            : Palette.insetFill.opacity(0.6)))
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8)
                         .stroke(
-                            Palette.color(for: status.level).opacity(isSelected ? 0.8 : 0),
-                            lineWidth: 1.5))
+                            Color.accentColor.opacity(isSelected ? 0.8 : 0), lineWidth: 1.5))
             }
             .buttonStyle(.plain)
+
+            DiagramArrow(length: 20)
+
+            // 行き先のノード。**Pod と同じ器にしない** — 種別が違う。
+            HStack(spacing: 6) {
+                ResourceGlyph(
+                    symbol: ResourceKind.node.symbol, size: 26, tint: .secondary)
+                Text(PlacementView.nodeName(of: pod) ?? "未スケジュール")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
     }
 }
