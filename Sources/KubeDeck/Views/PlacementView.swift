@@ -31,19 +31,23 @@ struct PlacementView: View {
                 // 決めたら変えない類のもの（タイルの大きさなど）だけ。
                 modeSwitcher
                 Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if preferences.placementGrouping.isNodeFirst {
-                            ForEach(nodeGroups, id: \.id) { group in
-                                NodeCard(group: group)
-                            }
-                        } else {
-                            ForEach(spreads, id: \.id) { spread in
-                                WorkloadCard(spread: spread)
+                if preferences.placementGrouping == .map {
+                    WorkloadMap(spreads: spreads)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            if preferences.placementGrouping.isNodeFirst {
+                                ForEach(nodeGroups, id: \.id) { group in
+                                    NodeCard(group: group)
+                                }
+                            } else {
+                                ForEach(spreads, id: \.id) { spread in
+                                    WorkloadCard(spread: spread)
+                                }
                             }
                         }
+                        .padding(16)
                     }
-                    .padding(16)
                 }
             }
             // 並べているのは Pod なので、一覧と同じ絞り込みを付ける。
@@ -635,5 +639,206 @@ private struct PodTile: View {
                 + " · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))"
         }
         return text
+    }
+}
+
+// MARK: - たどる（1 つを枝で展開）
+
+/// ワークロードを 1 つ選んで、ReplicaSet から Pod、ノードまで枝で辿る。
+///
+/// **全部を一度に描かない。** 222 Pod を線でつないだ図は、線の数が多すぎて
+/// どこから読めばいいのか分からなくなる。選んだ 1 つだけを展開する。
+///
+/// 枝は罫線の文字で描く。**座標を計算して線を引かない** — 折り返しや
+/// スクロールのたびに位置を計算し直すことになり、図のためだけに
+/// レイアウトの仕組みを持つことになる。
+private struct WorkloadMap: View {
+    @Environment(ClusterStore.self) private var store
+    let spreads: [PlacementView.Spread]
+    @State private var focus: String?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            picker
+            Divider()
+            if let branch = branch {
+                ScrollView {
+                    BranchTree(branch: branch)
+                        .padding(16)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ContentUnavailableView {
+                    Label("たどる対象を選んでください", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                } description: {
+                    Text("左の一覧から 1 つ選ぶと、Pod とノードまで枝で出します。")
+                }
+            }
+        }
+    }
+
+    /// 左の一覧。**多い順のまま出す。** 探しているのはたいてい大きいもの。
+    private var picker: some View {
+        List(selection: Binding(get: { focus }, set: { focus = $0 })) {
+            ForEach(spreads, id: \.id) { spread in
+                HStack(spacing: 6) {
+                    Text(spread.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    Text("\(spread.podCount)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .tag(spread.name)
+            }
+        }
+        .frame(width: 240)
+        .onAppear { if focus == nil { focus = spreads.first?.name } }
+        // 選んでいたものが消えたら先頭へ。空のまま固まらせない。
+        .onChange(of: spreads.map(\.name)) { _, names in
+            if let focus, !names.contains(focus) { self.focus = names.first }
+        }
+    }
+
+    private var branch: Branch? {
+        guard let focus, let spread = spreads.first(where: { $0.name == focus }) else { return nil }
+        let pods = spread.byNode.flatMap(\.pods)
+
+        // 直接の所有者（ReplicaSet / Job）ごとに割る。世代が分かる。
+        var byController: [String: [K8sObject]] = [:]
+        for pod in pods {
+            byController[Self.directOwner(of: pod) ?? "（所有者なし）", default: []].append(pod)
+        }
+
+        // Pod が 0 の ReplicaSet も出す。入れ替わりの途中や、古い世代が
+        // 残っていることが分かる。
+        for controller in store.placementControllers {
+            guard Self.ownerName(of: controller) == focus else { continue }
+            if byController[controller.name] == nil {
+                byController[controller.name] = []
+            }
+        }
+
+        var groups: [Branch.Controller] = []
+        for (name, pods) in byController {
+            groups.append(Branch.Controller(name: name, pods: pods))
+        }
+        groups.sort { left, right in
+            left.pods.count == right.pods.count
+                ? left.name < right.name : left.pods.count > right.pods.count
+        }
+        return Branch(name: focus, controllers: groups)
+    }
+
+    private static func directOwner(of pod: K8sObject) -> String? {
+        ownerName(of: pod)
+    }
+
+    private static func ownerName(of object: K8sObject) -> String? {
+        let references = object.raw.path("metadata.ownerReferences")?.arrayValue ?? []
+        let controller = references.first { $0["controller"]?.boolValue == true }
+            ?? references.first
+        return controller?["name"]?.stringValue
+    }
+}
+
+private struct Branch {
+    struct Controller: Identifiable {
+        let name: String
+        let pods: [K8sObject]
+        var id: String { name }
+    }
+
+    let name: String
+    let controllers: [Controller]
+}
+
+private struct BranchTree: View {
+    let branch: Branch
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(branch.name)
+                .font(.headline)
+                .textSelection(.enabled)
+
+            ForEach(Array(branch.controllers.enumerated()), id: \.element.id) { index, controller in
+                let isLast = index == branch.controllers.count - 1
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(isLast ? "└─" : "├─")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                        Text(controller.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(controller.pods.isEmpty ? "0 Pod" : "\(controller.pods.count) Pod")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ForEach(Array(controller.pods.enumerated()), id: \.element.id) { podIndex, pod in
+                        PodBranchRow(
+                            pod: pod,
+                            trunk: isLast ? "   " : "│  ",
+                            isLast: podIndex == controller.pods.count - 1)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PodBranchRow: View {
+    @Environment(ClusterStore.self) private var store
+    let pod: K8sObject
+    let trunk: String
+    let isLast: Bool
+
+    var body: some View {
+        let status = StatusResolver.health(for: pod)
+
+        Button {
+            store.selectedObjectID = pod.id
+        } label: {
+            HStack(spacing: 6) {
+                Text(trunk + (isLast ? "└─" : "├─"))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+                Image(systemName: status.level.symbol)
+                    .font(.system(size: 8))
+                    .foregroundStyle(Palette.color(for: status.level))
+                Text(pod.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(status.text)
+                    .font(.caption2)
+                    .foregroundStyle(Palette.textColor(for: status.level))
+                Text("→")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(PlacementView.nodeName(of: pod) ?? "未スケジュール")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(
+                        store.selectedObjectID == pod.id
+                            ? Palette.color(for: status.level).opacity(0.22) : .clear))
+        }
+        .buttonStyle(.plain)
     }
 }

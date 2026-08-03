@@ -471,6 +471,7 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
     case node
     case nodeByWorkload
     case workload
+    case map
 
     var id: String { rawValue }
 
@@ -479,6 +480,7 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
         case .node: return "ノード別"
         case .nodeByWorkload: return "ノード別・まとめ"
         case .workload: return "ワークロード別"
+        case .map: return "たどる"
         }
     }
 
@@ -489,11 +491,13 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
             return "ノードごとに、Pod を Deployment などでまとめて並べます。"
         case .workload:
             return "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。"
+        case .map:
+            return "1 つ選んで、ReplicaSet から Pod、ノードまで枝で辿ります。"
         }
     }
 
     /// 箱がノードかどうか。
-    var isNodeFirst: Bool { self != .workload }
+    var isNodeFirst: Bool { self == .node || self == .nodeByWorkload }
 }
 
 
