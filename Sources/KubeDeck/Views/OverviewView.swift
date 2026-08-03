@@ -124,10 +124,11 @@ struct OverviewView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Palette.hairline, lineWidth: 1))
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Palette.cardStroke, lineWidth: 1))
+        .shadow(color: Palette.cardShadow, radius: 6, y: 2)
     }
 
     private func eventRow(_ event: K8sObject) -> some View {

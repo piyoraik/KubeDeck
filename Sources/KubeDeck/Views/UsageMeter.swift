@@ -173,10 +173,11 @@ struct ClusterUsageCard: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Palette.hairline, lineWidth: 1))
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Palette.cardStroke, lineWidth: 1))
+        .shadow(color: Palette.cardShadow, radius: 6, y: 2)
     }
 
     /// 1 つの指標。**棒と折れ線を同時に出さない。**

@@ -61,7 +61,7 @@ struct PlacementView: View {
     private var modeSwitcher: some View {
         @Bindable var preferences = preferences
 
-        return HStack(spacing: 12) {
+        return HStack(spacing: 14) {
             Picker("", selection: $preferences.placementGrouping) {
                 ForEach(PlacementGrouping.allCases) { grouping in
                     Text(grouping.title).tag(grouping)
@@ -69,16 +69,19 @@ struct PlacementView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 380)
+            .frame(maxWidth: 400)
 
+            // 添え書きは薄く小さく。選択肢と同じ重さで並べると、どちらを
+            // 読めばいいのか分からなくなる。
             Text(preferences.placementGrouping.help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(.regularMaterial)
     }
 
     // MARK: - ノードを箱にする
@@ -275,10 +278,30 @@ private struct PlacementCard<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Palette.hairline, lineWidth: 1))
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Palette.cardStroke, lineWidth: 1))
+        // 影は 1 段だけ。段を重ねると画面がぼやける。
+        .shadow(color: Palette.cardShadow, radius: 6, y: 2)
+    }
+}
+
+/// 見出しの右に置く小さな札。件数のような添え物を、本文と同じ字面で
+/// 並べないための入れ物。
+private struct CountPill: View {
+    let text: String
+    var tint: Color?
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            .monospacedDigit()
+            .foregroundStyle(tint ?? .secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(tint?.opacity(0.14) ?? Palette.insetFill))
     }
 }
 
@@ -317,34 +340,27 @@ private struct NodeCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(spacing: 10) {
+            // 種別のしるしは面に載せる。文字の列に混ぜると、名前の頭が
+            // 揃わずカードごとにずれて見える。
+            Image(systemName: group.node == nil ? "questionmark.square.dashed" : "server.rack")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background(Palette.insetFill, in: RoundedRectangle(cornerRadius: 7))
+
+            Text(group.name)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
             if let node = group.node {
-                let status = StatusResolver.status(for: node)
-                Image(systemName: status.level.symbol)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.color(for: status.level))
-                Text(node.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(status.text)
-                    .font(.caption)
-                    .foregroundStyle(Palette.textColor(for: status.level))
-            } else {
-                Image(systemName: StatusLevel.neutral.symbol)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.color(for: .neutral))
-                Text(group.name)
-                    .font(.headline)
-                    .lineLimit(1)
+                StatusBadge(status: StatusResolver.status(for: node))
             }
 
             Spacer(minLength: 8)
             // 件数は必ず文字で出す。タイルの数を目で数えさせない。
-            Text("\(group.pods.count) Pod")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+            CountPill(text: "\(group.pods.count) Pod")
         }
     }
 
@@ -438,16 +454,22 @@ private struct WorkloadCard: View {
 
     var body: some View {
         PlacementCard {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Palette.insetFill, in: RoundedRectangle(cornerRadius: 7))
                 Text(spread.name)
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                Text("\(spread.podCount) Pod · \(spread.nodeCount) ノード")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                CountPill(text: "\(spread.podCount) Pod")
+                // 散っている数は、固まっているときだけ色を付ける。
+                CountPill(
+                    text: "\(spread.nodeCount) ノード",
+                    tint: spread.isConcentrated ? Palette.color(for: .warning) : nil)
             }
 
             // **固まっていることを色だけで言わない。** 冗長性が無い状態は
@@ -767,26 +789,32 @@ private struct BranchTree: View {
 
             ForEach(Array(branch.controllers.enumerated()), id: \.element.id) { index, controller in
                 let isLast = index == branch.controllers.count - 1
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Text(isLast ? "└─" : "├─")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.tertiary)
-                        Text(controller.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(controller.pods.isEmpty ? "0 Pod" : "\(controller.pods.count) Pod")
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 0) {
+                        BranchConnector(isLast: isLast, drawsTrunk: true)
+                        HStack(spacing: 8) {
+                            Image(systemName: "square.stack")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                            Text(controller.name)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            CountPill(
+                                text: "\(controller.pods.count) Pod",
+                                tint: controller.pods.isEmpty
+                                    ? nil : Palette.color(for: .good))
+                        }
                     }
 
                     ForEach(Array(controller.pods.enumerated()), id: \.element.id) { podIndex, pod in
-                        PodBranchRow(
-                            pod: pod,
-                            trunk: isLast ? "   " : "│  ",
-                            isLast: podIndex == controller.pods.count - 1)
+                        HStack(spacing: 0) {
+                            // 親が最後の枝なら、その下に縦線は伸びない。
+                            BranchTrunk(visible: !isLast)
+                            PodBranchRow(
+                                pod: pod,
+                                isLast: podIndex == controller.pods.count - 1)
+                        }
                     }
                 }
             }
@@ -795,50 +823,97 @@ private struct BranchTree: View {
     }
 }
 
+/// 枝の縦線と、行へ伸びる横線。
+///
+/// **罫線の文字で描かない。** 等幅の記号は本文の字送りと合わず、行ごとに
+/// 微妙にずれる。太さも外観設定で変わらない。細い矩形で引く。
+private struct BranchConnector: View {
+    let isLast: Bool
+    var drawsTrunk = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // 縦線。最後の枝なら、横線の高さで止める。
+            Rectangle()
+                .fill(Palette.cardStroke)
+                .frame(width: 1)
+                .frame(maxHeight: isLast ? 11 : .infinity, alignment: .top)
+            // 横線。
+            Rectangle()
+                .fill(Palette.cardStroke)
+                .frame(width: 9, height: 1)
+                .offset(x: 1, y: 10)
+        }
+        .frame(width: 18)
+        .opacity(drawsTrunk ? 1 : 1)
+    }
+}
+
+/// 親の枝がまだ続いているときに、子の左に伸ばす縦線。
+private struct BranchTrunk: View {
+    let visible: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(visible ? Palette.cardStroke : .clear)
+            .frame(width: 1)
+            .frame(width: 18)
+    }
+}
+
 private struct PodBranchRow: View {
     @Environment(ClusterStore.self) private var store
     let pod: K8sObject
-    let trunk: String
     let isLast: Bool
+
+    private var isSelected: Bool { store.selectedObjectID == pod.id }
 
     var body: some View {
         let status = StatusResolver.health(for: pod)
 
-        Button {
-            store.selectedObjectID = pod.id
-        } label: {
-            HStack(spacing: 6) {
-                Text(trunk + (isLast ? "└─" : "├─"))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.tertiary)
-                Image(systemName: status.level.symbol)
-                    .font(.system(size: 8))
-                    .foregroundStyle(Palette.color(for: status.level))
-                Text(pod.name)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(status.text)
-                    .font(.caption2)
-                    .foregroundStyle(Palette.textColor(for: status.level))
-                Text("→")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Text(PlacementView.nodeName(of: pod) ?? "未スケジュール")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+        HStack(spacing: 0) {
+            BranchConnector(isLast: isLast)
+            Button {
+                store.selectedObjectID = pod.id
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: status.level.symbol)
+                        .font(.system(size: 8))
+                        .foregroundStyle(Palette.color(for: status.level))
+                    Text(pod.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(status.text)
+                        .font(.caption2)
+                        .foregroundStyle(Palette.textColor(for: status.level))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 7))
+                        .foregroundStyle(.tertiary)
+                    Label(
+                        PlacementView.nodeName(of: pod) ?? "未スケジュール",
+                        systemImage: "server.rack")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected
+                            ? Palette.color(for: status.level).opacity(0.20)
+                            : Palette.insetFill.opacity(0.6)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(
+                            Palette.color(for: status.level).opacity(isSelected ? 0.8 : 0),
+                            lineWidth: 1.5))
             }
-            .padding(.vertical, 2)
-            .padding(.horizontal, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(
-                        store.selectedObjectID == pod.id
-                            ? Palette.color(for: status.level).opacity(0.22) : .clear))
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 }

@@ -68,4 +68,14 @@ enum Palette {
     static let mutedInk = Color(nsColor: .tertiaryLabelColor)
     /// 一覧のヘッダ行や、値が無いセルの下地。
     static let subtleFill = Color.primary.opacity(0.04)
+
+    /// カードの中でもう一段沈める面（見出しの帯、入れ子の箱）。
+    /// **不透明な色を足さない。** 外観設定とアクセントカラーの組み合わせで
+    /// 浮くので、下の面に対する薄い重ねにする。
+    static let insetFill = Color.primary.opacity(0.05)
+    /// カードの縁。`hairline` は一覧の区切り用で、面の縁にはやや弱い。
+    static let cardStroke = Color.primary.opacity(0.09)
+    /// カードの影。**濃くしない。** 影で浮かせるのは 1 段だけで、
+    /// 段を重ねると画面がぼやける。
+    static let cardShadow = Color.black.opacity(0.18)
 }
