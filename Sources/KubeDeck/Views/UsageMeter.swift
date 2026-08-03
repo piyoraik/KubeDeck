@@ -8,10 +8,17 @@ struct UsageBar: View {
     /// **要求のためにもう 1 本棒を出さない。** 同じ量を 2 度描くことになるうえ、
     /// どちらの分母を見ているのか分からなくなる。1 本の上に印を置く。
     var marker: Double?
+    /// 系列の色。**同じ系列を違う色で描かない。** 概要の使用量は、履歴が
+    /// 取れるクラスタでは折れ線（CPU は青、メモリは橙）、取れないクラスタでは
+    /// この棒になる。棒だけ状態の色にしていたので、環境によって同じカードが
+    /// 別物に見えた。しきい値超えは割合の文字の色が持つ。
+    /// nil なら状態の色（Pod や Node の使用率など、しきい値が主役のところ）。
+    var tint: Color?
 
-    init(ratio: Double, marker: Double? = nil) {
+    init(ratio: Double, marker: Double? = nil, tint: Color? = nil) {
         self.ratio = ratio
         self.marker = marker
+        self.tint = tint
     }
 
     var body: some View {
@@ -19,7 +26,7 @@ struct UsageBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.subtleFill)
                 Capsule()
-                    .fill(Palette.color(for: ResourceTable.usageLevel(ratio) ?? .good))
+                    .fill(tint ?? Palette.color(for: ResourceTable.usageLevel(ratio) ?? .good))
                     // 1% でも使っていれば見える太さを残す。
                     .frame(width: max(3, proxy.size.width * min(1, max(0, ratio))))
                 if let marker, marker > 0, marker < 1 {
@@ -209,7 +216,8 @@ struct ClusterUsageCard: View {
                 Sparkline(series: series, tint: tint, format: format)
                     .frame(height: 40)
             } else if let ratio {
-                UsageBar(ratio: ratio)
+                // 折れ線と同じ系列色にする。取得元の違いで見た目が変わらないように。
+                UsageBar(ratio: ratio, tint: tint)
             }
         }
     }
