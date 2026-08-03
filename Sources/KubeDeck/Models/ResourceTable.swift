@@ -399,11 +399,12 @@ enum ResourceTable {
                 width: .fixed(kind == .node ? 110 : 118), trailing: true
             ) { object in
                 usageCell(
+                    kind: kind,
                     used: snapshot.usage(for: object)?.cpuCores,
                     base: kind == .node
                         ? object.nodeAllocatable.cpuCores
                         : object.containerResourceTotal("requests").cpuCores,
-                    showsBase: kind != .node,
+                    limit: object.containerResourceTotal("limits").cpuCores,
                     format: { Quantity.formatCPU(cores: $0) })
             },
             ResourceColumn(
@@ -411,11 +412,12 @@ enum ResourceTable {
                 width: .fixed(kind == .node ? 120 : 132), trailing: true
             ) { object in
                 usageCell(
+                    kind: kind,
                     used: snapshot.usage(for: object)?.memoryBytes,
                     base: kind == .node
                         ? object.nodeAllocatable.memoryBytes
                         : object.containerResourceTotal("requests").memoryBytes,
-                    showsBase: kind != .node,
+                    limit: object.containerResourceTotal("limits").memoryBytes,
                     format: { Quantity.formatMemory(bytes: $0) })
             },
         ]
@@ -426,8 +428,15 @@ enum ResourceTable {
     /// **「取れていない」と「未設定」を混ぜない。** 使用量が引けないときは `—`、
     /// 使用量はあるが分母（requests）が無いときは `156m / 未設定`。前者は
     /// metrics-server の話で、後者は Pod の書き方の話なので、見る場所が違う。
+    ///
+    /// **色は上限で決める。** 要求を超えていること自体は異常ではない（要求は
+    /// 置き場所を決めるための申告であって上限ではない）。要求比で色を付けていた
+    /// ときは、要求控えめ・上限広めというごく普通の設定が軒並み赤くなり、
+    /// **健全な Pod が一覧で異常に見えた。** 上限が無い Pod は超える先が無いので
+    /// 色を付けない（ノードの空きの話になり、それは Node の行が持っている）。
     private static func usageCell(
-        used: Double?, base: Double, showsBase: Bool, format: (Double) -> String
+        kind: ResourceKind, used: Double?, base: Double, limit: Double,
+        format: (Double) -> String
     ) -> ResourceCell {
         guard let used else {
             // 取れていないものを 0 と書かない。集計直後の Pod はまだ値が無く、
@@ -435,16 +444,21 @@ enum ResourceTable {
             return ResourceCell(text: "—", emphasis: .secondary)
         }
         let text = format(used)
-        guard let ratio = Quantity.ratio(used, of: base) else {
-            return showsBase
-                ? ResourceCell(text: "\(text) / 未設定", emphasis: .mono)
-                : ResourceCell(text: text, emphasis: .mono)
+        let level = kind == .node
+            ? Quantity.ratio(used, of: base).flatMap(usageLevel)
+            : Quantity.ratio(used, of: limit).flatMap(usageLevel)
+
+        guard kind != .node else {
+            guard let ratio = Quantity.ratio(used, of: base) else {
+                return ResourceCell(text: text, emphasis: .mono)
+            }
+            return ResourceCell(
+                text: "\(text) (\(Quantity.formatPercent(ratio)))",
+                emphasis: .mono, level: level)
         }
         return ResourceCell(
-            text: showsBase
-                ? "\(text) / \(format(base))"
-                : "\(text) (\(Quantity.formatPercent(ratio)))",
-            emphasis: .mono, level: usageLevel(ratio))
+            text: base > 0 ? "\(text) / \(format(base))" : "\(text) / 未設定",
+            emphasis: .mono, level: level)
     }
 
     /// 使用率の色分け。しきい値は設定から（既定は運用でよく使う 80% / 90%）。

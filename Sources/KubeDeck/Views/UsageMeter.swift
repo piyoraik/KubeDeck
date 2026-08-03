@@ -3,6 +3,16 @@ import SwiftUI
 /// 割合の棒だけを描く部品。
 struct UsageBar: View {
     let ratio: Double
+    /// 目盛りの位置（0...1）。上限を分母にしたとき、要求がどこかを示す。
+    ///
+    /// **要求のためにもう 1 本棒を出さない。** 同じ量を 2 度描くことになるうえ、
+    /// どちらの分母を見ているのか分からなくなる。1 本の上に印を置く。
+    var marker: Double?
+
+    init(ratio: Double, marker: Double? = nil) {
+        self.ratio = ratio
+        self.marker = marker
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -12,9 +22,16 @@ struct UsageBar: View {
                     .fill(Palette.color(for: ResourceTable.usageLevel(ratio) ?? .good))
                     // 1% でも使っていれば見える太さを残す。
                     .frame(width: max(3, proxy.size.width * min(1, max(0, ratio))))
+                if let marker, marker > 0, marker < 1 {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.65))
+                        .frame(width: 2)
+                        .offset(x: proxy.size.width * marker - 1)
+                }
             }
         }
-        .frame(height: 6)
+        // 目盛りが読める太さが要る。6pt では 2pt の印が潰れて見えなかった。
+        .frame(height: 8)
     }
 }
 
@@ -36,10 +53,12 @@ struct UsageMeter: View {
     var note: String?
     /// 補足を目立たせるか（上限を超えているときなど）。
     var noteLevel: StatusLevel?
+    /// 棒に置く目盛りの位置（0...1）。
+    var marker: Double?
 
     init(
         title: String, used: String, total: String, ratio: Double?,
-        note: String? = nil, noteLevel: StatusLevel? = nil
+        note: String? = nil, noteLevel: StatusLevel? = nil, marker: Double? = nil
     ) {
         self.title = title
         self.used = used
@@ -47,6 +66,7 @@ struct UsageMeter: View {
         self.ratio = ratio
         self.note = note
         self.noteLevel = noteLevel
+        self.marker = marker
     }
 
     private var level: StatusLevel {
@@ -79,18 +99,24 @@ struct UsageMeter: View {
                 }
             }
 
-            if let ratio {
-                UsageBar(ratio: ratio)
-            }
-
-            if let note {
-                Text(note)
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(
-                        noteLevel.map { Palette.textColor(for: $0) } ?? Color.secondary)
+            // **補足を自分の棒に寄せる。** 上下を同じ間隔で並べたら、CPU の
+            // 「上限 …」がメモリの見出しと等距離になり、どちらのものか分から
+            // なかった。中を詰めて、計器どうしのあいだを空ける。
+            VStack(alignment: .leading, spacing: 3) {
+                if let ratio {
+                    UsageBar(ratio: ratio, marker: marker)
+                }
+                if let note {
+                    Text(note)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(
+                            noteLevel.map { Palette.textColor(for: $0) } ?? Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+        .padding(.bottom, note == nil ? 0 : 7)
     }
 }
 
