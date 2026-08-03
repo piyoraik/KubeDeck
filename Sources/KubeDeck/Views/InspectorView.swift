@@ -578,7 +578,7 @@ private struct ClusterSummaryPane: View {
                                 Image(systemName: reason.level.symbol)
                                     .font(.system(size: 9))
                                     .foregroundStyle(Palette.color(for: reason.level))
-                                Text(reason.reason)
+                                Text(reason.displayName)
                                     .font(.caption)
                                 Spacer(minLength: 8)
                                 Text("\(reason.count)")

@@ -73,7 +73,10 @@ struct OverviewView: View {
 
     private var activityText: String {
         switch store.activity {
-        case .busy: return "取得中"
+        // **しるしと文字を食い違わせない。** アイコンはクラスタの状態（色つき）
+        // なのに、取得中だけ文字が「取得中」に変わっていた。異常があるクラスタ
+        // では赤いしるしの隣に「取得中」と出て、取得が失敗しているように読めた。
+        case .busy: return "取得中 · \(store.clusterHealth.label)"
         case .live: return "稼働中 · \(store.clusterHealth.label)"
         case .idle:
             return store.setupErrorMessage == nil

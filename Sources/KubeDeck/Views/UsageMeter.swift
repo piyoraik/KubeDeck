@@ -82,6 +82,7 @@ struct ClusterUsageCard: View {
                 Text(sourceLabel)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .help(sourceHelp)
                     .lineLimit(1)
             }
 
@@ -163,8 +164,22 @@ struct ClusterUsageCard: View {
         if store.metricsServerAvailable == nil && store.prometheus == nil { return "確認中" }
         var parts: [String] = []
         if store.activeMetricsSource.isAvailable { parts.append(store.activeMetricsSource.label) }
-        if store.prometheus != nil, !store.clusterHistory.cpu.isEmpty { parts.append("推移 30 分") }
+        if store.prometheus != nil, !store.clusterHistory.cpu.isEmpty {
+            parts.append("推移 30 分")
+        } else if store.activeMetricsSource.isAvailable {
+            // **見せ方が変わる理由を黙らない。** 履歴が取れるクラスタでは
+            // 折れ線、取れないクラスタでは割合の棒になる（同じことを描く図を
+            // 2 つ並べないため）。断りが無いと、環境ごとに作りが違うように見える。
+            parts.append("現在値のみ")
+        }
         return parts.joined(separator: " · ")
+    }
+
+    /// 添え書きの補足。折れ線が出ない理由をここで言う。
+    private var sourceHelp: String {
+        store.prometheus == nil
+            ? "推移（折れ線）は Prometheus からしか出せません。見つからないクラスタでは、いまの割合を棒で出します。"
+            : "推移は Prometheus から、いまの値は \(store.activeMetricsSource.label) から取っています。"
     }
 
     private var unavailableReason: String {

@@ -14,6 +14,17 @@ struct ReasonCount: Identifiable, Sendable, Hashable {
     let count: Int
 
     var id: String { reason }
+
+    /// 一覧に並べるときの表示。
+    ///
+    /// **比だけを状態として並べない。** レプリカを持つワークロードの状態は
+    /// `0/1` や `2/3` という比で、一覧の列ではそれが正しい（kubectl と同じ）。
+    /// だが状態の内訳に置くと、`Error` や `Pending` と並んで**状態の名前に
+    /// 見えない**。比のときだけ重みの名前を前に付ける。
+    var displayName: String {
+        guard reason.wholeMatch(of: /\d+\/\d+/) != nil else { return reason }
+        return "\(level.label) \(reason)"
+    }
 }
 
 /// ドーナツ 1 つ分の集計。状態の重みごとの件数と、内訳の理由。

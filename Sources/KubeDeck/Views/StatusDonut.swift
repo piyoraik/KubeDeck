@@ -21,8 +21,12 @@ struct StatusRing: View {
                     Text(title)
                         .font(.subheadline.weight(.medium))
                     summary
-                    // 内訳が 1 種類なら並べない。リング中央の数と合否で足りている。
-                    if tally.buckets.count > 1 { breakdown }
+                    // **3 つのリングで形を変えない。** 以前は内訳が 1 種類の
+                    // ときだけ省いていた（リング中央の数と重複するため）。
+                    // だが Pod とワークロードには内訳が並び、ノードだけ何も
+                    // 出ない、という食い違いのほうが目についた。1 行ぶんの
+                    // 重複より、3 つが同じ作りに見えることを採る。
+                    breakdown
                 }
             }
             Spacer(minLength: 0)
