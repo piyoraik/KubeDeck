@@ -5,6 +5,8 @@ struct RootView: View {
     @State private var showsInspector = true
     /// ログパネルの高さ。仕切りのドラッグで変わる。
     @State private var logHeight: CGFloat = 280
+    /// エラーの元の文言を開いているか。既定は畳んでおく。
+    @State private var showsErrorDetail = false
 
     var body: some View {
         @Bindable var store = store
@@ -198,16 +200,44 @@ struct RootView: View {
     @ViewBuilder
     private var errorBar: some View {
         if let message = store.errorMessage {
+            let parts = Self.splitError(message)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: StatusLevel.critical.symbol)
                     .foregroundStyle(Palette.color(for: .critical))
-                Text(message)
-                    .font(.callout)
-                    .textSelection(.enabled)
-                    .lineLimit(4)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(parts.summary)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                    // 元の文言は畳んでおく。開いておくと帯が画面の半分を占める。
+                    // **切り捨てない。** 切り捨てると、原因の手がかりが末尾に
+                    // ある種の失敗（exec プラグインが出す TLS のエラーなど）を
+                    // アプリの中では追えなくなる。
+                    if let detail = parts.detail {
+                        DisclosureGroup(isExpanded: $showsErrorDetail) {
+                            ScrollView {
+                                Text(detail)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 160)
+                        } label: {
+                            Text("元の文言").font(.caption)
+                        }
+                    }
+                }
                 Spacer(minLength: 8)
-                Button("閉じる") { store.errorMessage = nil }
+                VStack(alignment: .trailing, spacing: 6) {
+                    // 貼って共有できないと、結局ターミナルで再現する羽目になる。
+                    Button("コピー") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(message, forType: .string)
+                    }
                     .buttonStyle(.link)
+                    Button("閉じる") { store.errorMessage = nil }
+                        .buttonStyle(.link)
+                }
             }
             .padding(12)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -217,6 +247,22 @@ struct RootView: View {
             .padding(16)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    /// 帯の見出しと、畳んでおく残り。
+    ///
+    /// `Kubectl.explain(_:)` が言い換えを足したものは、空行で言い換えと元の文言が
+    /// 分かれている。**同じ文言を 2 度出さない** ので、残りは見出しに入らなかった
+    /// 分だけにする。空行が無いものは 4 行目で切る（帯が出す行数と揃える）。
+    static func splitError(_ message: String) -> (summary: String, detail: String?) {
+        if let separator = message.range(of: "\n\n") {
+            let tail = String(message[separator.upperBound...])
+            return (String(message[..<separator.lowerBound]), tail.isEmpty ? nil : tail)
+        }
+        let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > 4 else { return (message, nil) }
+        return (lines.prefix(4).joined(separator: "\n"),
+                lines.dropFirst(4).joined(separator: "\n"))
     }
 }
 

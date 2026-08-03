@@ -178,6 +178,35 @@ actor Kubectl {
         (try? environment())?.variables["PATH"]
     }
 
+    /// 子プロセスに渡している環境。設定画面に出す。
+    ///
+    /// 「ターミナルでは通るのに `.app` では通らない」を追うとき、いちばん知りたいのが
+    /// 「何が届いているか」だった。CA の指し先（`REQUESTS_CA_BUNDLE` など）が
+    /// 渡っているかは、ここを見れば分かる。
+    ///
+    /// **値をそのまま並べない。** 環境をまるごと渡すようにしたので、鍵やトークンが
+    /// 混ざりうる。ただしファイルの場所まで伏せると診断にならないので、伏せるのは
+    /// 「秘密を思わせる名前」かつ「場所に見えない値」だけにする。
+    /// PATH は別の行が持っているので、ここには出さない（同じものを 2 度出さない）。
+    func resolvedVariables() -> [String: String] {
+        guard let variables = (try? environment())?.variables else { return [:] }
+        var shown: [String: String] = [:]
+        for (key, value) in variables where key != "PATH" {
+            shown[key] = Self.hidesValue(name: key, value: value) ? "（伏せています）" : value
+        }
+        return shown
+    }
+
+    private static let secretHints = ["SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL"]
+
+    private static func hidesValue(name: String, value: String) -> Bool {
+        // 場所を指しているなら見せる。CA や kubeconfig の指し先が合っているかを
+        // 確かめる場所なので、伏せると診断にならない。
+        if value.hasPrefix("/") || value.hasPrefix("~") { return false }
+        let upper = name.uppercased()
+        return secretHints.contains { upper.contains($0) }
+    }
+
     // MARK: - 失敗の言い換え
 
     /// 認証まわりの失敗は原因と対処が決まっているので、日本語の説明を頭に足す。

@@ -334,6 +334,7 @@ private struct ConnectionSettings: View {
     @State private var preferences = Preferences.shared
     @State private var resolvedPath: String?
     @State private var searchPath: String?
+    @State private var variables: [String: String] = [:]
 
     var body: some View {
         @Bindable var store = store
@@ -394,11 +395,40 @@ private struct ConnectionSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                if variables.isEmpty {
+                    Text("確認中").foregroundStyle(.secondary)
+                } else {
+                    // **入れ子のスクロールにしない。** Form の中に ScrollView を
+                    // 置くと高さが潰れて 1 行も見えないことがある。Form 自体が
+                    // スクロールするので、素直に並べれば足りる。
+                    ForEach(variables.keys.sorted(), id: \.self) { name in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(name)
+                            Spacer(minLength: 12)
+                            Text(variables[name] ?? "")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                    }
+                }
+            } header: {
+                Text("子プロセスに渡している環境")
+            } footer: {
+                Text("ログインシェルの環境をそのまま渡しています。「ターミナルでは通るのに動かない」ときは、まずここに必要な変数が届いているかを見てください。TLS を覗くプロキシの下なら REQUESTS_CA_BUNDLE や SSL_CERT_FILE、gcloud なら CLOUDSDK_ で始まるものです。鍵やトークンに見える値は伏せています（場所を指す値は残します）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .task(id: preferences.kubectlPathOverride) {
             resolvedPath = await Kubectl.shared.resolvedExecutablePath() ?? "見つかりません"
             searchPath = await Kubectl.shared.resolvedSearchPath() ?? "確認できません"
+            variables = await Kubectl.shared.resolvedVariables()
         }
     }
 }
