@@ -87,6 +87,27 @@ private struct GeneralSettings: View {
             }
 
             Section {
+                Picker("タイルの大きさ", selection: $preferences.placementTileSize) {
+                    ForEach(PlacementTileSize.allCases) { size in
+                        Text(size.title).tag(size)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Picker("ノードの並び", selection: $preferences.placementNodeOrder) {
+                    ForEach(PlacementNodeOrder.allCases) { order in
+                        Text(order.title).tag(order)
+                    }
+                }
+                Toggle("Pod が 0 のノードを隠す", isOn: $preferences.placementHidesEmptyNodes)
+            } header: {
+                Text("配置")
+            } footer: {
+                Text("「小」は名前を出さず、しるしだけを並べます。Pod が数百ある環境では、名前を落としたほうが偏りを見渡せます（名前と状態は、タイルを指すと出ます）。空のノードを隠すと縦は縮みますが、受け入れ先が空いていることは見えなくなります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Button("すべて既定値に戻す", role: .destructive) { confirmsReset = true }
             }
         }

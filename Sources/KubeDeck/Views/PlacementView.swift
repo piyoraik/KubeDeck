@@ -66,6 +66,11 @@ struct PlacementView: View {
         var groups = store.placementNodes.map { node in
             Group(id: node.name, node: node, pods: byNode.removeValue(forKey: node.name) ?? [])
         }
+        if Preferences.shared.placementHidesEmptyNodes {
+            groups.removeAll { $0.pods.isEmpty }
+        }
+        groups = sorted(groups)
+
         // ノードの一覧に無い名前が残ったら、それも出す（取得の隙間で
         // ノードだけ消えた、という状態を黙って捨てない）。
         for (name, pods) in byNode.sorted(by: { $0.key < $1.key }) {
@@ -75,6 +80,40 @@ struct PlacementView: View {
             groups.append(Group(id: "未スケジュール", node: nil, pods: unscheduled))
         }
         return groups
+    }
+
+    /// **並べ替えるのはノードの箱だけ。** 出自の分からない箱と未スケジュールは
+    /// 常に最後に置く（並びの中に紛れると、ノードの 1 つに見える）。
+    private func sorted(_ groups: [Group]) -> [Group] {
+        switch Preferences.shared.placementNodeOrder {
+        case .name:
+            return groups.sorted { $0.name < $1.name }
+        case .podCount:
+            return groups.sorted {
+                $0.pods.count == $1.pods.count
+                    ? $0.name < $1.name : $0.pods.count > $1.pods.count
+            }
+        case .usage:
+            // 使用率が取れないノードは末尾へ。0 とみなして上に出すと、
+            // 「使っていない」と「測れていない」が混ざる。
+            return groups.sorted {
+                let left = usageRatio(of: $0)
+                let right = usageRatio(of: $1)
+                if let left, let right { return left == right ? $0.name < $1.name : left > right }
+                if left != nil { return true }
+                if right != nil { return false }
+                return $0.name < $1.name
+            }
+        }
+    }
+
+    private func usageRatio(of group: Group) -> Double? {
+        guard let node = group.node, let usage = store.metrics.nodes[node.name] else { return nil }
+        let allocatable = node.nodeAllocatable
+        let cpu = Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores)
+        let memory = Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes)
+        guard let value = [cpu, memory].compactMap({ $0 }).max() else { return nil }
+        return value
     }
 
     // MARK: - 中身が無いとき
@@ -177,16 +216,22 @@ private struct NodeCard: View {
 
 private struct PodTileGrid: View {
     let pods: [K8sObject]
+    @State private var preferences = Preferences.shared
 
     var body: some View {
+        let size = preferences.placementTileSize
         // 幅に合わせて折り返す。Pod は 200 を超えることがあるので、
         // 1 行に固定すると横スクロールになる。
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 150, maximum: 260), spacing: 6)],
-            alignment: .leading, spacing: 6
+            columns: [
+                GridItem(
+                    .adaptive(minimum: size.minimumWidth, maximum: size.maximumWidth),
+                    spacing: size.showsName ? 6 : 4)
+            ],
+            alignment: .leading, spacing: size.showsName ? 6 : 4
         ) {
             ForEach(sorted) { pod in
-                PodTile(pod: pod)
+                PodTile(pod: pod, size: size)
             }
         }
     }
@@ -207,6 +252,7 @@ private struct PodTileGrid: View {
 private struct PodTile: View {
     @Environment(ClusterStore.self) private var store
     let pod: K8sObject
+    let size: PlacementTileSize
 
     private var isSelected: Bool { store.selectedObjectID == pod.id }
 
@@ -216,19 +262,7 @@ private struct PodTile: View {
         Button {
             store.selectedObjectID = pod.id
         } label: {
-            HStack(spacing: 6) {
-                // 色だけに意味を持たせない。左の帯と同じ色のしるしを添える。
-                Image(systemName: status.level.symbol)
-                    .font(.system(size: 8))
-                    .foregroundStyle(Palette.color(for: status.level))
-                Text(pod.name)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            tileBody(status)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6)
@@ -241,5 +275,28 @@ private struct PodTile: View {
         }
         .buttonStyle(.plain)
         .help("\(pod.namespace ?? "-")/\(pod.name) · \(status.text)")
+    }
+
+    /// **小のときも色だけにしない。** 名前が入らないぶん、指したときに
+    /// 名前と状態が出るようにしてある（`help`）。形と色だけで意味を運ばせない。
+    @ViewBuilder
+    private func tileBody(_ status: ResourceStatus) -> some View {
+        if size.showsName {
+            HStack(spacing: 6) {
+                // 色だけに意味を持たせない。同じ色のしるしを添える。
+                Image(systemName: status.level.symbol)
+                    .font(.system(size: 8))
+                    .foregroundStyle(Palette.color(for: status.level))
+                Text(pod.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+        } else {
+            Color.clear.frame(width: 22, height: 22)
+        }
     }
 }

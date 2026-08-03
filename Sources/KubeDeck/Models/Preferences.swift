@@ -26,6 +26,10 @@ final class Preferences {
         static let showsCustomResources = "showsCustomResources"
         static let hidesEmptyKinds = "hidesEmptyKinds"
 
+        static let placementTileSize = "placementTileSize"
+        static let placementNodeOrder = "placementNodeOrder"
+        static let placementHidesEmptyNodes = "placementHidesEmptyNodes"
+
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
         static let logFollowsByDefault = "logFollowsByDefault"
@@ -80,6 +84,24 @@ final class Preferences {
     /// 未取得を 0 とみなして隠すと、種別そのものが消えたように見える。
     var hidesEmptyKinds: Bool {
         didSet { store.set(hidesEmptyKinds, forKey: Key.hidesEmptyKinds) }
+    }
+
+    // MARK: - 配置
+
+    /// タイルの大きさ。Pod が数百ある環境では名前を落としたほうが見渡せる。
+    var placementTileSize: PlacementTileSize = .medium {
+        didSet { store.set(placementTileSize.rawValue, forKey: Key.placementTileSize) }
+    }
+
+    /// ノードの並び。偏りを探すときは Pod 数や使用率の順が要る。
+    var placementNodeOrder: PlacementNodeOrder = .name {
+        didSet { store.set(placementNodeOrder.rawValue, forKey: Key.placementNodeOrder) }
+    }
+
+    /// Pod が 0 のノードを隠すか。**既定は出す。** 空いているノードが見えないと
+    /// 偏りの片側が分からない。数が多くて邪魔なときだけ切る。
+    var placementHidesEmptyNodes = false {
+        didSet { store.set(placementHidesEmptyNodes, forKey: Key.placementHidesEmptyNodes) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -229,6 +251,15 @@ final class Preferences {
         showsCustomResources = store.object(forKey: Key.showsCustomResources) as? Bool ?? true
         hidesEmptyKinds = store.object(forKey: Key.hidesEmptyKinds) as? Bool ?? false
 
+        placementTileSize =
+            PlacementTileSize(rawValue: store.string(forKey: Key.placementTileSize) ?? "")
+            ?? .medium
+        placementNodeOrder =
+            PlacementNodeOrder(rawValue: store.string(forKey: Key.placementNodeOrder) ?? "")
+            ?? .name
+        placementHidesEmptyNodes =
+            store.object(forKey: Key.placementHidesEmptyNodes) as? Bool ?? false
+
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
         logFollowsByDefault = store.object(forKey: Key.logFollowsByDefault) as? Bool ?? true
@@ -284,6 +315,9 @@ final class Preferences {
         hiddenKinds = []
         showsCustomResources = true
         hidesEmptyKinds = false
+        placementTileSize = .medium
+        placementNodeOrder = .name
+        placementHidesEmptyNodes = false
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
@@ -350,6 +384,62 @@ enum RowDensity: String, CaseIterable, Identifiable, Sendable {
         case .comfortable: return 13
         case .standard: return 12
         case .compact: return 11
+        }
+    }
+}
+
+
+/// 配置画面のタイルの大きさ。
+enum PlacementTileSize: String, CaseIterable, Identifiable, Sendable {
+    case small
+    case medium
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "小"
+        case .medium: return "中"
+        case .large: return "大"
+        }
+    }
+
+    /// 折り返しの下限幅。小さいほど 1 行に多く並ぶ。
+    var minimumWidth: Double {
+        switch self {
+        case .small: return 22
+        case .medium: return 150
+        case .large: return 240
+        }
+    }
+
+    var maximumWidth: Double {
+        switch self {
+        case .small: return 22
+        case .medium: return 260
+        case .large: return 380
+        }
+    }
+
+    /// 名前を出すか。**小は出さない。** 数百の Pod を名前つきで並べると、
+    /// 縦に伸びて「どこに寄っているか」という肝心の絵が見えなくなる。
+    var showsName: Bool { self != .small }
+}
+
+/// 配置画面のノードの並び。
+enum PlacementNodeOrder: String, CaseIterable, Identifiable, Sendable {
+    case name
+    case podCount
+    case usage
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .name: return "名前順"
+        case .podCount: return "Pod が多い順"
+        case .usage: return "使用率が高い順"
         }
     }
 }
