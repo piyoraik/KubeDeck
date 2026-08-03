@@ -157,18 +157,24 @@ actor Kubectl {
         // 縛らない。kubeconfig の exec 認証プラグインが返らないと（gcloud が
         // 再認証の入力を待つ、プロキシの向こうで詰まる）kubectl はいつまでも
         // 待ち、UI が読み込み中のまま固まる。実際にそうなった。
-        // API 側の待ちより少し長くして、先に kubectl 自身に諦めさせる。
+        //
+        // **絞りすぎない。** ここは「終わらないもの」を切るためだけの網で、
+        // ふつうの失敗は kubectl 自身の待ち上限が捌く。届かないクラスタでは
+        // kubectl が API グループの一覧を数回引き直すので、待ち上限の 2 倍以上
+        // かかる。そこで先に殺すと、kubectl の「届きません」を受け取り損ね、
+        // 代わりにこちらが「返ってこない」と言うことになる。**理由を上書きしない。**
         let result = try await ProcessRunner.run(
             executable: environment.executable,
             arguments: fullArguments,
             environment: environment.variables,
-            timeout: TimeInterval(timeoutSeconds + 10))
+            timeout: TimeInterval(timeoutSeconds * 2 + 15))
 
         guard !result.timedOut else {
             throw CommandError(
                 command: "kubectl " + fullArguments.joined(separator: " "),
                 exitCode: result.exitCode,
-                message: Self.timeoutMessage(seconds: timeoutSeconds + 10, stderr: result.stderr))
+                message: Self.timeoutMessage(
+                    seconds: timeoutSeconds * 2 + 15, stderr: result.stderr))
         }
         guard result.exitCode == 0 else {
             throw CommandError(
@@ -182,13 +188,25 @@ actor Kubectl {
     /// 打ち切ったときの文言。**「取れなかった」と混ぜない。**
     /// 応答が無いのと、応答が失敗なのとでは見るところが違う。
     private static func timeoutMessage(seconds: Int, stderr: String) -> String {
-        let head = "kubectl が \(seconds) 秒のあいだ返ってこなかったので打ち切りました。\n"
+        // **打ち切ったことを理由にしない。** 打ち切るまでに kubectl が何か
+        // 書き出していれば、そちらのほうが確かな手がかり。届かないクラスタで
+        // 「認証プラグインが返らない」と言うと、見る場所を間違えさせる。
+        // **言い換えを先に置く。** 帯は最初の段落しか見出しに出さないので、
+        // 打ち切った断りを先に書くと、肝心の理由が畳まれた側に入る（そうなった）。
+        if let hint = authenticationHint(for: stderr) {
+            return hint
+                + "\n（kubectl は \(seconds) 秒で返らなかったので打ち切っています。"
+                + "上は打ち切るまでに書き出されていた失敗です。）"
+                + "\n\n" + condense(stderr)
+        }
+
+        let head = "kubectl が \(seconds) 秒のあいだ何も返さなかったので打ち切りました。\n"
             + "待ち上限（`--request-timeout`）は API への要求しか縛りません。"
             + "kubeconfig の exec 認証プラグイン（`gke-gcloud-auth-plugin` など）が"
-            + "返ってこないと、ここで打ち切るまで待つことになります。\n"
-            + "ターミナルで同じコンテキストに `kubectl get pods` を実行し、"
-            + "そちらも返ってこないなら、止まっているのは認証プラグインです"
-            + "（再認証の入力を待っている、プロキシの向こうで詰まっている、など）。"
+            + "返ってこない場合は、ここで打ち切るまで待つことになります。\n"
+            + "ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、"
+            + "そちらの言い分を確かめてください。設定の「接続」で待ち上限を延ばすと、"
+            + "kubectl 自身の理由を最後まで受け取れることがあります。"
         return stderr.isEmpty ? head : head + "\n\n" + condense(stderr)
     }
 
@@ -303,6 +321,26 @@ actor Kubectl {
                 + "kubectl 1.26 以降はこの形式を読めません。\n"
                 + "`gcloud container clusters get-credentials <クラスタ名> "
                 + "--region <リージョン>` で作り直してください。"
+        }
+
+        // API サーバまで届いていない。**認証の失敗と混ぜない。**
+        // 認証が通っているからこそ、ここまで来て接続で落ちている。
+        // 上のどれにも当たらなかったときだけ見るので、いちばん最後に置く。
+        if stderr.contains("Unable to connect to the server")
+            || stderr.contains("context deadline exceeded")
+            || stderr.contains("no such host")
+            || stderr.contains("connection refused")
+            || stderr.contains("i/o timeout") {
+            var lines = ["クラスタの API サーバに届きませんでした。認証ではなく経路の問題です。"]
+            if let match = stderr.firstMatch(of: /Get \\?"https?:\/\/([^\/"\\]+)/) {
+                let host = String(match.1)
+                lines.append("宛先は `\(host)` です。"
+                    + "プライベートなアドレスであれば、VPN や社内ネットワークからでないと届きません。")
+            }
+            lines.append("ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、"
+                + "そちらも届かないか確かめてください。届かないなら、"
+                + "止まっているのは KubeDeck ではなく経路です。")
+            return lines.joined(separator: "\n")
         }
 
         return nil
