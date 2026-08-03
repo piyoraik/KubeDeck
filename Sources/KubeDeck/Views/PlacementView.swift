@@ -729,21 +729,42 @@ private struct WorkloadMap: View {
     }
 
     /// 左の一覧。**多い順のまま出す。** 探しているのはたいてい大きいもの。
+    ///
+    /// **`List` を使わない。** macOS の `List` は自前で最小幅を要求し、
+    /// `NavigationSplitView` の詳細の中に横並びで置くと、列がまとめて窓より
+    /// 広がる。**サイドバーの左端と詳細パネルの右端が切れた**（この画面だけ
+    /// 起きるのはそのため）。自前の行にすれば幅はこちらが決められる。
     private var picker: some View {
-        List(selection: Binding(get: { focus }, set: { focus = $0 })) {
-            ForEach(spreads) { spread in
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(spreads) { spread in
+                    row(spread)
+                    Divider().opacity(0.4)
+                }
+            }
+        }
+        .frame(width: 220)
+        .background(Palette.insetFill.opacity(0.5))
+        // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
+        // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。
+        // 一覧が変わるたびに、選択が無効なら選び直す。
+        .onChange(of: spreads.map(\.id), initial: true) { _, ids in
+            if focus == nil || !ids.contains(focus!) { focus = ids.first }
+        }
+    }
+
+    private func row(_ spread: PlacementView.Spread) -> some View {
+        let isSelected = focus == spread.id
+
+        return Button {
+            focus = spread.id
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 6) {
-                        Text(spread.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 6)
-                        Text("\(spread.podCount)")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(spread.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     // 同じ名前が別の Namespace に居ることがある。添えないと選べない。
                     if let namespace = spread.namespace {
                         Text(namespace)
@@ -752,17 +773,19 @@ private struct WorkloadMap: View {
                             .lineLimit(1)
                     }
                 }
-                // **名前ではなく id で選ぶ。** 名前は重複しうる。
-                .tag(spread.id)
+                Spacer(minLength: 6)
+                Text("\(spread.podCount)")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.20) : .clear)
+            .contentShape(Rectangle())
         }
-        .frame(width: 240)
-        // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
-        // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。
-        // 一覧が変わるたびに、選択が無効なら選び直す。
-        .onChange(of: spreads.map(\.id), initial: true) { _, ids in
-            if focus == nil || !ids.contains(focus!) { focus = ids.first }
-        }
+        .buttonStyle(.plain)
     }
 
     private var branch: Branch? {
@@ -936,7 +959,7 @@ private struct BranchTree: View {
             Text(branch.name)
                 .font(.caption.weight(.medium))
                 .multilineTextAlignment(.center)
-                .frame(width: 120)
+                .frame(maxWidth: 120)
                 .lineLimit(2)
         }
     }
@@ -991,7 +1014,10 @@ private struct PodBranchRow: View {
                             .font(.caption2)
                             .foregroundStyle(Palette.textColor(for: status.level))
                     }
-                    .frame(width: 210, alignment: .leading)
+                    // **`width` で決め打ちしない。** 縮められない最小幅になり、
+                    // 詳細の欄が窓より広がって、サイドバーとインスペクタの
+                    // 両端が切れる（この画面だけ起きていた）。上限にする。
+                    .frame(maxWidth: 210, alignment: .leading)
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -1019,7 +1045,9 @@ private struct PodBranchRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(width: 170, alignment: .leading)
+                    // 下限は残す。無いと、伸び縮みの中でここから潰れて
+                    // 矢印の先が空になる。
+                    .frame(minWidth: 70, maxWidth: 170, alignment: .leading)
             }
         }
     }
