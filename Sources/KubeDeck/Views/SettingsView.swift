@@ -98,11 +98,12 @@ private struct GeneralSettings: View {
                         Text(order.title).tag(order)
                     }
                 }
+                Toggle("ワークロードでまとめる", isOn: $preferences.placementGroupsByWorkload)
                 Toggle("Pod が 0 のノードを隠す", isOn: $preferences.placementHidesEmptyNodes)
             } header: {
                 Text("配置")
             } footer: {
-                Text("「小」は名前を出さず、しるしだけを並べます。Pod が数百ある環境では、名前を落としたほうが偏りを見渡せます（名前と状態は、タイルを指すと出ます）。空のノードを隠すと縦は縮みますが、受け入れ先が空いていることは見えなくなります。")
+                Text("「小」は名前を出さず、しるしだけを並べます。Pod が数百ある環境では、名前を落としたほうが偏りを見渡せます（名前と状態は、タイルを指すと出ます）。ワークロードでまとめると、同じ Deployment のレプリカが 1 行にまとまります（ReplicaSet ではなく Deployment まで辿るので、更新してもまとまりは変わりません）。空のノードを隠すと縦は縮みますが、受け入れ先が空いていることは見えなくなります。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

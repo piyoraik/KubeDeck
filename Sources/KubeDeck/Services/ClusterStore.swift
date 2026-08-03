@@ -98,6 +98,10 @@ final class ClusterStore {
     /// 配置画面のノード。Pod のほうは `objects` に入れる（検索と選択を
     /// 一覧と同じ経路に載せるため）。
     var placementNodes: [K8sObject] = []
+    /// ReplicaSet と Job。Pod の所有者を Deployment / CronJob まで辿るために持つ。
+    /// **ReplicaSet 名で束ねない。** `<Deployment 名>-<ハッシュ>` なので、
+    /// 更新のたびに別のまとまりに見える。
+    var placementControllers: [K8sObject] = []
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
 
@@ -202,6 +206,17 @@ final class ClusterStore {
     }
 
     var namespaceLabel: String { selectedNamespace ?? "すべての Namespace" }
+
+    /// 配置画面が所有者を辿るための索引。`Namespace/種別/名前` で引く。
+    /// 毎回 `first(where:)` で舐めると Pod の数だけ線形探索になる。
+    var controllerIndex: [String: K8sObject] {
+        var index: [String: K8sObject] = [:]
+        for object in placementControllers {
+            guard let kind = object.kind else { continue }
+            index["\(object.namespace ?? "")/\(kind.apiKind)/\(object.name)"] = object
+        }
+        return index
+    }
 
     /// 概要を一度でも読めたか。読めていない件数を 0 と偽らないための判定。
     var hasOverviewData: Bool { !loadedOverviewCounts.isEmpty }
@@ -345,17 +360,21 @@ final class ClusterStore {
                     self.loadedOverviewCounts = snapshot.counts
                     self.serverVersion = snapshot.serverVersion
                 case .placement:
-                    // Pod とノードを 1 回の kubectl でまとめて取る。
-                    // 別々に投げるとプロセスが 2 本になり、片方だけ新しい
+                    // Pod・ノード・所有者を 1 回の kubectl でまとめて取る。
+                    // 別々に投げるとプロセスがそのぶん増え、片方だけ新しい
                     // 状態が混ざる（同じ時点の絵にならない）。
                     let loaded = try await self.kubectl.list(
-                        kinds: [.pod, .node], context: context, namespace: namespace)
+                        kinds: [.pod, .node, .replicaSet, .job],
+                        context: context, namespace: namespace)
                     guard token == self.generation else { return }
                     self.objects = Self.sorted(
                         loaded.filter { $0.kind == .pod }, kind: .pod)
                     self.placementNodes = loaded
                         .filter { $0.kind == .node }
                         .sorted { $0.name < $1.name }
+                    self.placementControllers = loaded.filter {
+                        $0.kind == .replicaSet || $0.kind == .job
+                    }
                 case .resource(let target):
                     let loaded: [K8sObject]
                     if target.builtIn == .event {

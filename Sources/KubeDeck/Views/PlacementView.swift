@@ -150,6 +150,12 @@ private struct NodeCard: View {
                 Text("このノードに Pod はありません。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+            } else if Preferences.shared.placementGroupsByWorkload {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(workloads, id: \.name) { workload in
+                        WorkloadRow(workload: workload)
+                    }
+                }
             } else {
                 PodTileGrid(pods: group.pods)
             }
@@ -200,6 +206,57 @@ private struct NodeCard: View {
         }
     }
 
+    /// 所有者でまとめたもの。多い順に出す（偏りを見る画面なので）。
+    private var workloads: [Workload] {
+        let index = store.controllerIndex
+        var byOwner: [String: [K8sObject]] = [:]
+        var order: [String] = []
+        for pod in group.pods {
+            let name = Self.owner(of: pod, controllers: index) ?? "単体の Pod"
+            if byOwner[name] == nil { order.append(name) }
+            byOwner[name, default: []].append(pod)
+        }
+        return order
+            .map { Workload(name: $0, pods: byOwner[$0] ?? []) }
+            .sorted {
+                $0.pods.count == $1.pods.count
+                    ? $0.name < $1.name : $0.pods.count > $1.pods.count
+            }
+    }
+
+    /// Pod の所有者の名前。
+    ///
+    /// **ReplicaSet と Job で止めない。** ReplicaSet 名は
+    /// `<Deployment 名>-<ハッシュ>` で、更新のたびに別のまとまりに見える。
+    /// Job も CronJob から作られたものは実行のたびに名前が変わる。
+    /// もう一段辿って Deployment / CronJob の名前にする。
+    static func owner(of pod: K8sObject, controllers: [String: K8sObject]) -> String? {
+        guard let reference = controllerReference(of: pod) else { return nil }
+        if reference.kind == "ReplicaSet" || reference.kind == "Job" {
+            let key = "\(pod.namespace ?? "")/\(reference.kind)/\(reference.name)"
+            if let parent = controllers[key],
+               let grandparent = controllerReference(of: parent) {
+                return grandparent.name
+            }
+        }
+        return reference.name
+    }
+
+    /// 支配している所有者。`controller: true` のものを採る。
+    /// 無ければ先頭（`ownerReferences` は複数持てるが、支配者は 1 つだけ）。
+    private static func controllerReference(
+        of object: K8sObject
+    ) -> (kind: String, name: String)? {
+        let references = object.raw.path("metadata.ownerReferences")?.arrayValue ?? []
+        let controller = references.first { $0["controller"]?.boolValue == true }
+            ?? references.first
+        guard let controller,
+              let kind = controller["kind"]?.stringValue,
+              let name = controller["name"]?.stringValue
+        else { return nil }
+        return (kind, name)
+    }
+
     /// ノードの使用率。取れないときは行ごと出さない（`0%` と書かない）。
     private var usageText: String? {
         guard let node = group.node,
@@ -209,6 +266,42 @@ private struct NodeCard: View {
               let memory = Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes)
         else { return nil }
         return "CPU \(Quantity.formatPercent(cpu)) · メモリ \(Quantity.formatPercent(memory))"
+    }
+}
+
+// MARK: - 所有者ごとの 1 行
+
+struct Workload: Identifiable {
+    let name: String
+    let pods: [K8sObject]
+
+    var id: String { name }
+}
+
+/// 所有者の名前と件数を左に、その Pod のタイルを右に。
+///
+/// **タイルを 1 つにまとめない。** まとめると個々の Pod を選べなくなり、
+/// 1 つだけ落ちている、という配置画面でいちばん見たい状態が消える。
+/// まとめるのは見出しだけで、タイルはそのまま並べる。
+private struct WorkloadRow: View {
+    let workload: Workload
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            HStack(spacing: 4) {
+                Text(workload.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("×\(workload.pods.count)")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 190, alignment: .leading)
+
+            PodTileGrid(pods: workload.pods)
+        }
     }
 }
 

@@ -29,6 +29,7 @@ final class Preferences {
         static let placementTileSize = "placementTileSize"
         static let placementNodeOrder = "placementNodeOrder"
         static let placementHidesEmptyNodes = "placementHidesEmptyNodes"
+        static let placementGroupsByWorkload = "placementGroupsByWorkload"
 
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
@@ -102,6 +103,12 @@ final class Preferences {
     /// 偏りの片側が分からない。数が多くて邪魔なときだけ切る。
     var placementHidesEmptyNodes = false {
         didSet { store.set(placementHidesEmptyNodes, forKey: Key.placementHidesEmptyNodes) }
+    }
+
+    /// Pod を所有者（Deployment など）でまとめるか。
+    /// **既定はまとめる。** レプリカが並ぶだけの Pod 名を数百並べても読めない。
+    var placementGroupsByWorkload = true {
+        didSet { store.set(placementGroupsByWorkload, forKey: Key.placementGroupsByWorkload) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -259,6 +266,8 @@ final class Preferences {
             ?? .name
         placementHidesEmptyNodes =
             store.object(forKey: Key.placementHidesEmptyNodes) as? Bool ?? false
+        placementGroupsByWorkload =
+            store.object(forKey: Key.placementGroupsByWorkload) as? Bool ?? true
 
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
@@ -318,6 +327,7 @@ final class Preferences {
         placementTileSize = .medium
         placementNodeOrder = .name
         placementHidesEmptyNodes = false
+        placementGroupsByWorkload = true
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
