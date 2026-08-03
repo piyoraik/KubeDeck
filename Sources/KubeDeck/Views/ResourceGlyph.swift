@@ -28,10 +28,13 @@ struct Heptagon: Shape {
 /// **色だけで種別を表さない。** 記号を入れ、必要なら名前を添える。
 /// 状態は器の色ではなく、右上の小さなしるしで示す（種別と状態は別の話で、
 /// 器の色を状態に使うと種別が読めなくなる）。
+///
+/// **既定色を `Color.accentColor` にしない。** 窓が前面でないあいだ SwiftUI が
+/// accent を灰色に落とすので、図が焦点の有無で色を失う。`Palette.diagram` を使う。
 struct ResourceGlyph: View {
     let symbol: String
     var size: CGFloat = 34
-    var tint: Color = .accentColor
+    var tint: Color = Palette.diagram
     /// 異常などを示すしるし。正常なら付けない（合格印で埋め尽くさない）。
     var badge: StatusLevel?
 
@@ -65,7 +68,7 @@ struct ResourceGlyph: View {
 struct DiagramBox<Content: View>: View {
     let title: String
     var symbol: String?
-    var tint: Color = .accentColor
+    var tint: Color = Palette.diagram
     @ViewBuilder var content: Content
 
     var body: some View {

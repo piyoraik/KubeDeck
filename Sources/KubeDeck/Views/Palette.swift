@@ -62,6 +62,19 @@ enum Palette {
     static let seriesCPU = Color.adaptive(light: 0x2A_78_D6, dark: 0x39_87_E5)
     static let seriesMemory = Color.adaptive(light: 0xEB_68_34, dark: 0xD9_59_26)
 
+    /// 図の器と囲みの色（Kubernetes の構成図でおなじみの青）。
+    ///
+    /// **`Color.accentColor` に預けない。** SwiftUI の accent は窓が前面に
+    /// 無いあいだ灰色に落ちるので、図が焦点の有無で色を失う（別の環境で
+    /// 撮った画面では七角形も囲みも全部灰色になっていた）。アクセントカラーに
+    /// グラファイトを選んでいる人の環境でも同じことが起きる。図の色は
+    /// 「これは Kubernetes の構成図だ」というしるしなので、状態の 4 色と
+    /// 同じく外の設定で振らせない。
+    ///
+    /// **状態には使わない。** 器の色は種別のためのもので、異常は右上の
+    /// しるしが持つ（`ResourceGlyph`）。
+    static let diagram = Color.adaptive(light: 0x32_6C_E5, dark: 0x4B_86_EA)
+
     /// カードの面。ウインドウ背景から一段持ち上げる。
     static let cardBackground = Color(nsColor: .controlBackgroundColor)
     static let hairline = Color(nsColor: .separatorColor)

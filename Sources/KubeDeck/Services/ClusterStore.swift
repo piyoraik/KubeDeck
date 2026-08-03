@@ -504,7 +504,8 @@ final class ClusterStore {
            await PrometheusClient.shared.probe(saved, context: context) {
             prometheus = saved
         } else {
-            let found = await PrometheusClient.shared.discover(context: context)
+            let found = await PrometheusClient.shared.discover(
+                context: context, namespace: selectedNamespace)
             prometheus = found
             Defaults.prometheus = found
         }

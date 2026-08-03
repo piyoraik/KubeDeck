@@ -937,7 +937,7 @@ private struct BranchTree: View {
     }
 
     private func node(
-        _ object: K8sObject, kind: ResourceKind, tint: Color = .accentColor
+        _ object: K8sObject, kind: ResourceKind, tint: Color = Palette.diagram
     ) -> some View {
         HStack(spacing: 7) {
             ResourceGlyph(symbol: kind.symbol, size: 28, tint: tint)
@@ -976,7 +976,7 @@ private struct BranchTree: View {
     private func generation(_ controller: Branch.Controller) -> some View {
         DiagramBox(
             title: controller.name, symbol: ResourceKind.replicaSet.symbol,
-            tint: controller.pods.isEmpty ? .secondary : .accentColor
+            tint: controller.pods.isEmpty ? .secondary : Palette.diagram
         ) {
             if controller.pods.isEmpty {
                 Text("Pod はありません（古い世代）")

@@ -278,6 +278,8 @@ metrics API は CPU をナノコア（`81768992n`）、メモリを `Ki` で返�
 
 **探索は名前だけで決めない。** 候補に `/api/v1/query` を投げ、Prometheus 互換の応答が返ったものだけを採用する。見つけた場所は `UserDefaults` に覚えるが、起動時に必ず一度叩き直す。
 
+**全 Namespace が引けないクラスタで諦めない。** 候補集めは `get services --all-namespaces` から始めるが、Connect Gateway 越しの GKE や 1 つの Namespace にしか権限が無い環境では、ここが拒まれる。そこで nil を返すと、Prometheus が入っていても永久に見つからず、**概要の使用量が棒のまま（推移の折れ線が出ないまま）になる。** `metricsServerAvailable` と同じく、全 Namespace → 選択中の Namespace の順に試す。それでも届かないところは設定から手で指定できる（`useManualPrometheus`）。
+
 **指標の出どころは環境で変わる。** kube-prometheus-stack は kubelet の cAdvisor（`/metrics/cadvisor`）を拾うが、orbstack の k3s ではそこに `machine_*` しか出ておらず、コンテナ単位の値は `/metrics/resource` にある。**幸い指標名は同じ**（`container_cpu_usage_seconds_total` / `container_memory_working_set_bytes`）なので、クエリは両対応で書ける。node 単位の集計は `node` ラベルに依存し、これは scrape 側の relabel 次第で在ったり無かったりする。
 
 **履歴の取得間隔は一覧と分ける。** 範囲クエリは 1 回につき kubectl を 1 本起こす。自動更新（既定 10 秒）に合わせると 4 本増える。30 分幅のグラフにその頻度は要らないので 60 秒間隔。選択が変わったときだけ間隔を無視する。
@@ -327,6 +329,13 @@ Kubernetes の構成図の作りに合わせる。器は**七角形**（`Heptago
 **器の色を状態に使わない。** 種別と状態は別の話で、器を状態色で塗ると種別が
 読めなくなる。状態は右上の小さなしるしで示し、正常なときは付けない
 （合格印で埋め尽くさない）。
+
+**器の色をアクセントカラーに預けない。** 既定を `Color.accentColor` にしていたら、
+アクセントにグラファイトを選んでいる環境で**七角形も囲みも全部灰色になった**
+（別のマシンで撮った画面で判明）。図の青は「これは Kubernetes の構成図だ」という
+しるしなので、状態の 4 色と同じく外の設定で振らせない（`Palette.diagram`）。
+**選択の色は逆にアクセントのまま。** あちらは OS の作法に合わせる場所で、
+一覧やタイルの選択が系統の違う色になるほうがおかしい。
 
 **見出しを囲みの中に入れない。** 枠線の左上に重ねる。中に入れると、囲まれて
 いるものの 1 つに見える。

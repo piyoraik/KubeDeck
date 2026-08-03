@@ -67,9 +67,21 @@ actor PrometheusClient {
     /// 名前が一致しただけでは決めない。`/api/v1/query` に実際に投げて
     /// Prometheus 互換の応答が返るところだけを採用する。別物が同じ名前で
     /// 立っていることがあるため。
-    func discover(context: String) async -> PrometheusEndpoint? {
-        guard let services = try? await kubectl.list(.service, context: context, namespace: nil)
-        else { return nil }
+    ///
+    /// **全 Namespace が引けないクラスタで諦めない。** Connect Gateway 越しの
+    /// GKE や、1 つの Namespace にだけ権限のある環境では
+    /// `get services --all-namespaces` が拒まれる。そこで nil を返すと、
+    /// Prometheus が入っていても永久に見つからず、概要の使用量が棒のまま
+    /// （推移の折れ線が出ないまま）になる。metrics-server の判定
+    /// （`Kubectl.metricsServerAvailable`）と同じく、全 Namespace →
+    /// 選択中の Namespace の順に試す。
+    func discover(context: String, namespace: String?) async -> PrometheusEndpoint? {
+        var services = try? await kubectl.list(.service, context: context, namespace: nil)
+        if services == nil || services?.isEmpty == true,
+           let namespace, !namespace.isEmpty {
+            services = try? await kubectl.list(.service, context: context, namespace: namespace)
+        }
+        guard let services else { return nil }
 
         var candidates: [PrometheusEndpoint] = []
         for service in services {
