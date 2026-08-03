@@ -98,6 +98,16 @@ enum SettingsDigest {
                     SettingRow("fsGroup", security?["fsGroup"]?.intValue.map(String.init)),
                 ]))
 
+        // **足し算を読み手にさせない。** スケジューラが見るのも、上限に当たるかを
+        // 決めるのも Pod 単位の合計で、コンテナごとの値だけを並べると、複数
+        // コンテナの Pod では自分で足すことになる。
+        // 初期化コンテナは同時に動かないので合計に入れない（`containerResourceTotal`
+        // と同じ扱い。ここでずれると 2 か所で違う数字が出る）。
+        //
+        // **先頭に置く。** いちばん探される項目で、下に置くと配置や権限を
+        // かき分けることになる。
+        groups.insert(resourceGroup(pod), at: 0)
+
         for container in spec?["containers"]?.arrayValue ?? [] {
             groups.append(containerGroup(container, status: pod.status))
         }
@@ -120,6 +130,40 @@ enum SettingsDigest {
         }
 
         return groups
+    }
+
+    /// Pod 全体の要求と上限。
+    ///
+    /// **未設定を空欄にしない。** requests が無ければスケジューラは置き場所を
+    /// 決める根拠を持たず、limits が無ければノードの空きまで伸びられる。
+    /// どちらも「設定されているが 0」とは意味が違うので、そう書く。
+    private static func resourceGroup(_ pod: K8sObject) -> SettingGroup {
+        let requests = pod.containerResourceTotal("requests")
+        let limits = pod.containerResourceTotal("limits")
+
+        func cpu(_ value: Double) -> String? {
+            value > 0 ? Quantity.formatCPU(cores: value) : nil
+        }
+        func memory(_ value: Double) -> String? {
+            value > 0 ? Quantity.formatMemory(bytes: value) : nil
+        }
+
+        var subtitle: String?
+        if requests.cpuCores == 0 && requests.memoryBytes == 0 {
+            subtitle = "requests が未設定です"
+        } else if limits.cpuCores == 0 && limits.memoryBytes == 0 {
+            subtitle = "limits が未設定です"
+        }
+
+        return SettingGroup(
+            title: "資源（Pod 合計）",
+            rows: [
+                SettingRow("CPU 要求", cpu(requests.cpuCores)),
+                SettingRow("CPU 上限", cpu(limits.cpuCores)),
+                SettingRow("メモリ要求", memory(requests.memoryBytes)),
+                SettingRow("メモリ上限", memory(limits.memoryBytes)),
+            ],
+            subtitle: subtitle)
     }
 
     private static func containerGroup(_ container: JSONValue, status: JSONValue?) -> SettingGroup {

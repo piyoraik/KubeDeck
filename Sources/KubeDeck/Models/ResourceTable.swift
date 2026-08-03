@@ -391,38 +391,60 @@ enum ResourceTable {
         guard kind == .pod || kind == .node else { return [] }
         let snapshot = metrics
 
+        // Pod は requests、Node は allocatable が分母。**分母は必ず一緒に出す。**
+        // 使用量だけでは、それが多いのか少ないのか判断できない。
         return [
-            ResourceColumn(title: "CPU", width: .fixed(kind == .node ? 110 : 74), trailing: true) {
-                object in
-                guard let usage = snapshot.usage(for: object) else {
-                    // 取れていないものを 0 と書かない。集計直後の Pod は
-                    // まだ値が無く、それは「使っていない」ではない。
-                    return ResourceCell(text: "—", emphasis: .secondary)
-                }
-                let text = Quantity.formatCPU(cores: usage.cpuCores)
-                guard kind == .node,
-                      let ratio = Quantity.ratio(
-                        usage.cpuCores, of: object.nodeAllocatable.cpuCores)
-                else { return ResourceCell(text: text, emphasis: .mono) }
-                return ResourceCell(
-                    text: "\(text) (\(Quantity.formatPercent(ratio)))",
-                    emphasis: .mono, level: usageLevel(ratio))
+            ResourceColumn(
+                title: kind == .node ? "CPU" : "CPU / 要求",
+                width: .fixed(kind == .node ? 110 : 118), trailing: true
+            ) { object in
+                usageCell(
+                    used: snapshot.usage(for: object)?.cpuCores,
+                    base: kind == .node
+                        ? object.nodeAllocatable.cpuCores
+                        : object.containerResourceTotal("requests").cpuCores,
+                    showsBase: kind != .node,
+                    format: { Quantity.formatCPU(cores: $0) })
             },
-            ResourceColumn(title: "メモリ", width: .fixed(kind == .node ? 120 : 80), trailing: true) {
-                object in
-                guard let usage = snapshot.usage(for: object) else {
-                    return ResourceCell(text: "—", emphasis: .secondary)
-                }
-                let text = Quantity.formatMemory(bytes: usage.memoryBytes)
-                guard kind == .node,
-                      let ratio = Quantity.ratio(
-                        usage.memoryBytes, of: object.nodeAllocatable.memoryBytes)
-                else { return ResourceCell(text: text, emphasis: .mono) }
-                return ResourceCell(
-                    text: "\(text) (\(Quantity.formatPercent(ratio)))",
-                    emphasis: .mono, level: usageLevel(ratio))
+            ResourceColumn(
+                title: kind == .node ? "メモリ" : "メモリ / 要求",
+                width: .fixed(kind == .node ? 120 : 132), trailing: true
+            ) { object in
+                usageCell(
+                    used: snapshot.usage(for: object)?.memoryBytes,
+                    base: kind == .node
+                        ? object.nodeAllocatable.memoryBytes
+                        : object.containerResourceTotal("requests").memoryBytes,
+                    showsBase: kind != .node,
+                    format: { Quantity.formatMemory(bytes: $0) })
             },
         ]
+    }
+
+    /// 使用量のセル。
+    ///
+    /// **「取れていない」と「未設定」を混ぜない。** 使用量が引けないときは `—`、
+    /// 使用量はあるが分母（requests）が無いときは `156m / 未設定`。前者は
+    /// metrics-server の話で、後者は Pod の書き方の話なので、見る場所が違う。
+    private static func usageCell(
+        used: Double?, base: Double, showsBase: Bool, format: (Double) -> String
+    ) -> ResourceCell {
+        guard let used else {
+            // 取れていないものを 0 と書かない。集計直後の Pod はまだ値が無く、
+            // それは「使っていない」ではない。
+            return ResourceCell(text: "—", emphasis: .secondary)
+        }
+        let text = format(used)
+        guard let ratio = Quantity.ratio(used, of: base) else {
+            return showsBase
+                ? ResourceCell(text: "\(text) / 未設定", emphasis: .mono)
+                : ResourceCell(text: text, emphasis: .mono)
+        }
+        return ResourceCell(
+            text: showsBase
+                ? "\(text) / \(format(base))"
+                : "\(text) (\(Quantity.formatPercent(ratio)))",
+            emphasis: .mono, level: usageLevel(ratio))
     }
 
     /// 使用率の色分け。しきい値は設定から（既定は運用でよく使う 80% / 90%）。

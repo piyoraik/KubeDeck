@@ -187,17 +187,31 @@ private struct SummaryPane: View {
     /// 分母が無いときは棒を出さず数字だけにする（0% と描くと使い切っていないと読める）。
     @ViewBuilder
     private func usageMeters(_ usage: ResourceUsage) -> some View {
-        let limits = denominator
+        let base = denominator
+        // **分母が何なのかを書く。** Pod は requests、Node は allocatable で、
+        // 数字だけ並べるとどちらを見ているのか分からない。
+        let label = object.kind == .node ? "割り当て可能" : "要求"
+        let caps = object.kind == .pod ? object.containerResourceTotal("limits") : ResourceUsage()
+
         UsageMeter(
             title: "CPU",
             used: Quantity.formatCPU(cores: usage.cpuCores),
-            total: limits.cpuCores > 0 ? Quantity.formatCPU(cores: limits.cpuCores) : "",
-            ratio: Quantity.ratio(usage.cpuCores, of: limits.cpuCores))
+            total: base.cpuCores > 0 ? "\(label) \(Quantity.formatCPU(cores: base.cpuCores))" : "",
+            ratio: Quantity.ratio(usage.cpuCores, of: base.cpuCores),
+            note: limitNote(
+                used: usage.cpuCores, cap: caps.cpuCores,
+                format: { Quantity.formatCPU(cores: $0) }),
+            noteLevel: limitLevel(used: usage.cpuCores, cap: caps.cpuCores))
         UsageMeter(
             title: "メモリ",
             used: Quantity.formatMemory(bytes: usage.memoryBytes),
-            total: limits.memoryBytes > 0 ? Quantity.formatMemory(bytes: limits.memoryBytes) : "",
-            ratio: Quantity.ratio(usage.memoryBytes, of: limits.memoryBytes))
+            total: base.memoryBytes > 0
+                ? "\(label) \(Quantity.formatMemory(bytes: base.memoryBytes))" : "",
+            ratio: Quantity.ratio(usage.memoryBytes, of: base.memoryBytes),
+            note: limitNote(
+                used: usage.memoryBytes, cap: caps.memoryBytes,
+                format: { Quantity.formatMemory(bytes: $0) }),
+            noteLevel: limitLevel(used: usage.memoryBytes, cap: caps.memoryBytes))
 
         if object.kind == .pod, let perContainer = containerUsage, perContainer.count > 1 {
             Divider().padding(.vertical, 2)
@@ -218,12 +232,33 @@ private struct SummaryPane: View {
             }
         }
 
-        if object.kind == .pod, limits.cpuCores == 0, limits.memoryBytes == 0 {
-            Text("requests が設定されていないため、割合は出せません。")
+        if object.kind == .pod, base.cpuCores == 0, base.memoryBytes == 0 {
+            Text("requests が未設定なので、割合は出せません。"
+                + "スケジューラが置き場所を決める根拠も無い状態です。")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 棒の下に出す上限の行。
+    ///
+    /// **未設定を空欄にしない。** 上限が無い Pod は、ノードの空きを使い切るまで
+    /// 伸びられる。空欄だと「上限が設定されている」のか「見ていないだけ」なのかが
+    /// 区別できない。
+    private func limitNote(
+        used: Double, cap: Double, format: (Double) -> String
+    ) -> String? {
+        guard object.kind == .pod else { return nil }
+        guard cap > 0 else { return "上限 未設定（ノードの空きまで使えます）" }
+        guard used > cap else { return "上限 \(format(cap))" }
+        return "上限 \(format(cap)) を超えています"
+    }
+
+    private func limitLevel(used: Double, cap: Double) -> StatusLevel? {
+        guard object.kind == .pod else { return nil }
+        if cap <= 0 { return .warning }
+        return used > cap ? .critical : nil
     }
 
     private var denominator: ResourceUsage {

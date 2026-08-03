@@ -28,6 +28,26 @@ struct UsageMeter: View {
     let total: String
     /// 0...1。分母が取れないときは nil で、そのときは棒を出さない。
     let ratio: Double?
+    /// 棒の下に 1 行だけ添える補足（上限の値など）。
+    ///
+    /// **上限を 2 本目の棒にしない。** 上限は要求より大きいのがふつうで、
+    /// 要求を基準にした棒には収まらない。割合を 2 つ並べても、どちらの
+    /// 分母を見ているのか分からなくなるだけ。数字で 1 行足す。
+    var note: String?
+    /// 補足を目立たせるか（上限を超えているときなど）。
+    var noteLevel: StatusLevel?
+
+    init(
+        title: String, used: String, total: String, ratio: Double?,
+        note: String? = nil, noteLevel: StatusLevel? = nil
+    ) {
+        self.title = title
+        self.used = used
+        self.total = total
+        self.ratio = ratio
+        self.note = note
+        self.noteLevel = noteLevel
+    }
 
     private var level: StatusLevel {
         guard let ratio else { return .neutral }
@@ -61,6 +81,14 @@ struct UsageMeter: View {
 
             if let ratio {
                 UsageBar(ratio: ratio)
+            }
+
+            if let note {
+                Text(note)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(
+                        noteLevel.map { Palette.textColor(for: $0) } ?? Color.secondary)
             }
         }
     }
