@@ -346,9 +346,15 @@ final class ClusterStore {
                     guard token == self.generation else { return }
                     self.objects = Self.sorted(loaded, kind: target.builtIn)
                 }
+                // 直前まで失敗していたか。取れるようになった瞬間を拾うため、
+                // 消す前に見ておく。
+                let wasFailing = self.errorMessage != nil
                 self.errorMessage = nil
                 self.lastUpdated = Date()
                 await self.refreshMetrics()
+                if showsSpinner || wasFailing {
+                    await self.recoverClusterInfoIfNeeded()
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -404,6 +410,23 @@ final class ClusterStore {
             total = total + node.nodeAllocatable
         }
         return snapshot
+    }
+
+    /// 開いたときに調べ損ねたものを拾い直す。
+    ///
+    /// Namespace の一覧とメトリクスの有無は「クラスタを開いたときに 1 度だけ」
+    /// 調べている。そのとき届かないと、**取れなかったのか無いのかを区別しないまま
+    /// 空で固定される**。絞り込みのメニューが使えないまま、メトリクスの列が
+    /// 出ないまま、アプリを建て直すまで直らない。実際にそうなった。
+    ///
+    /// **毎回調べ直さない。** 取れていないものがあるときだけ、しかも
+    /// 「取れるようになった瞬間」か「人が更新を押したとき」に限る。自動更新の
+    /// たびに走らせると、10 秒ごとに kubectl が 2〜3 本増える。
+    private func recoverClusterInfoIfNeeded() async {
+        if namespaces.isEmpty { await loadNamespaces() }
+        if metricsServerAvailable != true, prometheus == nil {
+            await detectMetricsSources()
+        }
     }
 
     /// 使えるメトリクスの取得元を調べる。クラスタを開いたときに一度だけ。
