@@ -24,19 +24,27 @@ struct PlacementView: View {
                 emptyState
             }
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if preferences.placementGrouping.isNodeFirst {
-                        ForEach(nodeGroups, id: \.id) { group in
-                            NodeCard(group: group)
-                        }
-                    } else {
-                        ForEach(spreads, id: \.id) { spread in
-                            WorkloadCard(spread: spread)
+            VStack(spacing: 0) {
+                // **見方の切り替えを設定にしまわない。** 「どこに載っているか」と
+                // 「どこに散っているか」は同じ画面で行き来しながら見るもので、
+                // そのたびに設定を開くのでは使えない。設定に残すのは、いちど
+                // 決めたら変えない類のもの（タイルの大きさなど）だけ。
+                modeSwitcher
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if preferences.placementGrouping.isNodeFirst {
+                            ForEach(nodeGroups, id: \.id) { group in
+                                NodeCard(group: group)
+                            }
+                        } else {
+                            ForEach(spreads, id: \.id) { spread in
+                                WorkloadCard(spread: spread)
+                            }
                         }
                     }
+                    .padding(16)
                 }
-                .padding(16)
             }
             // 並べているのは Pod なので、一覧と同じ絞り込みを付ける。
             .searchable(
@@ -44,6 +52,29 @@ struct PlacementView: View {
                 placement: .toolbar,
                 prompt: "Pod を絞り込む")
         }
+    }
+
+    private var modeSwitcher: some View {
+        @Bindable var preferences = preferences
+
+        return HStack(spacing: 12) {
+            Picker("", selection: $preferences.placementGrouping) {
+                ForEach(PlacementGrouping.allCases) { grouping in
+                    Text(grouping.title).tag(grouping)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 380)
+
+            Text(preferences.placementGrouping.help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     // MARK: - ノードを箱にする
@@ -338,13 +369,18 @@ private struct NodeUsageBars: View {
     var body: some View {
         if let usage = store.metrics.nodes[node.name] {
             let allocatable = node.nodeAllocatable
+            let metric = Preferences.shared.placementMetric
             HStack(alignment: .top, spacing: 20) {
-                bar(
-                    "CPU", used: usage.cpuCores, of: allocatable.cpuCores,
-                    format: { Quantity.formatCPU(cores: $0) })
-                bar(
-                    "メモリ", used: usage.memoryBytes, of: allocatable.memoryBytes,
-                    format: { Quantity.formatMemory(bytes: $0) })
+                if metric.showsCPU {
+                    bar(
+                        "CPU", used: usage.cpuCores, of: allocatable.cpuCores,
+                        format: { Quantity.formatCPU(cores: $0) })
+                }
+                if metric.showsMemory {
+                    bar(
+                        "メモリ", used: usage.memoryBytes, of: allocatable.memoryBytes,
+                        format: { Quantity.formatMemory(bytes: $0) })
+                }
             }
         } else {
             // 0% と描かない。「使っていない」と「測れていない」は別。
@@ -569,16 +605,27 @@ private struct PodTile: View {
     }
 
     /// 上限に対する割合。上限が無ければ要求に落とす（一覧や詳細と同じ順序）。
+    ///
+    /// **タイルの棒は 1 本だけ。** 2 本並べると、この大きさでは読めない。
+    /// 何を出すかは設定で選ぶ。「CPU とメモリ」のときは詰まっているほう。
     private var usageRatio: Double? {
         guard let usage = store.metrics.usage(for: pod) else { return nil }
         let limits = pod.containerResourceTotal("limits")
         let requests = pod.containerResourceTotal("requests")
-        let cpu = Quantity.ratio(usage.cpuCores, of: limits.cpuCores)
-            ?? Quantity.ratio(usage.cpuCores, of: requests.cpuCores)
-        let memory = Quantity.ratio(usage.memoryBytes, of: limits.memoryBytes)
-            ?? Quantity.ratio(usage.memoryBytes, of: requests.memoryBytes)
-        // 詰まっているほうを出す。2 本並べると、この大きさでは読めない。
-        return [cpu, memory].compactMap { $0 }.max()
+        let metric = Preferences.shared.placementMetric
+
+        var ratios: [Double] = []
+        if metric.showsCPU,
+           let cpu = Quantity.ratio(usage.cpuCores, of: limits.cpuCores)
+            ?? Quantity.ratio(usage.cpuCores, of: requests.cpuCores) {
+            ratios.append(cpu)
+        }
+        if metric.showsMemory,
+           let memory = Quantity.ratio(usage.memoryBytes, of: limits.memoryBytes)
+            ?? Quantity.ratio(usage.memoryBytes, of: requests.memoryBytes) {
+            ratios.append(memory)
+        }
+        return ratios.max()
     }
 
     private func helpText(_ status: ResourceStatus) -> String {

@@ -30,6 +30,7 @@ final class Preferences {
         static let placementNodeOrder = "placementNodeOrder"
         static let placementHidesEmptyNodes = "placementHidesEmptyNodes"
         static let placementGrouping = "placementGrouping"
+        static let placementMetric = "placementMetric"
 
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
@@ -109,6 +110,12 @@ final class Preferences {
     /// ワークロードを箱にすると「どこに散っているか」が見える。
     var placementGrouping: PlacementGrouping = .nodeByWorkload {
         didSet { store.set(placementGrouping.rawValue, forKey: Key.placementGrouping) }
+    }
+
+    /// 配置の棒が何を表すか。CPU で詰まる環境とメモリで詰まる環境があり、
+    /// 片方しか見ないなら並べても場所を食うだけ。
+    var placementMetric: PlacementMetric = .both {
+        didSet { store.set(placementMetric.rawValue, forKey: Key.placementMetric) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -269,6 +276,8 @@ final class Preferences {
         placementGrouping =
             PlacementGrouping(rawValue: store.string(forKey: Key.placementGrouping) ?? "")
             ?? .nodeByWorkload
+        placementMetric =
+            PlacementMetric(rawValue: store.string(forKey: Key.placementMetric) ?? "") ?? .both
 
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
@@ -329,6 +338,7 @@ final class Preferences {
         placementNodeOrder = .name
         placementHidesEmptyNodes = false
         placementGrouping = .nodeByWorkload
+        placementMetric = .both
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
@@ -467,11 +477,42 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .node: return "ノード別"
-        case .nodeByWorkload: return "ノード別（まとめる）"
+        case .nodeByWorkload: return "ノード別・まとめ"
         case .workload: return "ワークロード別"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .node: return "ノードごとに、載っている Pod をそのまま並べます。"
+        case .nodeByWorkload:
+            return "ノードごとに、Pod を Deployment などでまとめて並べます。"
+        case .workload:
+            return "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。"
         }
     }
 
     /// 箱がノードかどうか。
     var isNodeFirst: Bool { self != .workload }
+}
+
+
+/// 配置の棒が表すもの。
+enum PlacementMetric: String, CaseIterable, Identifiable, Sendable {
+    case both
+    case cpu
+    case memory
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .both: return "CPU とメモリ"
+        case .cpu: return "CPU"
+        case .memory: return "メモリ"
+        }
+    }
+
+    var showsCPU: Bool { self != .memory }
+    var showsMemory: Bool { self != .cpu }
 }

@@ -98,16 +98,17 @@ private struct GeneralSettings: View {
                         Text(order.title).tag(order)
                     }
                 }
-                Picker("箱にするもの", selection: $preferences.placementGrouping) {
-                    ForEach(PlacementGrouping.allCases) { grouping in
-                        Text(grouping.title).tag(grouping)
+                Picker("棒が表すもの", selection: $preferences.placementMetric) {
+                    ForEach(PlacementMetric.allCases) { metric in
+                        Text(metric.title).tag(metric)
                     }
                 }
+                .pickerStyle(.segmented)
                 Toggle("Pod が 0 のノードを隠す", isOn: $preferences.placementHidesEmptyNodes)
             } header: {
                 Text("配置")
             } footer: {
-                Text("「ノード別」は「このノードに何が載っているか」、「ワークロード別」は「この Deployment がどこに散っているか」を見るためのものです。1 つのノードに固まっているワークロードは先頭に出ます。「小」は名前を出さず、しるしだけを並べます（名前と状態と使用量は、タイルを指すと出ます）。空のノードを隠すと縦は縮みますが、受け入れ先が空いていることは見えなくなります。")
+                Text("見方（ノード別／ワークロード別）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod のタイルは 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。「小」は名前を出さず、しるしだけを並べます（名前と状態と使用量は、タイルを指すと出ます）。空のノードを隠すと縦は縮みますが、受け入れ先が空いていることは見えなくなります。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
