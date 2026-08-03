@@ -12,16 +12,9 @@ struct ResourceListView: View {
     /// 組み込み種別のときだけ、種別ごとの特別扱い（ログ、スケールなど）が効く。
     private var kind: ResourceKind? { target.builtIn }
 
-    private var columns: [ResourceColumn] {
-        switch target {
-        case .builtIn(let kind):
-            return ResourceTable.columns(
-                for: kind, showNamespace: store.showsNamespaceColumn, metrics: store.metrics)
-        case .custom(let type):
-            return ResourceTable.columns(
-                for: type, showNamespace: store.showsNamespaceColumn)
-        }
-    }
+    /// 列の定義は store が持つ。**2 つ持たない** — 並べ替えは列の値を
+    /// そのまま鍵にするので、定義がずれると見えている文字と並びが食い違う。
+    private var columns: [ResourceColumn] { store.currentColumns }
 
     var body: some View {
         table
@@ -81,12 +74,20 @@ struct ResourceListView: View {
                             emptyState
                         }
                     } else {
-                        ScrollView(.vertical) {
-                            LazyVStack(spacing: 0) {
-                                ForEach(rows) { object in
-                                    row(for: object)
-                                    Divider().opacity(0.5)
+                        // 選択をキーボードで動かせるようにすると、選んだ行が
+                        // 画面の外にあることが起きる。動いた先まで送る。
+                        ScrollViewReader { scroller in
+                            ScrollView(.vertical) {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(rows) { object in
+                                        row(for: object)
+                                        Divider().opacity(0.5)
+                                    }
                                 }
+                            }
+                            .onChange(of: store.selectedObjectID) { _, id in
+                                guard let id else { return }
+                                scroller.scrollTo(id, anchor: .center)
                             }
                         }
                     }
@@ -95,6 +96,17 @@ struct ResourceListView: View {
             }
             // 収まっているときに横方向へ跳ねないようにする。
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            // **`List` を使っていないので、上下移動は付いてこない。** 一覧を
+            // 見ながら 1 行ずつ確かめるのは基本の操作なので、自前で足す。
+            .focusable()
+            .focusEffectDisabled()
+            .onMoveCommand { direction in
+                switch direction {
+                case .up: store.moveSelection(by: -1)
+                case .down: store.moveSelection(by: 1)
+                default: break
+                }
+            }
         }
     }
 
@@ -112,14 +124,42 @@ struct ResourceListView: View {
 
     // MARK: - 行
 
+    /// 見出しは押すと並べ替えになる。
+    ///
+    /// **矢印を「並べ替えられる」の合図にしない。** いま並べ替えている列にしか
+    /// 出ないので、他の列は押せないように見える。押せることはカーソルと
+    /// ツールチップが持ち、矢印は「いまどれで並んでいるか」だけを表す。
     private var headerRow: some View {
         HStack(spacing: 12) {
             ForEach(columns) { column in
-                Text(column.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .modifier(ColumnFrame(column: column))
+                let sort = store.sortDescriptor
+                let isActive = sort?.columnTitle == column.title
+
+                Button {
+                    store.toggleSort(column: column.title)
+                } label: {
+                    HStack(spacing: 3) {
+                        if column.trailing { Spacer(minLength: 0) }
+                        Text(column.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                            .lineLimit(1)
+                        if isActive, let sort {
+                            Image(systemName: sort.ascending ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        if !column.trailing { Spacer(minLength: 0) }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(
+                    isActive
+                        ? "\(column.title) で並べ替え中。もう一度押すと逆順、"
+                            + "3 度目で既定（異常が上）に戻る"
+                        : "\(column.title) で並べ替える")
+                .modifier(ColumnFrame(column: column))
             }
         }
         .padding(.horizontal, 16)
@@ -275,6 +315,17 @@ struct ScaleSheet: View {
 
     @State private var replicas: Int = 0
 
+    /// HPA が管理しているか。**「調べていない」「管理下にある」「管理下に
+    /// ない」「調べられなかった」を 1 つにしない** — 特に最後の 2 つを
+    /// 混ぜると、権限が無くて見えないだけなのに「HPA は無い」と断定する。
+    private enum Autoscaler {
+        case checking
+        case managed([K8sObject])
+        case none
+        case unavailable
+    }
+    @State private var autoscaler: Autoscaler = .checking
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("レプリカ数を変える")
@@ -294,6 +345,8 @@ struct ScaleSheet: View {
                     .frame(width: 70)
                     .multilineTextAlignment(.trailing)
             }
+
+            autoscalerNotice
 
             if replicas == 0 {
                 Label("0 にすると Pod はすべて停止します。", systemImage: StatusLevel.warning.symbol)
@@ -315,5 +368,54 @@ struct ScaleSheet: View {
         .padding(20)
         .frame(width: 340)
         .onAppear { replicas = object.spec?["replicas"]?.intValue ?? 0 }
+        .task {
+            switch await store.autoscalers(for: object) {
+            case .success(let found):
+                autoscaler = found.isEmpty ? .none : .managed(found)
+            case .failure:
+                autoscaler = .unavailable
+            }
+        }
+    }
+
+    /// **止めない。** HPA 管理下でも手で動かしたい場面はある（調整を待たずに
+    /// 増やす、いったん 0 にする）。禁じるのではなく、戻されることを先に言う。
+    @ViewBuilder
+    private var autoscalerNotice: some View {
+        switch autoscaler {
+        case .checking, .none:
+            // 管理下に無いことをわざわざ書かない。ふつうがそちらなので、
+            // 毎回出すと読まれなくなる。
+            EmptyView()
+
+        case .managed(let hpas):
+            VStack(alignment: .leading, spacing: 4) {
+                Label(
+                    "この \(object.kind?.displayName ?? "ワークロード")"
+                        + "は HPA が管理しています。",
+                    systemImage: StatusLevel.serious.symbol)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Palette.textColor(for: .serious))
+                ForEach(hpas) { hpa in
+                    Text("\(hpa.name)（最小 \(hpa.spec?["minReplicas"]?.intValue ?? 1)"
+                         + " / 最大 \(hpa.spec?["maxReplicas"]?.intValue ?? 0)）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text("ここで変えても、次の調整で HPA が戻します。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+        case .unavailable:
+            // **「HPA はありません」と言わない。** 引けなかっただけ。
+            Text("HPA が管理しているかは確認できませんでした。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

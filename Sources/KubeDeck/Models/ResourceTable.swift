@@ -13,6 +13,15 @@ struct ResourceCell: Sendable {
     var level: StatusLevel?
 }
 
+/// 一覧の並べ替え。
+///
+/// **列の位置ではなく見出しで持つ。** 使用量の列は metrics-server が
+/// 見つかってから増えるので、位置で覚えると途中で別の列を指す。
+struct ResourceSort: Equatable, Sendable {
+    let columnTitle: String
+    var ascending: Bool = true
+}
+
 struct ResourceColumn: Identifiable, Sendable {
     enum Width: Sendable {
         case flexible(min: CGFloat)
@@ -230,6 +239,36 @@ enum ResourceTable {
                         return ResourceCell(text: "<none>", emphasis: .secondary)
                     }
                     return ResourceCell(text: K8sObject.age(since: date), emphasis: .secondary)
+                },
+            ]
+
+        case .horizontalPodAutoscaler:
+            return [
+                ResourceColumn(title: "対象", width: .fixed(180)) {
+                    ResourceCell(text: hpaReference($0), emphasis: .secondary)
+                },
+                ResourceColumn(title: "指標", width: .flexible(min: 140)) { hpa in
+                    let targets = hpaTargets(hpa)
+                    // **引けていない指標を黙って通さない。** 数字が揃って
+                    // 見える HPA が実は何もしていない、がここでしか分からない。
+                    return ResourceCell(
+                        text: targets.text, emphasis: .mono,
+                        level: targets.hasUnknown ? .warning : nil)
+                },
+                statusColumn(width: 150),
+                ResourceColumn(title: "現在", width: .fixed(60), trailing: true) {
+                    ResourceCell(
+                        text: "\($0.status?["currentReplicas"]?.intValue ?? 0)", emphasis: .mono)
+                },
+                ResourceColumn(title: "最小", width: .fixed(56), trailing: true) {
+                    // minReplicas は省略できて、既定は 1。空欄にすると
+                    // 「下限なし」に見える。
+                    ResourceCell(
+                        text: "\($0.spec?["minReplicas"]?.intValue ?? 1)", emphasis: .mono)
+                },
+                ResourceColumn(title: "最大", width: .fixed(56), trailing: true) {
+                    ResourceCell(
+                        text: "\($0.spec?["maxReplicas"]?.intValue ?? 0)", emphasis: .mono)
                 },
             ]
 
@@ -572,6 +611,64 @@ enum ResourceTable {
     // MARK: - イベント
 
     /// core/v1 と events.k8s.io/v1 でフィールド名が違うので両方見る。
+    // MARK: - HPA
+
+    /// `kubectl get hpa` の REFERENCE 列。
+    static func hpaReference(_ hpa: K8sObject) -> String {
+        guard let ref = hpa.spec?["scaleTargetRef"] else { return "" }
+        let kind = ref["kind"]?.stringValue ?? ""
+        let name = ref["name"]?.stringValue ?? ""
+        return kind.isEmpty ? name : "\(kind)/\(name)"
+    }
+
+    /// `kubectl get hpa` の TARGETS 列（`cpu 42%/80%`）。
+    ///
+    /// **引けていない指標を 0% と書かない。** kubectl が `<unknown>` と出す
+    /// ところで、これは「使用率が 0」ではなく「指標が取れていない」。0 と
+    /// 書くと**いちばん見つけたい壊れ方（HPA が動いていない）が「余裕が
+    /// ある」に見える**。取れていないことは `—` と、呼び出し側が付ける
+    /// しるしで示す。
+    static func hpaTargets(_ hpa: K8sObject) -> (text: String, hasUnknown: Bool) {
+        let specMetrics = hpa.spec?["metrics"]?.arrayValue ?? []
+        let currentMetrics = hpa.status?["currentMetrics"]?.arrayValue ?? []
+
+        // `autoscaling/v1` は CPU 使用率ひとつを別の場所に持つ。
+        guard !specMetrics.isEmpty else {
+            guard let target = hpa.spec?["targetCPUUtilizationPercentage"]?.intValue else {
+                return ("", false)
+            }
+            let current = hpa.status?["currentCPUUtilizationPercentage"]?.intValue
+            return ("cpu \(current.map { "\($0)%" } ?? "—")/\(target)%", current == nil)
+        }
+
+        var hasUnknown = false
+        let parts = specMetrics.map { metric -> String in
+            guard let resource = metric["resource"] else {
+                // Pods / Object / External は種類だけ出す。値まで追うと
+                // 指標の型ごとに別の形を読むことになり、列 1 つのために
+                // 背負う重さではない。
+                return metric["type"]?.stringValue ?? ""
+            }
+            let name = resource["name"]?.stringValue ?? ""
+            let current = currentMetrics.first {
+                $0["resource"]?["name"]?.stringValue == name
+            }?["resource"]?["current"]
+
+            if let target = resource["target"]?["averageUtilization"]?.intValue {
+                let now = current?["averageUtilization"]?.intValue
+                if now == nil { hasUnknown = true }
+                return "\(name) \(now.map { "\($0)%" } ?? "—")/\(target)%"
+            }
+            if let target = resource["target"]?["averageValue"]?.stringValue {
+                let now = current?["averageValue"]?.stringValue
+                if now == nil { hasUnknown = true }
+                return "\(name) \(now ?? "—")/\(target)"
+            }
+            return name
+        }
+        return (parts.filter { !$0.isEmpty }.joined(separator: ", "), hasUnknown)
+    }
+
     static func eventMessage(_ event: K8sObject) -> String {
         event.raw["message"]?.stringValue ?? event.raw["note"]?.stringValue ?? ""
     }

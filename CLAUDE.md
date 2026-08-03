@@ -10,6 +10,10 @@ xcodegen generate
 
 xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
   -configuration Debug -destination 'platform=macOS' build
+
+# テスト（KubeDeckTests は KubeDeck スキームに紐づけてある）
+xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
+  -destination 'platform=macOS'
 ```
 
 既存ファイルの編集だけなら `xcodegen generate` は不要。`project.yml` がソースオブトゥルースで、`.xcodeproj` は生成物。**`.xcodeproj` を直接編集しない。**
@@ -63,6 +67,12 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 
 設定の「接続」に、**子プロセスへ渡している環境**を出す。「ターミナルでは通るのに `.app` では通らない」を追うとき、いちばん知りたいのが「何が届いているか」だった。**値をそのまま並べない** — 環境をまるごと渡すので鍵やトークンが混ざりうる。ただしファイルの場所まで伏せると診断にならない（CA の指し先が合っているかを見る場所なので）ため、伏せるのは「秘密を思わせる名前」かつ「場所に見えない値」だけ。
 
+**名前に頼りきらない。** `DATABASE_URL=postgres://user:pass@host` のような値は
+どの目印にも当たらないのに認証情報を含む。この画面はそのまま貼って共有されうる
+場所なので、`scheme://user:pass@host` の形でも伏せる。**ただし伏せすぎない** —
+資格情報を含まない URL はプロキシの指し先としてまさに見たい値だし、
+`ssh://git@host` の `user@host` は資格情報ではない（`Kubectl.hidesValue`）。
+
 **Form の中に `ScrollView` を置かない。** 高さが潰れて 1 行も見えないことがある。Form 自体がスクロールするので素直に並べる。
 
 実クラスタなしで確かめられる。合成した kubeconfig を `KUBECONFIG` に足せば（`kubectl config get-contexts` に出る）、到達できない GKE のコンテキストとして両方の経路を通せる。
@@ -81,6 +91,42 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 
 **概要画面は 1 回の kubectl でまとめて取る。** 種別ごとに投げると 13 プロセス起動することになる。カンマ区切りで複数種別を get すると `items` に `kind` が入るので、呼び出し側で振り分けられる（単一種別の get では `kind` が空になる版もあるため、`K8sObject.list(from:assuming:)` で要求種別を補う）。
 
+### 一部の種別だけ読めないときに、読めたぶんを捨てない
+
+**`--ignore-not-found` は権限には効かない。** 握りつぶすのは NotFound だけで、
+**Forbidden はそのまま終了コード 1 になる**。にもかかわらず kubectl は
+**読めた種別を標準出力に書き出してから**終了する。実測（orbstack + impersonation）:
+
+```
+$ kubectl get pods,secrets -A -o json --ignore-not-found=true --as=<pods だけ読める SA>
+exit=1
+Error from server (Forbidden): secrets is forbidden: ... cannot list resource "secrets"
+$ ... | wc -c
+241201        ← Pod の JSON は stdout に来ている
+```
+
+終了コードだけで投げると、この 241KB を捨てて「取得できません」と出すことになる。
+Secret だけ読めないクラスタで概要が丸ごと消えていた。**「取れているのに取れて
+いないことにする」のは、「無い」と「取れていない」を混ぜるのと同じ間違い。**
+
+`CommandError` が `partialStdout` を持ち回り、`Kubectl.list(kinds:)` が
+`PartialList`（読めたもの＋拒まれた種別）を返す。**どこまで許すかを絞る** —
+打ち切りは従来どおり投げるし、標準出力が空なら投げる（認証で落ちていれば
+標準出力は空になるので、本物の失敗を握りつぶすことはない）。
+
+拒まれた種別は `stderr` の `<resource> is forbidden` から拾う。グループ付き
+（`deployments.apps`）と無し（`secrets`）の両方が来る。**要求した種別に
+現れたものだけ**を拒まれた扱いにする（当てはまらない失敗を「権限が無い」に
+しない）。書式に依存しているので `KubectlTests` で固めてある。
+
+**拒まれた種別を `counts` に 0 で入れない。** 入れると「拒まれた」が「無い」に
+なる。`counts` から抜けば、消費側（サイドバー）は nil を「まだ分からない」として
+扱うので既存の経路がそのまま正しく働く。**逆に、要求して読めた種別は 0 で
+埋めておく** — 1 件も無い種別は `items` に現れないので、埋めないと「0 件」と
+「まだ数えていない」が同じ nil になる。
+
+欠けは画面を失敗にせず、`PartialDataNotice` の帯で断る（`deniedKindsNotice`）。
+
 ## リソースの型付けは metadata だけ
 
 `spec` / `status` は `JSONValue`（`Models/JSONValue.swift`）のままキーパスで引く。**全リソースに Codable の struct を起こさない。** 15 種あり、同じ種別でも API バージョンやアドオンの有無でフィールドが増減する。型を付けると、フィールドが 1 つ欠けただけで一覧が丸ごとデコードエラーで落ちる。いまの作りなら、引けないフィールドは nil になって該当セルが空になるだけで済む。
@@ -90,7 +136,37 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 - `StatusResolver.status(for:)` — 一覧の STATUS 列。**kubectl の printer の再現**。Pod は phase をそのまま出さず `containerStatuses` まで見る（phase は CrashLoopBackOff でも `Running` のため）。ここを「分かりやすく」書き換えない。kubectl と表示がずれると、どちらが正しいのか確かめる手段が無くなる。
 - `StatusResolver.health(for:)` — 概要のドーナツと一覧の並べ替え。`status` を土台に、**Running だが Ready が揃っていない Pod を正常側に混ぜない**。kubectl の STATUS 列だけ見ていると気付けない状態がここで表に出る。`Completed`（Ready 0/1 が正常）を巻き込まないよう、降格は `Running` に限っている。
 
-検証は実クラスタと突き合わせる。`kubectl get pods -A --no-headers` の STATUS / READY / RESTARTS と、`Models` の 4 ファイルだけを `swiftc` で固めた小さなバイナリの出力を比べればよい。異常系（CrashLoopBackOff、`Init:`、Terminating、OOMKilled、ExitCode）はクラスタを汚さずに合成 JSON で確かめる。
+異常系（CrashLoopBackOff、`Init:`、Terminating、OOMKilled、ExitCode）は
+`Tests/KubeDeckTests/StatusResolverTests.swift` が合成 JSON で押さえている。
+kubectl 側の表示が変わったかを疑うときだけ、実クラスタと突き合わせる
+（`kubectl get pods -A --no-headers` の STATUS / READY / RESTARTS）。
+
+## テストは純粋関数に掛ける
+
+```bash
+xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck -destination 'platform=macOS'
+```
+
+`Tests/KubeDeckTests`（swift-testing）。**UI は対象にしない** — 見た目の判断は
+このリポジトリでは文章と実際の画面で決めており、テストに写しても二重管理になる。
+
+固めているのは、壊れても気付きにくいところだけ。
+
+| 対象 | 何が壊れると困るか |
+|---|---|
+| `StatusResolver` | kubectl と表示がずれる（どちらが正しいか確かめる手段が無くなる） |
+| `Quantity` | 桁が 9 つ違う値を取り違える。`129e6` と `1E` |
+| `LogLevel` | 深刻度の誤爆（実際に `handler=errorMiddleware` を踏んだ） |
+| `WorkloadRelations` | 空セレクタや Namespace 越えで無関係なものが繋がる |
+| `PlacementTrace` | 名前だけで束ねて別物が合体する。ReplicaSet で止まる |
+| `Kubectl.deniedKinds` | 依存している kubectl の stderr の書式 |
+| 並べ替え・しきい値 | 黙って意味が変わる（警告色が出なくなるなど） |
+
+**合成 JSON で作る**（`Fixtures.swift`）。実クラスタに依存させると、手元の
+クラスタの状態で結果が変わるうえ、異常系を作るのにクラスタを汚すことになる。
+
+**テストは「そう書いてある」を確かめるためではなく、踏んだ間違いを固定するために
+足す。** 上の表はどれも実際に壊れた（か、壊れうると分かった）ところ。
 
 ## 舵輪は 2 つある。持ち場を混ぜない
 
@@ -193,6 +269,90 @@ YAML は原文が要るときのものとして残す。種別を問わず同じ
 1 文字ずつ折れて読めなくなる。`ViewThatFits` で、収まるなら 1 行・収まらなければ
 2 行に落とす。字下げも 5 段で頭打ちにする（際限なく下げると値の幅が無くなる）。
 
+### 状態の「なぜ」はイベントタブにしかない
+
+一覧の STATUS 列も概要のリングも、**「異常である」ことまでしか言わない。**
+`Pending` の理由（`FailedScheduling: insufficient cpu`）も `CrashLoopBackOff` の
+発端（`Failed to pull image`）もイベントにしか出ないので、選択中のオブジェクトの
+イベントを詳細パネルに置く（`EventsPane`）。**これが無いと、アプリの中では
+「異常だ」で行き止まりになる**（実際そうなっていて、原因を見るにはターミナルで
+`kubectl describe` を打つ必要があった）。
+
+**一覧のイベントを手元で絞って使わない。** 概要が持っているのは直近 200 件だけで、
+関係するイベントがその外にあると「ありません」と出る。無いのではなく引いていない。
+`--field-selector` で**サーバ側で絞って引き直す**（`Kubectl.events(for:context:)`）。
+
+**uid で引く。** 名前で引くと、同じ名前で作り直された前の世代のイベントが混ざる
+（Pod は再作成のたびに uid が変わる）。Namespace を持たない Node / PV の
+イベントは `default` に載るので、そのときだけ `--all-namespaces` にする。
+
+**`--sort-by=.lastTimestamp` に頼らない。** `lastTimestamp` が無く `eventTime`
+しか持たないイベントが実在する（orbstack の k3s で `Scheduled` がそうだった）。
+kubectl は落ちないが、それを**時刻が無いものとして扱う**ので、さっき起きたのに
+最古の位置へ並ぶ。`ResourceTable.lastSeen` は `eventTime` と
+`deprecatedLastTimestamp` まで見るので、並べ替えは呼び出し側で持つ。
+
+**自動更新に載せない。** 開いているあいだ 10 秒ごとに引き直すと、読んでいる最中に
+行が入れ替わり、選択があるかぎり kubectl が 1 本増え続ける。取り直しはパネルの
+「再読み込み」が明示的に行う。**引き直しで前の結果を消さない** — 消すと一瞬空になり
+「0 件になった」と読める。
+
+**0 件を黙って「ありません」で終えない。** イベントには寿命があり（クラスタの既定で
+1 時間）、古い出来事は本当に消える。断りが無いと「何も起きていない」と読めるが、
+実際は「もう残っていない」かもしれない。ここも「無い」と「取れていない」を混ぜない
+という同じ話で、**3 つ目に「消えた」がある**。
+
+**対象の名前を行に書かない。** 選んでいるもの自身なので、見出しと同じ名前を 2 度
+出すことになる（概要のイベント行は対象がばらばらなので書いている。持ち場が違う）。
+そのぶん本文は折り返す。ここでは中身そのものが読みたいもの。**回数は出す** —
+同じ行が 1 度きりなのか 200 回目なのかで意味がまるで違う。
+
+## HPA は「数字が揃ったまま何もしていない」ことがある
+
+レプリカ数を決めているのは Deployment ではなく HPA なので、**ワークロードの節に
+並べる**（`ResourceKind.horizontalPodAutoscaler`）。隣に無いと、なぜ数が動くのかを
+辿れない。
+
+**`<unknown>` を 0% と書かない。** requests が設定されていない対象に HPA を付けると、
+kubectl は `cpu: <unknown>/75%` と出す。これは「使用率が 0」ではなく「指標が取れて
+いない」で、**HPA は何もしていない**。0% と書くと「まだ余裕がある」と読め、
+いちばん見つけたい壊れ方が消える。`ResourceTable.hpaTargets` は `—` を返し、
+`hasUnknown` で列にしるしを付ける。ここも「無い」と「取れていない」を混ぜない話。
+
+**数だけ見て「正常」にしない。** 上の状態でも `REPLICAS` は `2/2` で揃っており、
+一覧の数字はまったく健全に見える。`StatusResolver.hpaStatus` が `ScalingActive` /
+`AbleToScale` の条件を読み、`FailedGetResourceMetric` のような**理由をそのまま
+STATUS 列に出す**（理由のほうが対処に直結する）。**条件が無いことは異常にしない** —
+`autoscaling/v1` は conditions を持たない。
+
+**API グループを付けて引く**（`horizontalpodautoscalers.autoscaling`）。`autoscaling`
+は v1 と v2 が併存し、短い名前だと環境によって別のバージョンを引く。読む側は
+**両方の形に対応する** — v2 は `spec.metrics` / `status.currentMetrics`、v1 は
+`spec.targetCPUUtilizationPercentage` / `status.currentCPUUtilizationPercentage`。
+
+### レプリカ数を変える前に HPA を見る
+
+**`kubectl scale` は HPA 管理下でも通る。そして次の調整で戻される**（既定 15 秒）。
+断りが無いと「効かなかった」としか見えず、原因がアプリ側にあるように読める。
+`ScaleSheet` は開いたときに `Kubectl.autoscalers(for:context:)` を引き、管理下なら
+最小 / 最大とともに「次の調整で HPA が戻します」と出す。
+
+**止めない。** 調整を待たずに増やす、いったん 0 にする、はどれも正当な操作。
+禁じるのではなく、戻ることを先に言う。
+
+**4 つの状態を 1 つにしない。** 「まだ調べていない」「管理下にある」「管理下にない」
+「調べられなかった」。特に後ろ 2 つを混ぜると、権限が無くて見えないだけなのに
+**「HPA は無い」と断定する**。管理下でないことは書かない（ふつうがそちらなので、
+毎回出すと読まれなくなる）。
+
+**対象は名前と種別で突き合わせる。** `scaleTargetRef` は uid を持たない（HPA は
+「その名前のもの」を指す作りで、作り直しても追随する）。種別まで見るのは、同じ名前の
+Deployment と StatefulSet が同居できるため。
+
+確認は、requests を設定していない Deployment に `kubectl autoscale` を付けると
+そのまま作れる。`ScalingActive=False` が出るまで 30 秒ほどかかる。
+**確かめたら消すこと。**
+
 ## 設定は `Models/Preferences.swift` に集める
 
 保存する値はすべてここ。以前は `ClusterStore` の中の private enum に散らしており、
@@ -212,6 +372,12 @@ YAML は原文が要るときのものとして残す。種別を問わず同じ
 **MainActor の外から読む値は写しを置く。** 一覧のセルを作る閉包は nonisolated なので、
 使用率のしきい値は `Preferences.usageThresholds`（`nonisolated(unsafe)`）へ変更のたびに
 publish している。同じ必要が出たら同じやり方にする。
+
+**互いに縛りのある値は、片方を動かしたらもう片方を押し出す。** 使用率の
+「注意」と「異常」がそれで、`usageLevel` は critical から先に見るので、
+注意 90 / 異常 80 を許すと**警告色が一度も出なくなり**、80% 超がいきなり赤になる。
+壊れはしないが黙って意味が変わる。didSet で押し出すと相互に呼び合うが、
+押し出した先では条件が成り立たないので 1 往復で止まる。
 
 **アクターへは投げ込む。** `Kubectl` は待ち時間と実行ファイルの場所を持つが、
 アクターなので直接読ませられない。`applyToKubectl()` が `configure(...)` で渡す。
@@ -508,6 +674,13 @@ Pod は `objects` に、ノードは `placementNodes` に入れる。Pod を `ob
 | ワークロード別 | どれがどこに散っているか | 集中しているものを**全部まとめて**見つける |
 | たどる | この 1 つはどう繋がっているか | 入口（Service / Ingress）・世代・ストレージ |
 
+**「たどる」の起点はワークロードだけではない。** 知りたいことは「この Ingress の
+先に何があるか」「この Service は何を掴んでいるか」「このノードに載っている
+ものは何に繋がっているか」でも起きる。**それぞれに別の見方を足さない** —
+どれも同じ鎖（入口 → ワークロード → 世代 → Pod → ノード）の別の場所を掴んだ
+だけで、答える問いは「どう繋がっているか」の 1 つ。見方は 3 つのままで、
+起点の種別を左で選ぶ（`TraceAnchorKind`）。
+
 **「たどる」で「ワークロード別」は代わりにならない。** たどるは 1 つずつなので、
 「どのワークロードが 1 ノードに固まっているか」を探すことができない。
 
@@ -533,9 +706,9 @@ Pod のタイルに細い棒を出す（上限に対する割合、無ければ�
 「CPU とメモリ」のときは詰まっているほうを出す。2 本並べてもこの大きさでは
 読めない。両方の実測値はタイルを指せば出る。
 
-### たどる（`PlacementGrouping.map`）
+### たどる（`PlacementGrouping.map` / `Views/TraceMapView.swift`）
 
-ワークロードを 1 つ選び、`ReplicaSet` から Pod、ノードまで枝で辿る。
+起点を 1 つ選び、入口から Pod、ノードまで図にする。
 
 **全部を一度に描かない。** 222 Pod を線でつないだ図は、線の数が多すぎてどこから
 読めばいいのか分からなくなる。左で 1 つ選び、それだけを展開する。
@@ -549,14 +722,79 @@ Pod のタイルに細い棒を出す（上限に対する割合、無ければ�
 ことが分かる。ここでは**世代が見たい**ので、`ReplicaSet` 名はハッシュ付きの
 まま出す（束ねるときとは逆で、`PlacementView.owner` は使わない）。
 
+#### 起点が 5 種類あっても、図は 1 つ（`Models/PlacementTrace.swift`）
+
+起点ごとに違うのは**「掴んでいる Pod をどう解くか」だけ**。ノードなら
+`spec.nodeName`、Service ならセレクタ一致、Ingress なら backend の Service 経由。
+解いた Pod をワークロードごとの枝に束ね直せば、あとはどの起点からでも同じ図に
+なる。**描く側に起点の分岐を持たせない** — 持たせると起点を 1 つ足すたびに
+view が枝分かれする。
+
+**計算を画面に置かない。** 起点の一覧も図も `PlacementTrace` が組み立てる。
+実クラスタの JSON を食わせた小さなバイナリ（`Models` の 5 ファイルを `swiftc` で
+固める）で、5 種類ぜんぶの起点を一度に確かめられる。
+
+**起点は名前で持ち回る。** `TraceAnchor` に `K8sObject` を抱えると、自動更新で
+中身が入れ替わるたびに別物として扱われ、選んでいる起点が外れる。使うときに
+`object(for:in:)` で引き直す。
+
+**ワークロードの一覧を Pod から起こすだけにしない。** レプリカ 0 の Deployment は
+Pod が 1 つも無く、Pod 側からは存在すら見えない（起点に選べず、「無い」のか
+「止めてある」のかも分からない）。Deployment / StatefulSet / DaemonSet / CronJob
+も**同じ 1 回の kubectl で**取り、Pod から起こした名前と突き合わせる。CRD が
+所有者の Pod は逆に実物が無いので、**両方から作る**。
+
+**Pod が 0 でも入口は出す。** レプリカ 0 でも Service は付いたままなので、Pod が
+無いときだけワークロードのテンプレートのラベルで引き直す（`services(matching:)`）。
+入口が消えると「外から繋がっていない」と読めてしまう。
+
+**辿れなかったことを黙らない。** Ingress が指しているのに Service が無い、
+Service が何も掴んでいない、はどちらも設定の誤りとしてよくある。何も描かないと
+「先に何も無い」のか「壊れている」のかが分からないので、文字で書く
+（`missingServiceNames` / `danglingServices`）。ここも「無い」と「取れていない」を
+混ぜないという同じ話。
+
+**世代の段を二重に描かない。** DaemonSet / StatefulSet の Pod は直接の所有者が
+ワークロード自身なので、そのまま囲むと同じ名前の箱が入れ子になる。
+`TraceGeneration.isImplicit` のときは囲みを出さない。
+
+#### 図の中の器も押せる
+
+一覧に戻って選び直させると、繋がりを辿るというこの画面の目的そのものが途切れる。
+押した器がそのまま次の起点になり、**戻る**で 1 つ前に帰れる（押した先が外れ
+だったときに一覧から選び直すことになるので、戻れないと押せない）。
+
+**押した先の起点が一覧に居ることを確かめる。** `TraceAnchor.id` は
+`起点種別|Namespace|種別|名前` で作る。図の中で組み立てた `id` が一覧のものと
+1 文字でも食い違うと、選択の見直し（`onChange`）が「無効な選択」とみなして
+先頭に飛ぶ。**確認は目視ではなく、押せる器ぜんぶの `id` を一覧の集合に
+突き合わせる**（上の小さなバイナリでできる）。
+
+**起点は設定に保存しない。** 行き来しながら見るものなので `@State` のまま。
+設定に置くのは、いちど決めたら変えない類のものだけ（`placementTileSize` など）。
+
+#### 幅は入口の側から潰す
+
+段が 5 つ並ぶので、窓が狭いと SwiftUI が伸び縮みする欄を等分に削り、いちばん右の
+**Pod 名から先に読めなくなる**（`web-...-58lkg` になった）。Pod とノードはこの図の
+答えそのものなので、世代の列に `layoutPriority(1)` を付けて先に幅を取らせる。
+**横スクロールにしない**（`Spacer` が無限に伸びて図がまるごと消える）。
+
 ### 所有者は Deployment / CronJob まで辿る
 
 **ReplicaSet 名で束ねない。** `<Deployment 名>-<ハッシュ>` なので、更新のたびに
 別のまとまりに見える。Job も CronJob から作られたものは実行のたびに名前が変わる。
-`ownerReferences` をもう一段辿る（`PlacementView.owner(of:controllers:)`）。
+`ownerReferences` をもう一段辿る（`PlacementTrace.workloadOwner(of:controllers:)`）。
+**解き方を 2 つ持たない** — 配置の各見方とたどるで別々に実装すると、
+「ワークロード別では 3 個なのに、たどると 2 個」のような食い違いが出る。
 そのために ReplicaSet と Job も Pod・ノードと**同じ 1 回の kubectl で**取る
 （`placementControllers`）。索引は `ClusterStore.controllerIndex` が持つ
 — Pod ごとに `first(where:)` で舐めると線形探索になる。
+
+**その索引を計算プロパティにしない。** 索引を作るための索引が、読むたびに
+全 ReplicaSet / Job を舐め直していた。しかも配置画面はノードの箱ごとに読むので、
+1 描画あたり `ノード数 × 世代数` の挿入になっていた（ノード 20・世代 500 で
+1 万回）。いまは `placementControllers` の didSet で 1 度だけ組み立てる。
 
 支配者は `controller: true` のものを採る。`ownerReferences` は複数持てるが、
 支配者は 1 つだけ。
@@ -592,7 +830,29 @@ Namespace の一覧（`loadNamespaces`）とメトリクスの有無（`detectMe
 `recoverClusterInfoIfNeeded()` が、**取れていないものがあるときだけ**拾い直す。
 走らせるのは「失敗から成功に変わった瞬間」か「人が更新を押したとき」に限る。
 **自動更新のたびに走らせない** — 権限が無くて本当に空のクラスタでは、10 秒ごとに
-kubectl が 2〜3 本増えることになる。
+kubectl が 2〜3 本増えることになる。**すでに調べている最中なら重ねない** —
+Prometheus の探索は全 Service を順に叩くので、2 本走らせるとそのぶん増える。
+
+### クラスタごとの調べものにも世代番号を通す
+
+一覧の再読み込みには `generation` があるが、コンテキストに紐づく調べもの
+（Namespace 一覧・CRD・バージョン・メトリクスの取得元）は素の `Task` で
+投げていた。**世代番号もキャンセルも無いと、A → B と続けて切り替えたときに
+A 向けの結果が B に書き込まれる。** とくに Prometheus の探索はいちばん遅れて
+返るので、**A で見つけた場所を B のものとして `UserDefaults` に永続化していた**
+（B に同名の Service が無ければ、以後ずっと推移が出ないまま黙る）。
+
+`contextGeneration` を**一覧の `generation` とは別に**持ち、`refreshClusterInfo()`
+がまとめて投げる。**一覧の再読み込みで無効にしない** — 種別や Namespace を
+変えただけではクラスタの事実は変わらない。各関数は**書き込む直前に**世代を見る
+（await のあとで代入する箇所がすべて対象。`refreshMetrics` も含む — 別クラスタの
+使用量が混ざると、ノード名が一致した場合にそのまま棒になる）。
+
+起動時は CRD → 選択の復元 → Namespace 一覧、の順に読む必要があってすでに
+手元にあるので、`refreshClusterInfo(includingFacts: false)` で**同じものを
+もう 1 度引かない**。以前はここで `detectMetricsSources` を直接 await しつつ
+`reload` の完了が `recoverClusterInfoIfNeeded` 経由でもう 1 度呼んでいたので、
+起動のたびに Prometheus の探索が二重に走っていた。
 
 確認は、到達できない `server:` を書いた kubeconfig でアプリを起動し、
 そのファイルの `server:` を実際に届く先へ書き換えて待つ。kubeconfig は
@@ -616,11 +876,18 @@ ___NSViewLayout_block_invoke
 20 回ほど繰り返す。手で触っていると出たり出なかったりするが、繰り返せば必ず出る。
 落ちたかどうかは `~/Library/Logs/DiagnosticReports/KubeDeck-*.ips` の増減で分かる。
 
-## ログは選択に追従する
+## ログは押したときだけ開く。開いているあいだは選択に追従する
 
-Pod の行を選ぶとパネルがその Pod に切り替わる（`followLogsToSelection`）。
-パネルの ✕ は追従も切る。**閉じたのに選ぶたび開き直すと ✕ が効かないものに見える**ため。
-もう一度ログを開けば追従が戻る。
+**行を選んだだけでパネルを開かない。** 一覧で Pod を選ぶたびに `kubectl logs -f` が
+走ることになり、見るつもりのない Pod にも取得が掛かる（選んだ理由はふつう状態や
+設定を見るためで、ログはそのうちの 1 つでしかない）。開けるのは「ログを見る」を
+押したときだけ（`ClusterStore.showLogs`）。
+
+**開いているパネルの行き先は選択に追従する**（`followLogsToSelection`）。
+すでに開いているのに前の Pod のログが残ると、どれを見ているのか分からない。
+追従は `logRequest != nil` を条件にしてあるので、✕ で閉じれば止まる
+（**閉じたのに選ぶたび開き直すと ✕ が効かないものに見える**）。切り替えたくない
+ときは設定で切れる（`followsSelectionForLogs`）。
 
 **取得の受け渡しに世代番号を付ける。** `store.logStream(...)` は await をまたぐので、
 `stop()` の時点でまだ掴んでいないプロセスは止められない。番号を見ずに書くと、
@@ -629,6 +896,34 @@ Pod の行を選ぶとパネルがその Pod に切り替わる（`followLogsToS
 
 確認は `ps -eo ppid,args | awk '$1==<アプリのpid>' | grep " logs "` の本数。
 何回切り替えても 1 本であること。
+
+### 「取得」と「見え方」を 1 つのトグルにしない
+
+以前は「追従」1 つが `kubectl logs --follow` と末尾への自動スクロールを兼ねて
+おり、しかも取得の鍵（`reloadKey`）に入っていた。**「スクロールを止めたい」
+だけで切ると取得ごとやり直しになり、それまで読んでいた行が全部消えた。**
+遡って読もうとする場面がまさにそこなので、いちばん困る消え方だった。
+
+いまは `streams`（`--follow` を付けるか）と `autoScroll`（末尾へ送るか）に
+分けてある。**`reloadKey` に見え方だけの状態を入れない。**
+
+### 受け取った行を 1 行ずつ画面へ渡さない
+
+`ProcessRunner.stream` は `AsyncStream<[String]>` を返す。**1 行ずつ yield
+しない。** パイプから 1 度に読めたぶんはもともと塊で届いており、それをわざわざ
+ばらすと受け手は行の数だけ画面を作り直すことになる。1 行あたり
+
+- 上限に達したあとは `removeFirst` の O(n) の詰め直し
+- 絞り込み中は `visibleLines` の O(n) が body 1 回につき 3 か所
+- `ForEach` の同一性リストを上限（既定 5,000 行）ぶん歩き直す
+
+が走り、毎秒数百行を出す Pod で UI が張り付いた。
+
+**溜め込みで直さない。** タイマーで溜めると、静かになった Pod の最後の数行が
+次の行が来るまで出ない。塊のまま受ければ、遅れずに 1 度の更新で済む。
+
+`visibleLines` は body の先頭で 1 度だけ作って渡す（3 か所がそれぞれ読むと、
+絞り込み中は 1 回の描画で全行を 3 度舐める）。
 
 ## ログの見え方
 
@@ -640,7 +935,13 @@ Pod の行を選ぶとパネルがその Pod に切り替わる（`followLogsToS
 - `--timestamps` の先頭の時刻は落とし、絞り込みに一致した部分は色を敷く。
 
 **誤爆に注意。** `no errors expected` や `/api/errors` を error にしないこと。
-語の前後に空白か記号を要求している。変えたら実ログで確かめる。
+
+**前方一致で判定しない。** `=error` をそのまま `contains` すると
+`handler=errorMiddleware` や `metric=error_rate` まで error になる（テストで
+実際に踏んだ）。`containsToken` が、目印の直後が英数字や `_` `-` なら別の語の頭と
+みなす。**見るのは目印が英数字で終わるときだけ** — `"error"` や `[error]` や
+`" error "` は目印そのものが区切りで終わっているので、後ろを見ると逆に落とす
+（`" error "` の次は本文の 1 文字目）。
 
 ## ログは一覧の下のパネルに出す
 
@@ -666,6 +967,28 @@ Pod の行を選ぶとパネルがその Pod に切り替わる（`followLogsToS
 `LoadingView` は舵輪を右回りに回す（`RotatingKubernetesMark(activity: .busy)`）。
 **出すのはまだ出せる中身が無いときだけ。** すでに一覧が出ているのに差し替えると、
 更新のたびに画面が消えて点滅する。中身があるときの更新中は副題に文字で出す。
+
+## 一覧の並べ替えと上下移動は自前で持つ
+
+一覧は `List` ではなく自前の行なので（最小幅の都合。「図の部品」の節を参照）、
+**`List` に付いてくる上下移動も列の並べ替えも付いてこない。** 一覧を見ながら
+1 行ずつ確かめるのは基本の操作なので、`onMoveCommand` と見出しのボタンで足す。
+
+**並べ替えの鍵は列の位置ではなく見出しで持つ**（`ResourceSort.columnTitle`）。
+使用量の列は metrics-server が見つかってから増えるので、位置で覚えると
+途中で別の列を指す。種別を変えたら捨てる（列そのものが違う）。
+
+**鍵はセルの文字をそのまま使う。** 見えているものと並び順が食い違わないため。
+そのために列の定義は `ClusterStore.currentColumns` の 1 か所だけが持つ。
+数字を含む名前は `localizedStandardCompare` で人が読む順になる
+（`web-2` < `web-10`）。**比較関数の中でセルを組み立てない** — `value` は
+毎回 JSON を辿るので O(n log n) 回になる。先に 1 度だけ引く。
+
+**「取れていない」を先頭に集めない。** 空欄や `—` は値ではないので、昇順でも
+降順でも末尾に置く。
+
+**既定に戻せるようにする。** 同じ見出しを 3 度押すと `nil`（異常が上）に戻る。
+戻れないと、既定の並びを取り戻すのに種別を開き直すことになる。
 
 ## ツールバーで踏んだもの
 

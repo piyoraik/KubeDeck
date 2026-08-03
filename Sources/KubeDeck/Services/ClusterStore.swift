@@ -61,9 +61,15 @@ final class ClusterStore {
             metricsServerAvailable = nil
             prometheus = nil
             customTypes = []
-            Task { await self.loadClusterFacts() }
-            Task { await self.detectMetricsSources() }
-            Task { await self.loadNamespaces() }
+            deniedKinds = []
+            overview = OverviewSnapshot()
+            // **クラスタごとの調べものにも世代番号を通す。** ここを素の Task で
+            // 投げていたら、A → B と続けて切り替えたときに A 向けの結果が B に
+            // 書き込まれた。とくに Prometheus の探索は全 Service を順に叩くので
+            // いちばん遅れて返り、**A で見つけた場所を B のものとして
+            // `UserDefaults` に永続化していた**（B に同名の Service が無ければ、
+            // 以後ずっと推移が出ないまま黙る）。
+            refreshClusterInfo()
             reload()
         }
     }
@@ -86,6 +92,9 @@ final class ClusterStore {
             selectedObjectID = nil
             searchText = ""
             objects = []
+            deniedKinds = []
+            // 列は種別ごとに違うので、見出しを持ち越しても指す先が無い。
+            sortDescriptor = nil
             // 別の種別を開いたのに前の Pod のログが下に残ると、
             // どれを見ているのか分からなくなる。
             logRequest = nil
@@ -101,14 +110,56 @@ final class ClusterStore {
     /// ReplicaSet と Job。Pod の所有者を Deployment / CronJob まで辿るために持つ。
     /// **ReplicaSet 名で束ねない。** `<Deployment 名>-<ハッシュ>` なので、
     /// 更新のたびに別のまとまりに見える。
-    var placementControllers: [K8sObject] = []
+    var placementControllers: [K8sObject] = [] {
+        didSet { controllerIndex = Self.makeControllerIndex(placementControllers) }
+    }
+    /// Deployment / StatefulSet / DaemonSet / CronJob。
+    /// **Pod から名前を起こすだけでは足りない。** レプリカ 0 のワークロードは
+    /// Pod が 1 つも無く、Pod 側からは存在すら見えない（たどるの起点に
+    /// 選べないうえ、「無い」のか「止めてある」のかも分からない）。
+    var placementWorkloads: [K8sObject] = []
     /// 図に添えるもの（Service・Ingress・PVC）。関係は API に無いので、
     /// 取ってきたものどうしを突き合わせて結ぶ（`WorkloadRelations`）。
     var placementRelated: [K8sObject] = []
+
+    /// いま開いている画面で、権限が無くて読めなかった種別。
+    ///
+    /// **「無い」と混ぜないために持つ。** Service が読めていないだけなのに
+    /// 図から入口が消えると、繋がっていないように見える。読めたぶんは出した
+    /// うえで、欠けていることを画面に書く。
+    var deniedKinds: [ResourceKind] = []
+
+    /// 欠けている種別の断り書き。読めているなら nil。
+    var deniedKindsNotice: String? {
+        let kinds = deniedKinds.isEmpty ? overview.deniedKinds : deniedKinds
+        guard !kinds.isEmpty else { return nil }
+        let names = kinds.map(\.displayName).joined(separator: "・")
+        return "\(names) を読む権限がありません。この画面にはこれらが出ていません"
+            + "（0 件という意味ではありません）。"
+    }
+
+    /// たどるが解く材料。**画面から都度組み立てない** — 同じ 1 回の kubectl で
+    /// 取ったものだけを渡すことを、この型で担保する。
+    var placementInventory: PlacementInventory {
+        PlacementInventory(
+            pods: objects, nodes: placementNodes, generations: placementControllers,
+            workloads: placementWorkloads, related: placementRelated)
+    }
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
 
     var searchText: String = ""
+
+    /// 一覧の並べ替え。nil なら既定（異常が上、次に Namespace と名前）。
+    ///
+    /// **列の位置ではなく見出しで覚える。** 使用量の列は metrics-server が
+    /// 見つかるまで出ないので、位置で持つと途中で列がずれて別の列を指す。
+    var sortDescriptor: ResourceSort? {
+        didSet {
+            guard sortDescriptor != oldValue else { return }
+            objects = sortedForDisplay(objects)
+        }
+    }
     var selectedObjectID: K8sObject.ID? {
         didSet {
             guard selectedObjectID != oldValue else { return }
@@ -145,11 +196,10 @@ final class ClusterStore {
     /// 下部パネルに出しているログ。nil なら閉じている。
     var logRequest: PodLogRequest?
 
-    /// Pod を選んだらログも切り替えるか。
+    /// ログのパネルを**開いているあいだ**、Pod を選んだら行き先も切り替えるか。
     ///
-    /// 既定は有効。パネルの ✕ で無効になり、以後は行を選んでも勝手に開かない
-    /// （閉じたのに選ぶたび開き直すと、✕ が効かないものに見える）。
-    /// もう一度ログを開けば追従が戻る。
+    /// 既定は有効。閉じているパネルをこれで開くことはない
+    /// （開けるのは「ログを見る」を押したときだけ）。
     var followsSelectionForLogs: Bool = Preferences.shared.followsSelectionForLogs {
         didSet { Preferences.shared.followsSelectionForLogs = followsSelectionForLogs }
     }
@@ -178,6 +228,14 @@ final class ClusterStore {
     private var tickerTask: Task<Void, Never>?
     /// 遅れて返ってきた古い結果で新しい表示を上書きしないための世代番号。
     private var generation = 0
+
+    /// コンテキストに紐づく調べもの（Namespace 一覧・CRD・メトリクスの取得元）の世代。
+    ///
+    /// **一覧の `generation` と分ける。** 種別や Namespace を変えただけでは
+    /// クラスタの事実は変わらないので、一覧の再読み込みで無効にする必要はない。
+    /// 逆に、コンテキストが変われば全部が別のクラスタの話になる。
+    private var contextGeneration = 0
+    private var clusterInfoTask: Task<Void, Never>?
 
     private let kubectl = Kubectl.shared
 
@@ -208,6 +266,82 @@ final class ClusterStore {
         return objects.first { $0.id == selectedObjectID }
     }
 
+    /// いま開いている一覧の列。**画面と store で 2 つ持たない** —
+    /// 並べ替えは列の値をそのまま鍵にするので、定義がずれると
+    /// 見えている文字と並び順が食い違う。
+    var currentColumns: [ResourceColumn] {
+        switch currentTarget {
+        case .builtIn(let kind):
+            return ResourceTable.columns(
+                for: kind, showNamespace: showsNamespaceColumn, metrics: metrics)
+        case .custom(let type):
+            return ResourceTable.columns(for: type, showNamespace: showsNamespaceColumn)
+        case nil:
+            return []
+        }
+    }
+
+    /// 見出しを押したときの並べ替え。同じ見出しをもう一度押すと逆順、
+    /// 3 度目で既定（異常が上）に戻す。**戻れないと、既定の並びを取り戻すのに
+    /// 種別を開き直すことになる。**
+    func toggleSort(column title: String) {
+        switch sortDescriptor {
+        case let current? where current.columnTitle == title && current.ascending:
+            sortDescriptor = ResourceSort(columnTitle: title, ascending: false)
+        case let current? where current.columnTitle == title:
+            sortDescriptor = nil
+        default:
+            sortDescriptor = ResourceSort(columnTitle: title, ascending: true)
+        }
+    }
+
+    /// キーボードで選択を動かす。一覧は自前の行なので、`List` のような
+    /// 上下移動が付いてこない。
+    func moveSelection(by offset: Int) {
+        let rows = filteredObjects
+        guard !rows.isEmpty else { return }
+        guard let current = selectedObjectID,
+              let index = rows.firstIndex(where: { $0.id == current })
+        else {
+            selectedObjectID = rows.first?.id
+            return
+        }
+        let next = min(max(0, index + offset), rows.count - 1)
+        selectedObjectID = rows[next].id
+    }
+
+    /// 表示用の並び。既定は `sorted(_:kind:)`、見出しを押していればその列。
+    ///
+    /// **比較のたびにセルを組み立てない。** `value` は毎回 JSON を辿るので、
+    /// 素朴に比較関数の中で呼ぶと O(n log n) 回になる。先に 1 度だけ引く。
+    private func sortedForDisplay(_ objects: [K8sObject]) -> [K8sObject] {
+        guard let sort = sortDescriptor,
+              let column = currentColumns.first(where: { $0.title == sort.columnTitle })
+        else { return objects }
+
+        let keyed = objects.map { (key: column.value($0).text, object: $0) }
+        return keyed.sorted { lhs, rhs in
+            // **「取れていない」を先頭に集めない。** 空欄や `—` は値ではないので、
+            // 昇順でも降順でも末尾に置く。
+            let leftMissing = Self.isMissing(lhs.key)
+            let rightMissing = Self.isMissing(rhs.key)
+            if leftMissing != rightMissing { return rightMissing }
+            if leftMissing { return lhs.object.name < rhs.object.name }
+
+            // 数字を含む文字列は数として比べる（`pod-10` が `pod-2` の後、
+            // 再起動 `12` が `5` の後になる）。
+            let order = lhs.key.localizedStandardCompare(rhs.key)
+            if order != .orderedSame {
+                return sort.ascending ? order == .orderedAscending : order == .orderedDescending
+            }
+            return lhs.object.name < rhs.object.name
+        }.map(\.object)
+    }
+
+    private nonisolated static func isMissing(_ text: String) -> Bool {
+        text.isEmpty || text == "—"
+    }
+
     var namespaceLabel: String { selectedNamespace ?? "すべての Namespace" }
 
     /// ノードの詰まり具合。CPU とメモリのうち高いほう。並べ替えに使う。
@@ -222,9 +356,19 @@ final class ClusterStore {
 
     /// 配置画面が所有者を辿るための索引。`Namespace/種別/名前` で引く。
     /// 毎回 `first(where:)` で舐めると Pod の数だけ線形探索になる。
-    var controllerIndex: [String: K8sObject] {
+    ///
+    /// **計算プロパティにしない。** 索引を作るための索引が、読むたびに
+    /// 全 ReplicaSet / Job を舐め直していた。しかも配置画面はノードの箱ごとに
+    /// これを読むので、1 描画あたり `ノード数 × 世代数` の挿入になっていた
+    /// （ノード 20・世代 500 で 1 万回）。取得のたびに 1 度だけ組み立てる。
+    private(set) var controllerIndex: [String: K8sObject] = [:]
+
+    private nonisolated static func makeControllerIndex(
+        _ controllers: [K8sObject]
+    ) -> [String: K8sObject] {
         var index: [String: K8sObject] = [:]
-        for object in placementControllers {
+        index.reserveCapacity(controllers.count)
+        for object in controllers {
             guard let kind = object.kind else { continue }
             index["\(object.namespace ?? "")/\(kind.apiKind)/\(object.name)"] = object
         }
@@ -327,8 +471,12 @@ final class ClusterStore {
 
             isBootstrapping = false
             reload()
-            await refreshSidebarCounts()
-            await detectMetricsSources()
+            // **調べものは 1 か所から投げる。** 以前は `detectMetricsSources` を
+            // ここで直接 await しつつ、`reload` の完了が
+            // `recoverClusterInfoIfNeeded` 経由でもう 1 度呼んでいたので、
+            // 起動のたびに Prometheus の探索（全 Service を順に叩く）が
+            // 二重に走っていた。
+            await refreshClusterInfo(includingFacts: false).value
         } catch {
             setupErrorMessage = error.localizedDescription
         }
@@ -376,11 +524,13 @@ final class ClusterStore {
                     // Pod・ノード・所有者を 1 回の kubectl でまとめて取る。
                     // 別々に投げるとプロセスがそのぶん増え、片方だけ新しい
                     // 状態が混ざる（同じ時点の絵にならない）。
-                    let loaded = try await self.kubectl.list(
+                    let listed = try await self.kubectl.list(
                         kinds: [.pod, .node, .replicaSet, .job,
+                                .deployment, .statefulSet, .daemonSet, .cronJob,
                                 .service, .ingress, .persistentVolumeClaim],
                         context: context, namespace: namespace)
                     guard token == self.generation else { return }
+                    let loaded = listed.objects
                     self.objects = Self.sorted(
                         loaded.filter { $0.kind == .pod }, kind: .pod)
                     self.placementNodes = loaded
@@ -389,10 +539,17 @@ final class ClusterStore {
                     self.placementControllers = loaded.filter {
                         $0.kind == .replicaSet || $0.kind == .job
                     }
+                    self.placementWorkloads = loaded.filter {
+                        $0.kind == .deployment || $0.kind == .statefulSet
+                            || $0.kind == .daemonSet || $0.kind == .cronJob
+                    }
                     self.placementRelated = loaded.filter {
                         $0.kind == .service || $0.kind == .ingress
                             || $0.kind == .persistentVolumeClaim
                     }
+                    // **図に欠けがあることを黙らない。** Service が読めていない
+                    // だけなのに「入口が無い」と読めてしまう。
+                    self.deniedKinds = listed.denied
                 case .resource(let target):
                     let loaded: [K8sObject]
                     if target.builtIn == .event {
@@ -405,7 +562,9 @@ final class ClusterStore {
                             context: context, namespace: namespace)
                     }
                     guard token == self.generation else { return }
-                    self.objects = Self.sorted(loaded, kind: target.builtIn)
+                    // 既定の並びに落としてから、見出しを押していればその列で並べ直す。
+                    self.objects = self.sortedForDisplay(
+                        Self.sorted(loaded, kind: target.builtIn))
                 }
                 // 直前まで失敗していたか。取れるようになった瞬間を拾うため、
                 // 消す前に見ておく。
@@ -442,8 +601,12 @@ final class ClusterStore {
         async let events = kubectl.events(context: context, namespace: namespace, limit: 30)
         async let version = kubectl.serverVersion(context: context)
 
-        let all = try await resources
-        let nodeObjects = try await nodes
+        let listed = try await resources
+        let all = listed.objects
+        // ノードは別に引いているので、拒まれても概要そのものは出せる。
+        // **0 台と書かない** — 数えられなかっただけなので、件数ごと落とす。
+        let readNodes = try? await nodes
+        let nodeObjects = readNodes ?? []
         // イベントとバージョンは取れなくても概要は出せるので、失敗を握りつぶす。
         let eventObjects = (try? await events) ?? []
         let serverVersion = (try? await version) ?? "不明"
@@ -453,13 +616,18 @@ final class ClusterStore {
 
         var counts: [ResourceKind: Int] = [:]
         var byKind: [ResourceKind: [K8sObject]] = [:]
+        // **要求した種別は 0 で埋めておく。** 1 件も無い種別は items に現れない
+        // ので、埋めないと「0 件」と「まだ数えていない」が同じ nil になる。
+        for kind in kinds where !listed.denied.contains(kind) { counts[kind] = 0 }
         for object in all {
             guard let kind = object.kind else { continue }
             counts[kind, default: 0] += 1
             byKind[kind, default: []].append(object)
         }
-        counts[.node] = nodeObjects.count
+        // **拒まれた種別は入れない。** 0 と書くと「無い」ことにしてしまう。
+        if let readNodes { counts[.node] = readNodes.count }
         snapshot.counts = counts
+        snapshot.deniedKinds = listed.denied + (readNodes == nil ? [.node] : [])
 
         snapshot.pods = StatusTally.make(from: byKind[.pod] ?? [])
         snapshot.nodes = StatusTally.make(from: nodeObjects)
@@ -473,6 +641,34 @@ final class ClusterStore {
         return snapshot
     }
 
+    /// コンテキストに紐づく調べものを取り直す。前のコンテキストのぶんは捨てる。
+    ///
+    /// **3 つを素の `Task` で投げない。** 世代番号もキャンセルも無いと、
+    /// 遅れて返った前のクラスタの結果が新しいクラスタの状態を上書きする。
+    /// - Parameter includingFacts: CRD・バージョン・Namespace 一覧も取り直すか。
+    ///   起動時はこれらを順番に読む必要があってすでに手元にあるので、
+    ///   **同じものをもう 1 度引かない**（kubectl のプロセスがそのぶん増える）。
+    @discardableResult
+    private func refreshClusterInfo(includingFacts: Bool = true) -> Task<Void, Never> {
+        contextGeneration += 1
+        let token = contextGeneration
+        clusterInfoTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            // 直列にすると切り替えの体感が遅くなる。並べて投げ、
+            // 書き込む直前に世代を見る。
+            async let facts: Void = includingFacts
+                ? self.loadClusterFacts(token: token)
+                : self.refreshSidebarCounts(token: token)
+            async let namespaces: Void = includingFacts
+                ? self.loadNamespaces(token: token) : ()
+            async let sources: Void = self.detectMetricsSources(token: token)
+            _ = await (facts, namespaces, sources)
+        }
+        clusterInfoTask = task
+        return task
+    }
+
     /// 開いたときに調べ損ねたものを拾い直す。
     ///
     /// Namespace の一覧とメトリクスの有無は「クラスタを開いたときに 1 度だけ」
@@ -484,6 +680,11 @@ final class ClusterStore {
     /// 「取れるようになった瞬間」か「人が更新を押したとき」に限る。自動更新の
     /// たびに走らせると、10 秒ごとに kubectl が 2〜3 本増える。
     private func recoverClusterInfoIfNeeded() async {
+        // すでに調べている最中なら重ねない。Prometheus の探索は全 Service を
+        // 順に叩くので、2 本走らせると kubectl がそのぶん増える。
+        if let clusterInfoTask, !clusterInfoTask.isCancelled {
+            await clusterInfoTask.value
+        }
         if namespaces.isEmpty { await loadNamespaces() }
         if metricsServerAvailable != true, prometheus == nil {
             await detectMetricsSources()
@@ -491,21 +692,30 @@ final class ClusterStore {
     }
 
     /// 使えるメトリクスの取得元を調べる。クラスタを開いたときに一度だけ。
-    private func detectMetricsSources() async {
+    ///
+    /// **書き込む直前に世代を見る。** ここは全 Service を順に叩くのでいちばん
+    /// 遅く返る。守らないと、切り替え前のクラスタで見つけた場所を、いま開いて
+    /// いるクラスタのものとして `UserDefaults` にまで書き込む。
+    private func detectMetricsSources(token: Int? = nil) async {
         let context = currentContext
         guard !context.isEmpty else { return }
+        let token = token ?? contextGeneration
 
-        metricsServerAvailable = await kubectl.metricsServerAvailable(
+        let available = await kubectl.metricsServerAvailable(
             context: context, namespace: selectedNamespace)
+        guard token == contextGeneration else { return }
+        metricsServerAvailable = available
 
         // Prometheus の探索は Service を全部見て順に叩くので時間がかかる。
         // 保存してある場所があればそれを先に確かめ、駄目なときだけ探し直す。
         if let saved = Defaults.prometheus,
            await PrometheusClient.shared.probe(saved, context: context) {
+            guard token == contextGeneration else { return }
             prometheus = saved
         } else {
             let found = await PrometheusClient.shared.discover(
                 context: context, namespace: selectedNamespace)
+            guard token == contextGeneration else { return }
             prometheus = found
             Defaults.prometheus = found
         }
@@ -533,18 +743,26 @@ final class ClusterStore {
     }
 
     /// 一覧の再読み込みに合わせて使用量も取り直す。
+    ///
+    /// ここも書き込む直前に世代を見る。別のクラスタの使用量が混ざると、
+    /// ノード名が一致した場合に**別クラスタの数字がそのまま棒になる**。
     private func refreshMetrics() async {
-        guard !currentContext.isEmpty else { return }
+        let context = currentContext
+        guard !context.isEmpty else { return }
+        let token = contextGeneration
+
+        let loaded: MetricsSnapshot
         switch activeMetricsSource {
         case .metricsServer:
-            metrics = await kubectl.metrics(
-                context: currentContext, namespace: selectedNamespace)
+            loaded = await kubectl.metrics(context: context, namespace: selectedNamespace)
         case .prometheus(let endpoint):
-            metrics = await PrometheusClient.shared.snapshot(
-                endpoint: endpoint, context: currentContext, namespace: selectedNamespace)
+            loaded = await PrometheusClient.shared.snapshot(
+                endpoint: endpoint, context: context, namespace: selectedNamespace)
         case .none:
-            metrics = MetricsSnapshot()
+            loaded = MetricsSnapshot()
         }
+        guard token == contextGeneration else { return }
+        metrics = loaded
         await refreshHistories()
     }
 
@@ -625,11 +843,20 @@ final class ClusterStore {
     }
 
     /// コンテキストを切り替えたときに取り直すもの。
-    private func loadClusterFacts() async {
-        guard !currentContext.isEmpty else { return }
-        customTypes = await kubectl.customResourceTypes(context: currentContext)
-        serverVersion = (try? await kubectl.serverVersion(context: currentContext)) ?? ""
-        await refreshSidebarCounts()
+    private func loadClusterFacts(token: Int? = nil) async {
+        let context = currentContext
+        guard !context.isEmpty else { return }
+        let token = token ?? contextGeneration
+
+        let types = await kubectl.customResourceTypes(context: context)
+        guard token == contextGeneration else { return }
+        customTypes = types
+
+        let version = (try? await kubectl.serverVersion(context: context)) ?? ""
+        guard token == contextGeneration else { return }
+        serverVersion = version
+
+        await refreshSidebarCounts(token: token)
     }
 
     /// サイドバーに出す件数。
@@ -637,18 +864,24 @@ final class ClusterStore {
     /// 概要を開いたときは `loadOverview` が数えるが、一覧から起動すると
     /// 誰も数えないままサイドバーの数字が空になる。件数の持ち場を
     /// サイドバーに決めた以上、そこが空では意味がないので一度だけ数える。
-    private func refreshSidebarCounts() async {
-        guard case .resource = selection, !currentContext.isEmpty else { return }
-        guard let objects = try? await kubectl.list(
-            kinds: Self.countedKinds, context: currentContext, namespace: selectedNamespace)
+    private func refreshSidebarCounts(token: Int? = nil) async {
+        let context = currentContext
+        guard case .resource = selection, !context.isEmpty else { return }
+        let token = token ?? contextGeneration
+        guard let listed = try? await kubectl.list(
+            kinds: Self.countedKinds, context: context, namespace: selectedNamespace)
         else { return }
+        guard token == contextGeneration else { return }
 
+        // 拒まれた種別は数に入れない（`nil` のままにして「まだ分からない」を保つ）。
         var counts: [ResourceKind: Int] = [:]
-        for object in objects {
+        for kind in Self.countedKinds where !listed.denied.contains(kind) { counts[kind] = 0 }
+        for object in listed.objects {
             guard let kind = object.kind else { continue }
             counts[kind, default: 0] += 1
         }
         overview.counts = counts
+        overview.deniedKinds = listed.denied
         loadedOverviewCounts = counts
     }
 
@@ -659,15 +892,16 @@ final class ClusterStore {
         .persistentVolume, .node, .namespace,
     ]
 
-    private func loadNamespaces() async {
-        guard !currentContext.isEmpty else { return }
-        do {
-            namespaces = try await kubectl.namespaces(context: currentContext)
-        } catch {
-            // Namespace の一覧権限が無いクラスタもある。絞り込みが
-            // 使えないだけなので、画面全体をエラーにはしない。
-            namespaces = []
-        }
+    private func loadNamespaces(token: Int? = nil) async {
+        let context = currentContext
+        guard !context.isEmpty else { return }
+        let token = token ?? contextGeneration
+
+        // Namespace の一覧権限が無いクラスタもある。絞り込みが使えないだけなので、
+        // 画面全体をエラーにはしない。
+        let listed = (try? await kubectl.namespaces(context: context)) ?? []
+        guard token == contextGeneration else { return }
+        namespaces = listed
     }
 
     /// 一覧の既定の並び。問題のあるものを上に出す。
@@ -703,6 +937,30 @@ final class ClusterStore {
             return .success(
                 try await kubectl.yaml(
                     resource: resource, object: object, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// 選択中のオブジェクトに紐づくイベント。
+    ///
+    /// **自動更新に載せない。** 開いているあいだ 10 秒ごとに引き直すと、
+    /// 見ている最中に行が入れ替わるうえ、選択のあるかぎり kubectl が 1 本
+    /// 増え続ける。取り直しは詳細パネルの「再読み込み」が明示的に行う。
+    func events(for object: K8sObject) async -> Result<[K8sObject], Error> {
+        do {
+            return .success(
+                try await kubectl.events(for: object, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// このオブジェクトを管理している HPA。レプリカ数を変える前に見る。
+    func autoscalers(for object: K8sObject) async -> Result<[K8sObject], Error> {
+        do {
+            return .success(
+                try await kubectl.autoscalers(for: object, context: currentContext))
         } catch {
             return .failure(error)
         }
@@ -751,29 +1009,35 @@ final class ClusterStore {
     // MARK: - ログ
 
     /// 選択に合わせてログを切り替える。Pod 以外を選んだときは何もしない。
+    ///
+    /// **閉じているパネルをここで開かない。** 行を選んだだけで
+    /// `kubectl logs -f` が走るのは、見るつもりのない Pod にも取得を掛けること
+    /// になる。開けるのは「ログを見る」を押したときだけ（`showLogs`）で、
+    /// ここが受け持つのは**すでに開いているパネルの行き先を差し替える**ことだけ。
     private func followLogsToSelection() {
-        guard followsSelectionForLogs,
+        guard logRequest != nil,
+              followsSelectionForLogs,
               let object = selectedObject,
               object.kind == .pod
         else { return }
         logRequest = PodLogRequest(pod: object)
     }
 
-    /// 明示的にログを開く。追従も有効に戻す。
+    /// 明示的にログを開く。パネルが開くのはここだけ。
     func showLogs(for pod: K8sObject) {
-        followsSelectionForLogs = true
         logRequest = PodLogRequest(pod: pod)
     }
 
-    /// パネルを閉じる。以後は選んでも開かない。
+    /// パネルを閉じる。
     func closeLogs() {
         logRequest = nil
-        followsSelectionForLogs = false
     }
 
+    /// ログの取得。**行の塊で返す。** 1 行ずつ渡すと、受け手は行の数だけ
+    /// 画面を作り直すことになる（`ProcessRunner.stream`）。
     func logStream(
         namespace: String, pod: String, options: Kubectl.LogOptions
-    ) async -> Result<(AsyncStream<String>, ProcessHandle), Error> {
+    ) async -> Result<(AsyncStream<[String]>, ProcessHandle), Error> {
         do {
             let stream = try await kubectl.logStream(
                 namespace: namespace, pod: pod, options: options, context: currentContext)

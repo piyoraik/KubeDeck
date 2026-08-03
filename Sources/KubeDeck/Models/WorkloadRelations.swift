@@ -42,6 +42,66 @@ enum WorkloadRelations {
             .sorted { $0.name < $1.name }
     }
 
+    /// そのラベルを掴む Service。**Pod が 1 つも無いとき用。**
+    ///
+    /// レプリカ 0 のワークロードには Pod が無いので、Pod 経由では入口が
+    /// 引けない。だが Service は付いたままなので、テンプレートのラベルで
+    /// 引き直す。**入口が消えるほうが誤解を生む**（外から繋がっていないように
+    /// 見える）ため。
+    static func services(
+        matching labels: [String: String], namespace: String?, among all: [K8sObject]
+    ) -> [K8sObject] {
+        guard !labels.isEmpty else { return [] }
+        return all
+            .filter { $0.kind == .service && $0.namespace == namespace }
+            .filter { service in
+                guard let selector = service.spec?["selector"]?.stringDictionary,
+                      !selector.isEmpty else { return false }
+                return matches(selector, labels)
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// その Service が掴んでいる Pod。`services(for:among:)` の逆向き。
+    ///
+    /// **たどるの起点が Service のときに要る。** 起点から先を出すには
+    /// 「この Service はどの Pod を掴んでいるか」を引けないといけない。
+    /// 空のセレクタを一致させないのは順方向と同じ理由。
+    static func pods(selectedBy service: K8sObject, among pods: [K8sObject]) -> [K8sObject] {
+        guard let selector = service.spec?["selector"]?.stringDictionary,
+              !selector.isEmpty else { return [] }
+        return pods.filter { pod in
+            pod.namespace == service.namespace && matches(selector, pod.labels)
+        }
+    }
+
+    /// その Ingress が指している Service。`ingresses(for:among:)` の逆向き。
+    ///
+    /// **見つからなかった名前も返す。** Ingress が指しているのに Service が
+    /// 無いのは設定の誤りとしてよくあるもので、黙って落とすと
+    /// 「Ingress の先に何も無い」ようにしか見えない（無いのか、届いて
+    /// いないのかが分からない）。
+    static func services(
+        of ingress: K8sObject, among all: [K8sObject]
+    ) -> (found: [K8sObject], missing: [String]) {
+        let namespace = ingress.namespace
+        let wanted = backendServiceNames(of: ingress)
+        var found: [K8sObject] = []
+        var missing: [String] = []
+        var seen = Set<String>()
+
+        for name in wanted where seen.insert(name).inserted {
+            if let service = all.first(where: {
+                $0.kind == .service && $0.namespace == namespace && $0.name == name
+            }) {
+                found.append(service)
+            } else {
+                missing.append(name)
+            }
+        }
+        return (found.sorted { $0.name < $1.name }, missing.sorted())
+    }
+
     /// Pod が使っている PVC。
     static func claims(for pods: [K8sObject], among all: [K8sObject]) -> [K8sObject] {
         guard !pods.isEmpty else { return [] }

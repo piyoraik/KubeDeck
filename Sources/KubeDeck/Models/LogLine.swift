@@ -77,12 +77,41 @@ enum LogLevel: Sendable, Hashable {
             (["\"debug\"", "=debug", "[debug]", " debug "], LogLevel.debug),
             (["\"info\"", "=info", "[info]", " info "], LogLevel.info),
         ] {
-            if needles.contains(where: lowered.contains) {
+            if needles.contains(where: { Self.containsToken(lowered, $0) }) {
                 self = level
                 return
             }
         }
 
         self = .plain
+    }
+
+    /// 目印が**語として**含まれているかを見る。
+    ///
+    /// **前方一致で済ませない。** `=error` をそのまま `contains` すると
+    /// `handler=errorMiddleware` や `metric=error_rate` まで error になる。
+    /// 目印の直後が英数字や `_` `-` なら、それは別の語の頭でしかない。
+    ///
+    /// 見るのは目印が英数字で終わるとき（`=error` など）だけ。`"error"` や
+    /// `[error]` や `" error "` は目印そのものが区切りで終わっているので、
+    /// ここで後ろを見ると逆に落としてしまう（`" error "` の次は本文の 1 文字目）。
+    private static func containsToken(_ haystack: String, _ needle: String) -> Bool {
+        guard let last = needle.last, isWordCharacter(last) else {
+            return haystack.contains(needle)
+        }
+        var searchRange = haystack.startIndex..<haystack.endIndex
+        while let found = haystack.range(of: needle, range: searchRange) {
+            if found.upperBound == haystack.endIndex
+                || !isWordCharacter(haystack[found.upperBound]) {
+                return true
+            }
+            guard found.lowerBound < haystack.endIndex else { return false }
+            searchRange = haystack.index(after: found.lowerBound)..<haystack.endIndex
+        }
+        return false
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_" || character == "-"
     }
 }

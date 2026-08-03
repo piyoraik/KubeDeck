@@ -32,6 +32,12 @@ struct OverviewView: View {
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // **読めたぶんは出したうえで、欠けを断る。** 権限の無い種別が
+                // 1 つあるだけで概要ごと消していた（kubectl は読めた種別を
+                // 標準出力に書いているのに、終了コードだけ見て捨てていた）。
+                if let notice = store.deniedKindsNotice {
+                    PartialDataNotice(text: notice)
+                }
                 ClusterStatusCard(
                     pods: store.overview.pods,
                     workloads: store.overview.workloads,

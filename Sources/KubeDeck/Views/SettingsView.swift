@@ -141,17 +141,25 @@ private struct LogSettings: View {
 
         Form {
             Section {
-                Toggle("Pod を選んだらログも切り替える", isOn: $preferences.followsSelectionForLogs)
+                Toggle(
+                    "ログを開いているとき、Pod を選んだら切り替える",
+                    isOn: $preferences.followsSelectionForLogs)
             } footer: {
-                Text("パネルの ✕ で閉じると、この設定も切れます。もう一度ログを開くと戻ります。")
+                Text("ログは「ログを見る」を押したときだけ開きます。行を選んだだけでは開きません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("開いたときの既定") {
-                Toggle("末尾に追従する", isOn: $preferences.logFollowsByDefault)
+            Section {
+                Toggle("追いかける・末尾へ送る", isOn: $preferences.logFollowsByDefault)
                 Toggle("長い行を折り返す", isOn: $preferences.logWrapsByDefault)
                 Toggle("時刻を出す", isOn: $preferences.logShowsTimestamps)
+            } header: {
+                Text("開いたときの既定")
+            } footer: {
+                Text("ログの画面では「追いかける」（kubectl logs --follow で新しい行を受け取り続ける）と「末尾へ送る」（新しい行が来たら末尾までスクロールする）を別々に切れます。遡って読むときに切るのは後者で、切っても取得は続くので行は消えません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -254,7 +262,7 @@ private struct MetricsSettings: View {
             } header: {
                 Text("使用率のしきい値")
             } footer: {
-                Text("ノードの CPU / メモリ列と、使用量の棒の色が変わる境目です。")
+                Text("ノードの CPU / メモリ列と、使用量の棒の色が変わる境目です。「異常」は「注意」より下にできません（下にできると、注意の色が一度も出ないまま異常に飛ぶため）。片方を動かすと、必要なときだけもう片方も動きます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

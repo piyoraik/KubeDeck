@@ -15,6 +15,14 @@ struct CommandError: LocalizedError, Sendable {
     let command: String
     let exitCode: Int32
     let message: String
+    /// 失敗したときに、それでも書き出されていた標準出力。
+    ///
+    /// **捨てない。** kubectl は複数種別をまとめて get したとき、権限で拒まれた
+    /// 種別があっても**読めた種別は標準出力に書いてから終了コード 1 で終わる**。
+    /// ここに載せておかないと、呼び出し側は取れているデータを見ることすらできない。
+    var partialStdout: Data?
+    /// 言い換える前の stderr。種別ごとの失敗を拾い直すために持つ。
+    var rawStderr: String = ""
 
     var errorDescription: String? {
         message.isEmpty
@@ -183,15 +191,21 @@ enum ProcessRunner {
         }
     }
 
-    /// 標準出力を 1 行ずつ流す。`kubectl logs -f` 用。
+    /// 標準出力を**読めた塊ごと**に流す。`kubectl logs -f` 用。
     /// 返り値のハンドルを `terminate()` すると追従が止まる。
+    ///
+    /// **1 行ずつ yield しない。** パイプから 1 度に読めたぶんはもともと塊で
+    /// 届いており、それをわざわざ 1 行ずつにばらすと、受け手は行の数だけ
+    /// 画面を作り直すことになる（毎秒数百行を出す Pod で UI が張り付いた）。
+    /// 塊のまま渡せば、受け手は 1 度の更新で済む。**溜め込みではないので、
+    /// 静かな Pod でも最後の 1 行が遅れて出ることはない**（読めた時点で流す）。
     static func stream(
         executable: String,
         arguments: [String],
         environment: [String: String]
-    ) -> (lines: AsyncStream<String>, handle: ProcessHandle) {
+    ) -> (lines: AsyncStream<[String]>, handle: ProcessHandle) {
         let handle = ProcessHandle()
-        let stream = AsyncStream<String> { continuation in
+        let stream = AsyncStream<[String]> { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = arguments
@@ -208,14 +222,14 @@ enum ProcessRunner {
             pipe.fileHandleForReading.readabilityHandler = { fileHandle in
                 let chunk = fileHandle.availableData
                 guard !chunk.isEmpty else { return }
-                for line in buffer.take(chunk) {
-                    continuation.yield(line)
-                }
+                let lines = buffer.take(chunk)
+                guard !lines.isEmpty else { return }
+                continuation.yield(lines)
             }
 
             process.terminationHandler = { _ in
                 pipe.fileHandleForReading.readabilityHandler = nil
-                if let tail = buffer.flush() { continuation.yield(tail) }
+                if let tail = buffer.flush() { continuation.yield([tail]) }
                 continuation.finish()
             }
 
@@ -227,7 +241,10 @@ enum ProcessRunner {
                 try process.run()
                 handle.attach(process)
             } catch {
-                continuation.yield("プロセスを起動できませんでした: \(error.localizedDescription)")
+                // 起動できなかったときは読み手が付かないので、後始末を自分でする。
+                pipe.fileHandleForReading.readabilityHandler = nil
+                continuation.yield(
+                    ["プロセスを起動できませんでした: \(error.localizedDescription)"])
                 continuation.finish()
             }
         }

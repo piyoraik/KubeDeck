@@ -32,10 +32,15 @@ struct PlacementView: View {
                 modeSwitcher
                 Divider()
                 if preferences.placementGrouping == .map {
-                    WorkloadMap(spreads: spreads)
+                    TraceMapView()
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
+                            // Service が読めていないだけなのに「入口が無い」と
+                            // 読めてしまう。欠けは図ではなく文字で断る。
+                            if let notice = store.deniedKindsNotice {
+                                PartialDataNotice(text: notice)
+                            }
                             if preferences.placementGrouping.isNodeFirst {
                                 ForEach(nodeGroups, id: \.id) { group in
                                     NodeCard(group: group)
@@ -51,10 +56,13 @@ struct PlacementView: View {
                 }
             }
             // 並べているのは Pod なので、一覧と同じ絞り込みを付ける。
+            // **たどるでは相手が違う。** 絞るのは左の起点の一覧なので、
+            // 同じ「Pod を絞り込む」と書くと、図が絞られるように読める。
             .searchable(
                 text: Binding(get: { store.searchText }, set: { store.searchText = $0 }),
                 placement: .toolbar,
-                prompt: "Pod を絞り込む")
+                prompt: preferences.placementGrouping == .map
+                    ? "たどる起点を絞り込む" : "Pod を絞り込む")
         }
     }
 
@@ -214,42 +222,15 @@ struct PlacementView: View {
 
     // MARK: - 所有者とノードの解決
 
+    // **解き方を 2 つ持たない。** ノード名も所有者も、たどると同じ答えでないと
+    // 「ワークロード別では 3 個なのに、たどると 2 個」のような食い違いが出る。
     static func nodeName(of pod: K8sObject) -> String? {
-        guard let name = pod.spec?["nodeName"]?.stringValue, !name.isEmpty else { return nil }
-        return name
+        PlacementTrace.nodeName(of: pod)
     }
 
-    /// Pod の所有者の名前。
-    ///
-    /// **ReplicaSet と Job で止めない。** ReplicaSet 名は
-    /// `<Deployment 名>-<ハッシュ>` で、更新のたびに別のまとまりに見える。
-    /// Job も CronJob から作られたものは実行のたびに名前が変わる。
-    /// もう一段辿って Deployment / CronJob の名前にする。
+    /// Pod の所有者の名前。ReplicaSet / Job で止めず、Deployment / CronJob まで辿る。
     static func owner(of pod: K8sObject, controllers: [String: K8sObject]) -> String? {
-        guard let reference = controllerReference(of: pod) else { return nil }
-        if reference.kind == "ReplicaSet" || reference.kind == "Job" {
-            let key = "\(pod.namespace ?? "")/\(reference.kind)/\(reference.name)"
-            if let parent = controllers[key],
-               let grandparent = controllerReference(of: parent) {
-                return grandparent.name
-            }
-        }
-        return reference.name
-    }
-
-    /// 支配している所有者。`controller: true` のものを採る。
-    /// 無ければ先頭（`ownerReferences` は複数持てるが、支配者は 1 つだけ）。
-    private static func controllerReference(
-        of object: K8sObject
-    ) -> (kind: String, name: String)? {
-        let references = object.raw.path("metadata.ownerReferences")?.arrayValue ?? []
-        let controller = references.first { $0["controller"]?.boolValue == true }
-            ?? references.first
-        guard let controller,
-              let kind = controller["kind"]?.stringValue,
-              let name = controller["name"]?.stringValue
-        else { return nil }
-        return (kind, name)
+        PlacementTrace.workloadOwner(of: pod, controllers: controllers)?.name
     }
 
     // MARK: - 中身が無いとき
@@ -690,372 +671,5 @@ private struct PodTile: View {
                 + " · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))"
         }
         return text
-    }
-}
-
-// MARK: - たどる（1 つを枝で展開）
-
-/// ワークロードを 1 つ選んで、ReplicaSet から Pod、ノードまで枝で辿る。
-///
-/// **全部を一度に描かない。** 222 Pod を線でつないだ図は、線の数が多すぎて
-/// どこから読めばいいのか分からなくなる。選んだ 1 つだけを展開する。
-///
-/// 枝は罫線の文字で描く。**座標を計算して線を引かない** — 折り返しや
-/// スクロールのたびに位置を計算し直すことになり、図のためだけに
-/// レイアウトの仕組みを持つことになる。
-private struct WorkloadMap: View {
-    @Environment(ClusterStore.self) private var store
-    let spreads: [PlacementView.Spread]
-    @State private var focus: String?
-
-    var body: some View {
-        HStack(spacing: 0) {
-            picker
-            // **横並びの中に `Divider` を置かない。** 高さが定まらず、
-            // `NavigationSplitView` と `.inspector` ですでに `NSSplitView` が
-            // 入れ子になっているこの窓では、レイアウト中の例外の芽になる。
-            // 見た目は同じなので、太さの決まった矩形にする。
-            Rectangle()
-                .fill(Palette.hairline)
-                .frame(width: 1)
-                .frame(maxHeight: .infinity)
-            if let branch = branch {
-                ScrollView {
-                    BranchTree(branch: branch)
-                        .padding(16)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ContentUnavailableView {
-                    Label("たどる対象を選んでください", systemImage: "point.3.filled.connected.trianglepath.dotted")
-                } description: {
-                    Text("左の一覧から 1 つ選ぶと、Pod とノードまで枝で出します。")
-                }
-            }
-        }
-    }
-
-    /// 左の一覧。**多い順のまま出す。** 探しているのはたいてい大きいもの。
-    ///
-    /// **`List` を使わない。** macOS の `List` は自前で最小幅を要求し、
-    /// `NavigationSplitView` の詳細の中に横並びで置くと、列がまとめて窓より
-    /// 広がる。**サイドバーの左端と詳細パネルの右端が切れた**（この画面だけ
-    /// 起きるのはそのため）。自前の行にすれば幅はこちらが決められる。
-    private var picker: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(spreads) { spread in
-                    row(spread)
-                    Divider().opacity(0.4)
-                }
-            }
-        }
-        .frame(width: 220)
-        .background(Palette.insetFill.opacity(0.5))
-        // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
-        // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。
-        // 一覧が変わるたびに、選択が無効なら選び直す。
-        .onChange(of: spreads.map(\.id), initial: true) { _, ids in
-            if focus == nil || !ids.contains(focus!) { focus = ids.first }
-        }
-    }
-
-    private func row(_ spread: PlacementView.Spread) -> some View {
-        let isSelected = focus == spread.id
-
-        return Button {
-            focus = spread.id
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(spread.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    // 同じ名前が別の Namespace に居ることがある。添えないと選べない。
-                    if let namespace = spread.namespace {
-                        Text(namespace)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 6)
-                Text("\(spread.podCount)")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.20) : .clear)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var branch: Branch? {
-        guard let focus, let spread = spreads.first(where: { $0.id == focus }) else { return nil }
-        let pods = spread.byNode.flatMap(\.pods)
-
-        // 直接の所有者（ReplicaSet / Job）ごとに割る。世代が分かる。
-        // 名前だけで束ねない。別の Namespace に同じ名前の ReplicaSet がある。
-        var byController: [String: [K8sObject]] = [:]
-        for pod in pods {
-            let owner = Self.directOwner(of: pod) ?? "（所有者なし）"
-            byController["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
-        }
-
-        // Pod が 0 の ReplicaSet も出す。入れ替わりの途中や、古い世代が
-        // 残っていることが分かる。**この Namespace のものだけ**を足す。
-        for controller in store.placementControllers {
-            guard controller.namespace == spread.namespace,
-                  Self.ownerName(of: controller) == spread.name else { continue }
-            let key = "\(controller.namespace ?? "-")/\(controller.name)"
-            if byController[key] == nil { byController[key] = [] }
-        }
-
-        var groups: [Branch.Controller] = []
-        for (key, pods) in byController {
-            groups.append(
-                Branch.Controller(
-                    name: String(key.drop(while: { $0 != "/" }).dropFirst()), pods: pods))
-        }
-        groups.sort { left, right in
-            left.pods.count == right.pods.count
-                ? left.name < right.name : left.pods.count > right.pods.count
-        }
-        return Branch(name: spread.name, controllers: groups)
-    }
-
-    private static func directOwner(of pod: K8sObject) -> String? {
-        ownerName(of: pod)
-    }
-
-    private static func ownerName(of object: K8sObject) -> String? {
-        let references = object.raw.path("metadata.ownerReferences")?.arrayValue ?? []
-        let controller = references.first { $0["controller"]?.boolValue == true }
-            ?? references.first
-        return controller?["name"]?.stringValue
-    }
-}
-
-private struct Branch {
-    struct Controller: Identifiable {
-        let name: String
-        let pods: [K8sObject]
-        var id: String { name }
-    }
-
-    let name: String
-    let controllers: [Controller]
-}
-
-/// ワークロードを図にする。
-///
-/// 参考にしているのは Kubernetes の構成図（七角形の器・範囲の囲み・矢印）。
-/// **罫線の木ではなく図にする。** 木は階層は表せるが「Namespace の中に
-/// Deployment があり、そこから Pod が出て、それぞれ別のノードに載っている」
-/// という**入れ子と行き先**が同時には見えない。
-///
-/// **自動でレイアウトしない。** 段は「ワークロード → 世代 → Pod → ノード」で
-/// 決まっているので、列に並べるだけでよい。線を自由に引く仕組みを持つと、
-/// 図のためだけにレイアウトの実装を抱えることになる。
-private struct BranchTree: View {
-    @Environment(ClusterStore.self) private var store
-    let branch: Branch
-
-    private var pods: [K8sObject] { branch.controllers.flatMap(\.pods) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            DiagramBox(
-                title: namespaceTitle, symbol: ResourceKind.namespace.symbol,
-                tint: .secondary
-            ) {
-                HStack(alignment: .center, spacing: 0) {
-                    // 入口から順に。**無いものは出さない。** Service を持たない
-                    // ワークロードはふつうにあり、空の器を置くと「あるはずの
-                    // ものが欠けている」ように見える。
-                    entryPoints
-                    owner
-                    // ここから各世代へ枝分かれする。
-                    DiagramArrow(length: 22)
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(branch.controllers) { controller in
-                            generation(controller)
-                        }
-                    }
-                }
-            }
-            storage
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// 入口（Ingress → Service）。図は左から右へ流れる。
-    @ViewBuilder
-    private var entryPoints: some View {
-        let services = WorkloadRelations.services(for: pods, among: store.placementRelated)
-        let ingresses = WorkloadRelations.ingresses(for: services, among: store.placementRelated)
-
-        if !ingresses.isEmpty {
-            column(ingresses, kind: .ingress)
-            DiagramArrow(length: 22)
-        }
-        if !services.isEmpty {
-            column(services, kind: .service)
-            DiagramArrow(length: 22)
-        }
-    }
-
-    /// 使っているストレージ。**Pod の右に置かない。** 流れの先ではなく
-    /// 付属物なので、図の下に別の帯として置く。
-    @ViewBuilder
-    private var storage: some View {
-        let claims = WorkloadRelations.claims(for: pods, among: store.placementRelated)
-        if !claims.isEmpty {
-            HStack(alignment: .center, spacing: 10) {
-                Text("使っているストレージ")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                ForEach(claims) { claim in
-                    node(claim, kind: .persistentVolumeClaim, tint: .secondary)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private func column(_ objects: [K8sObject], kind: ResourceKind) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(objects) { object in
-                node(object, kind: kind)
-            }
-        }
-    }
-
-    private func node(
-        _ object: K8sObject, kind: ResourceKind, tint: Color = Palette.diagram
-    ) -> some View {
-        HStack(spacing: 7) {
-            ResourceGlyph(symbol: kind.symbol, size: 28, tint: tint)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(object.name)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(kind.displayName)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: 150, alignment: .leading)
-        }
-    }
-
-    private var namespaceTitle: String {
-        let namespaces = Set(branch.controllers.flatMap { $0.pods.compactMap(\.namespace) })
-        guard namespaces.count == 1, let only = namespaces.first else { return "Namespace" }
-        return only
-    }
-
-    private var owner: some View {
-        VStack(spacing: 6) {
-            ResourceGlyph(symbol: ResourceKind.deployment.symbol, size: 40)
-            Text(branch.name)
-                .font(.caption.weight(.medium))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 120)
-                .lineLimit(2)
-        }
-    }
-
-    /// ReplicaSet / Job 1 世代ぶん。**Pod が 0 の世代も囲みごと出す。**
-    /// 入れ替わりの途中や、古い世代が残っていることが分かる。
-    private func generation(_ controller: Branch.Controller) -> some View {
-        DiagramBox(
-            title: controller.name, symbol: ResourceKind.replicaSet.symbol,
-            tint: controller.pods.isEmpty ? .secondary : Palette.diagram
-        ) {
-            if controller.pods.isEmpty {
-                Text("Pod はありません（古い世代）")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(height: 34)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(controller.pods) { pod in
-                        PodBranchRow(pod: pod)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Pod 1 つと、その載っているノード。
-private struct PodBranchRow: View {
-    @Environment(ClusterStore.self) private var store
-    let pod: K8sObject
-
-    private var isSelected: Bool { store.selectedObjectID == pod.id }
-
-    var body: some View {
-        let status = StatusResolver.health(for: pod)
-
-        HStack(spacing: 8) {
-            Button {
-                store.selectedObjectID = pod.id
-            } label: {
-                HStack(spacing: 8) {
-                    ResourceGlyph(
-                        symbol: ResourceKind.pod.symbol, size: 30,
-                        badge: status.level)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(pod.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(status.text)
-                            .font(.caption2)
-                            .foregroundStyle(Palette.textColor(for: status.level))
-                    }
-                    // **`width` で決め打ちしない。** 縮められない最小幅になり、
-                    // 詳細の欄が窓より広がって、サイドバーとインスペクタの
-                    // 両端が切れる（この画面だけ起きていた）。上限にする。
-                    .frame(maxWidth: 210, alignment: .leading)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(
-                            Color.accentColor.opacity(isSelected ? 0.8 : 0), lineWidth: 1.5))
-            }
-            .buttonStyle(.plain)
-
-            DiagramArrow(length: 20)
-
-            // 行き先のノード。**Pod と同じ器にしない** — 種別が違う。
-            HStack(spacing: 6) {
-                ResourceGlyph(
-                    symbol: ResourceKind.node.symbol, size: 26, tint: .secondary)
-                // **行き先の欄は幅を決める。** 決めないと、伸び縮みする列の
-                // 中でいちばん後ろのこの文字から先に潰れ、名前が消える
-                // （実際、矢印の先が空になった）。
-                Text(PlacementView.nodeName(of: pod) ?? "未スケジュール")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    // 下限は残す。無いと、伸び縮みの中でここから潰れて
-                    // 矢印の先が空になる。
-                    .frame(minWidth: 70, maxWidth: 170, alignment: .leading)
-            }
-        }
     }
 }

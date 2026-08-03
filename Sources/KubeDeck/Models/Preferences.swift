@@ -179,9 +179,17 @@ final class Preferences {
     }
 
     /// 使用率がこれを超えると「処理中」の色になる。
+    ///
+    /// **「異常」を追い越させない。** `usageLevel` は critical から先に見るので、
+    /// 注意 90 / 異常 80 のような組み合わせを許すと**警告色が一度も出なくなり**、
+    /// 80% 超がいきなり赤になる。壊れはしないが黙って意味が変わるので、
+    /// 片方を動かしたらもう片方を押し出す。
     var usageWarningPercent: Int {
         didSet {
             store.set(usageWarningPercent, forKey: Key.usageWarningPercent)
+            if usageCriticalPercent < usageWarningPercent {
+                usageCriticalPercent = usageWarningPercent
+            }
             publishThresholds()
         }
     }
@@ -190,6 +198,9 @@ final class Preferences {
     var usageCriticalPercent: Int {
         didSet {
             store.set(usageCriticalPercent, forKey: Key.usageCriticalPercent)
+            if usageWarningPercent > usageCriticalPercent {
+                usageWarningPercent = usageCriticalPercent
+            }
             publishThresholds()
         }
     }
@@ -504,7 +515,7 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
         case .workload:
             return "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。"
         case .map:
-            return "1 つ選んで、ReplicaSet から Pod、ノードまで枝で辿ります。"
+            return "Ingress・Service・ワークロード・ノードのどれかから、繋がりを辿ります。"
         }
     }
 

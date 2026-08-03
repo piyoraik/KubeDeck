@@ -6,6 +6,10 @@ struct InspectorView: View {
 
     private enum Tab: String, CaseIterable, Identifiable {
         case summary
+        /// **状態の「なぜ」はここにしかない。** 一覧の STATUS 列も概要の
+        /// リングも「異常である」ことまでしか言わず、`FailedScheduling` の
+        /// 理由や `Failed to pull image` の中身はイベントにしか出ない。
+        case events
         case settings
         case yaml
 
@@ -13,6 +17,7 @@ struct InspectorView: View {
         var title: String {
             switch self {
             case .summary: return "概要"
+            case .events: return "イベント"
             case .settings: return "設定"
             case .yaml: return "YAML"
             }
@@ -52,6 +57,10 @@ struct InspectorView: View {
             switch tab {
             case .summary:
                 SummaryPane(object: object)
+            case .events:
+                // 選択が変わったら引き直す。id を付けないと前の対象の
+                // イベントが残り、いま選んでいるものの話に見える。
+                EventsPane(object: object).id(object.id)
             case .settings:
                 SettingsDigestView(object: object)
             case .yaml:
@@ -532,6 +541,169 @@ private struct ChipCloud: View {
         // 出しても読めない。存在だけ示す。
         guard truncatesValues, raw.count > 240 else { return raw }
         return String(raw.prefix(240)) + "…"
+    }
+}
+
+// MARK: - イベントタブ
+
+/// 選択中のオブジェクトに紐づくイベント。
+///
+/// **一覧の STATUS 列と役割が違う。** あちらは「いま何であるか」、こちらは
+/// 「なぜそうなったか」。`Pending` の理由（`FailedScheduling: insufficient cpu`）も
+/// `CrashLoopBackOff` の発端（`Failed to pull image`）も、イベントにしか出ない。
+private struct EventsPane: View {
+    @Environment(ClusterStore.self) private var store
+    let object: K8sObject
+
+    /// nil は「まだ引いていない」。空配列は「引いたが 0 件」。
+    /// **同じものとして持たない** — 読み込み中と 0 件は別の表示にする。
+    @State private var events: [K8sObject]?
+    @State private var failure: String?
+    @State private var isReloading = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 失敗したときも出す。出さないと引き直す手段が無くなる。
+            if events != nil || failure != nil {
+                Divider()
+                footer
+            }
+        }
+        .task { await load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let failure {
+            // **「ありません」と言わない。** 引けなかっただけで、
+            // 無いことは確かめていない。
+            ContentUnavailableView {
+                Label("イベントを取得できません", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(failure).textSelection(.enabled)
+            }
+        } else if let events {
+            if events.isEmpty {
+                emptyState
+            } else {
+                list(events)
+            }
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// **黙って「ありません」で終えない。** イベントには寿命があり（既定で
+    /// 1 時間）、古い出来事は本当に消える。断りが無いと「何も起きていない」と
+    /// 読めるが、実際は「もう残っていない」かもしれない。
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("イベントはありません。", systemImage: "bell.slash")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("イベントはしばらく（クラスタの既定で 1 時間）で消えます。"
+                 + "それより前の出来事はクラスタに残っていません。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+    }
+
+    private func list(_ events: [K8sObject]) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                    if index > 0 { Divider().padding(.leading, 16) }
+                    row(event)
+                }
+            }
+        }
+    }
+
+    /// 概要のイベント行と同じ作り（左端 2pt の帯）。ただし**対象は書かない** —
+    /// 選んでいるもの自身なので、見出しと同じ名前を 2 度出すことになる。
+    /// 代わりに本文は折り返す。ここでは中身そのものが読みたいもの。
+    private func row(_ event: K8sObject) -> some View {
+        let status = StatusResolver.status(for: event)
+        let count = event.raw["count"]?.intValue ?? 1
+
+        return HStack(alignment: .top, spacing: 10) {
+            Rectangle()
+                .fill(
+                    status.level == .neutral
+                        ? Color.clear : Palette.color(for: status.level))
+                .frame(width: 2)
+                .frame(maxHeight: .infinity)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(event.raw["reason"]?.stringValue ?? "")
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    // 繰り返されたことは回数にしか出ない。同じ行が
+                    // 1 度きりなのか 200 回目なのかで意味がまるで違う。
+                    if count > 1 {
+                        Text("×\(count)")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Text(ResourceTable.age(of: event, kind: .event))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
+
+                Text(ResourceTable.eventMessage(event))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            if let events, !events.isEmpty {
+                Text("\(events.count) 件")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("再読み込み") {
+                Task { await load(again: true) }
+            }
+            .disabled(isReloading)
+        }
+        .controlSize(.small)
+        .padding(10)
+        .background(.bar)
+    }
+
+    /// 引き直すときは前の結果を消さない。消すと一覧が一瞬空になり、
+    /// 「0 件になった」ように見える。
+    private func load(again: Bool = false) async {
+        if again { isReloading = true }
+        defer { isReloading = false }
+
+        switch await store.events(for: object) {
+        case .success(let value):
+            events = value
+            failure = nil
+        case .failure(let error):
+            failure = error.localizedDescription
+        }
     }
 }
 

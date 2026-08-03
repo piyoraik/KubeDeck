@@ -69,6 +69,11 @@ struct DiagramBox<Content: View>: View {
     let title: String
     var symbol: String?
     var tint: Color = Palette.diagram
+    /// 見出しを押せるようにする。**押す先を囲みの中に置かない** — 中に
+    /// ボタンを足すと、囲まれているものの 1 つに見える。囲みそのものを
+    /// 指す操作なので、見出しがその場所。
+    var action: (() -> Void)?
+    var help: String?
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -78,19 +83,34 @@ struct DiagramBox<Content: View>: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(tint.opacity(0.55), lineWidth: 1))
             .overlay(alignment: .topLeading) {
-                HStack(spacing: 4) {
-                    if let symbol {
-                        Image(systemName: symbol).font(.system(size: 8))
-                    }
-                    Text(title)
-                        .font(.caption2.weight(.medium))
-                }
-                .foregroundStyle(tint)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .offset(x: 10, y: -7)
+                label
+                    .offset(x: 10, y: -7)
             }
+    }
+
+    @ViewBuilder
+    private var label: some View {
+        if let action {
+            Button(action: action) { titleText }
+                .buttonStyle(.plain)
+                .help(help ?? title)
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        HStack(spacing: 4) {
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: 8))
+            }
+            Text(title)
+                .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

@@ -62,3 +62,22 @@ targets:
         # Hardened Runtime も外す（署名が ad-hoc のため）。
         ENABLE_HARDENED_RUNTIME: false
         SWIFT_STRICT_CONCURRENCY: complete
+    scheme:
+      testTargets:
+        - KubeDeckTests
+
+  # 状態の判定・単位の換算・関係の突き合わせは、どれも純粋関数で UI に
+  # 依存しない。ここが回帰すると「kubectl と表示がずれる」という、
+  # このアプリで最も気付きにくい壊れ方をするので、合成 JSON で固める。
+  KubeDeckTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/KubeDeckTests
+    dependencies:
+      - target: KubeDeck
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piyoraik.KubeDeckTests
+        GENERATE_INFOPLIST_FILE: true
+        SWIFT_STRICT_CONCURRENCY: complete

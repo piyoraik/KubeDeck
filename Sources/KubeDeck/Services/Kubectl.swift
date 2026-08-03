@@ -180,7 +180,11 @@ actor Kubectl {
             throw CommandError(
                 command: "kubectl " + fullArguments.joined(separator: " "),
                 exitCode: result.exitCode,
-                message: Self.explain(result.stderr))
+                message: Self.explain(result.stderr),
+                // 失敗しても書き出されていたぶんは載せて渡す。捨てると、
+                // 一部の種別だけ拒まれたときに読めたデータまで消える。
+                partialStdout: result.stdout.isEmpty ? nil : result.stdout,
+                rawStderr: result.stderr)
         }
         return result
     }
@@ -240,14 +244,29 @@ actor Kubectl {
         return shown
     }
 
-    private static let secretHints = ["SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL"]
+    private static let secretHints = [
+        "SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL", "AUTH", "SESSION",
+    ]
 
-    private static func hidesValue(name: String, value: String) -> Bool {
+    static func hidesValue(name: String, value: String) -> Bool {
+        // **名前に頼りきらない。** `DATABASE_URL=postgres://user:pass@host` のような
+        // 値は、名前のどれにも当たらないのに認証情報を含む。この画面は設定画面で
+        // あって、そのまま貼って共有されうる場所なので、形でも見る。
+        if containsEmbeddedCredentials(value) { return true }
         // 場所を指しているなら見せる。CA や kubeconfig の指し先が合っているかを
         // 確かめる場所なので、伏せると診断にならない。
         if value.hasPrefix("/") || value.hasPrefix("~") { return false }
         let upper = name.uppercased()
         return secretHints.contains { upper.contains($0) }
+    }
+
+    /// `scheme://user:pass@host` の形。**`user@host` は伏せない** —
+    /// 資格情報ではないうえ、プロキシの指し先として見たい値。
+    private static func containsEmbeddedCredentials(_ value: String) -> Bool {
+        guard let separator = value.range(of: "://") else { return false }
+        let authority = value[separator.upperBound...].prefix { $0 != "/" }
+        guard let at = authority.lastIndex(of: "@") else { return false }
+        return authority[..<at].contains(":")
     }
 
     // MARK: - 失敗の言い換え
@@ -407,25 +426,92 @@ actor Kubectl {
         return try K8sObject.list(from: result.stdout, assuming: kind)
     }
 
+    /// 複数種別をまとめて取った結果。
+    ///
+    /// **「読めた種別」と「拒まれた種別」を分けて返す。** 混ぜると、呼び出し側は
+    /// 拒まれた種別を 0 件と数えることになる。
+    struct PartialList: Sendable {
+        var objects: [K8sObject] = []
+        /// 権限が無くて読めなかった種別。**0 件と区別するために持つ。**
+        var denied: [ResourceKind] = []
+
+        var isDenied: Bool { !denied.isEmpty }
+    }
+
     /// 複数種別を 1 回の kubectl で取る。概要画面が 10 個以上プロセスを
     /// 起動しないようにするため。まとめて get すると items に kind が入るので、
     /// 呼び出し側で振り分けられる。
+    ///
+    /// **一部が読めなくても、読めたぶんは捨てない。** `--ignore-not-found` が
+    /// 握りつぶすのは NotFound だけで、**Forbidden はそのまま終了コード 1 になる**
+    /// （実測。`kubectl get pods,secrets` で secrets だけ拒まれると exit 1）。
+    /// にもかかわらず kubectl は**読めた種別を標準出力に書き出している**ので、
+    /// 終了コードだけで投げると 200KB の正しい Pod を捨てて「取得できません」と
+    /// 出すことになる。Secret だけ読めないクラスタで概要が丸ごと消えていた。
     func list(
         kinds: [ResourceKind], context: String, namespace: String?
-    ) async throws -> [K8sObject] {
-        guard !kinds.isEmpty else { return [] }
+    ) async throws -> PartialList {
+        guard !kinds.isEmpty else { return PartialList() }
         let names = kinds.map(\.resourceName).joined(separator: ",")
         var arguments = ["get", names, "-o", "json",
                          "--request-timeout=\(requestTimeout)",
-                         // 権限の無い種別が 1 つあるだけで全部落ちるのを避ける。
+                         // 消えた種別（アドオンを外した直後の CRD など）を
+                         // 落とす。**権限にはこれは効かない。**
                          "--ignore-not-found=true"]
         // 種別が混ざるので、Namespace 非依存のものが含まれていても
         // --all-namespaces / -n はそのまま通る。
         arguments += scope(for: kinds.contains { $0.isNamespaced } ? .pod : .node,
                            namespace: namespace)
-        let result = try await run(arguments, context: context)
-        guard !result.stdout.isEmpty else { return [] }
-        return try K8sObject.list(from: result.stdout)
+
+        let result = try await runAllowingPartialFailure(arguments, context: context)
+        guard !result.stdout.isEmpty else { return PartialList() }
+        return PartialList(
+            objects: try K8sObject.list(from: result.stdout),
+            denied: Self.deniedKinds(in: result.stderr, among: kinds))
+    }
+
+    /// 終了コードが 0 でなくても、標準出力が読めるなら結果として受け取る。
+    ///
+    /// **どこまでを許すかを絞る。** 打ち切りは従来どおり投げる。読めた JSON が
+    /// 1 つも無いときも投げる（認証で落ちていれば標準出力は空になるので、
+    /// ここで本物の失敗を握りつぶすことはない）。
+    private func runAllowingPartialFailure(
+        _ arguments: [String], context: String?
+    ) async throws -> CommandResult {
+        do {
+            return try await run(arguments, context: context)
+        } catch let error as CommandError where error.partialStdout != nil {
+            // `run` は失敗のときに標準出力を捨てるので、拾い直せるように
+            // CommandError へ載せてある。
+            return CommandResult(
+                exitCode: error.exitCode, stdout: error.partialStdout ?? Data(),
+                stderr: error.rawStderr)
+        }
+    }
+
+    /// stderr から、権限で拒まれた種別を拾う。
+    ///
+    /// kubectl は `<resource> is forbidden: ...` という形で resource 名（複数形）を
+    /// 書き出す。要求した種別のうち、そこに現れたものだけを拒まれた扱いにする
+    /// （**当てはまらない失敗を「権限が無い」ことにしない**）。
+    ///
+    /// 実測した書式（グループ付きとグループ無しの両方が来る）:
+    /// ```
+    /// Error from server (Forbidden): secrets is forbidden: ...
+    /// Error from server (Forbidden): deployments.apps is forbidden: ...
+    /// Error from server (Forbidden): ingresses.networking.k8s.io is forbidden: ...
+    /// ```
+    /// private にしないのは、この書式に依存しているところをテストで固めるため。
+    static func deniedKinds(
+        in stderr: String, among kinds: [ResourceKind]
+    ) -> [ResourceKind] {
+        guard stderr.contains("forbidden") else { return [] }
+        var denied = Set<String>()
+        for match in stderr.matches(of: /(\S+?) is forbidden/) {
+            // `pods.metrics.k8s.io` のようにグループが付くことがある。
+            denied.insert(String(match.1).split(separator: ".").first.map(String.init) ?? "")
+        }
+        return kinds.filter { denied.contains($0.resourceName) }
     }
 
     /// クラスタに入っている CRD の種別。
@@ -474,6 +560,83 @@ actor Kubectl {
         let result = try await run(arguments, context: context)
         let objects = try K8sObject.list(from: result.stdout, assuming: .event)
         return Array(objects.reversed().prefix(limit))
+    }
+
+    /// 1 つのオブジェクトに紐づくイベント。
+    ///
+    /// **一覧のイベントを手元で絞って使わない。** イベントは既定で 1 時間ほどで
+    /// 消え、こちらが持っているのは直近 200 件だけ。関係するイベントがその外に
+    /// あると「イベントはありません」と出るが、無いのではなく引いていない。
+    /// **対象を指定して引き直す**（`--field-selector` はサーバ側で絞るので、
+    /// 200 件の窓に関係なく対象のぶんが返る）。
+    ///
+    /// **uid で引く。** 名前で引くと、同じ名前で作り直された前の世代の
+    /// イベントが混ざる（Pod は再作成のたびに uid が変わる）。uid が無いのは
+    /// 合成したオブジェクトぐらいなので、そのときだけ名前と種別に落とす。
+    func events(
+        for object: K8sObject, context: String, limit: Int = 100
+    ) async throws -> [K8sObject] {
+        var selectors: [String] = []
+        if object.uid.isEmpty {
+            selectors.append("involvedObject.name=\(object.name)")
+            if !object.rawKind.isEmpty {
+                selectors.append("involvedObject.kind=\(object.rawKind)")
+            }
+        } else {
+            selectors.append("involvedObject.uid=\(object.uid)")
+        }
+
+        var arguments = ["get", "events", "-o", "json",
+                         "--field-selector=\(selectors.joined(separator: ","))",
+                         "--request-timeout=\(requestTimeout)"]
+        // Namespace を持たないもの（Node / PV）のイベントは default に載る。
+        // 決め打ちせず全体から引く。
+        if let namespace = object.namespace, !namespace.isEmpty {
+            arguments += ["-n", namespace]
+        } else {
+            arguments.append("--all-namespaces")
+        }
+
+        let result = try await run(arguments, context: context)
+        let objects = try K8sObject.list(from: result.stdout, assuming: .event)
+        // **`--sort-by=.lastTimestamp` に頼らない。** `lastTimestamp` を持たず
+        // `eventTime` しか無いイベントが実在する（orbstack の k3s で `Scheduled`
+        // がそうだった）。kubectl は落ちないが、そのイベントを**時刻が無いもの
+        // として扱う**ので、実際にはさっき起きたのに最古の位置へ並ぶ。
+        // `lastSeen` は `eventTime` と `deprecatedLastTimestamp` まで見るので、
+        // 並べ替えはこちらで持つ。
+        let sorted = objects.sorted {
+            (ResourceTable.lastSeen($0) ?? .distantPast)
+                > (ResourceTable.lastSeen($1) ?? .distantPast)
+        }
+        return Array(sorted.prefix(limit))
+    }
+
+    /// このオブジェクトを対象にしている HPA。
+    ///
+    /// **`kubectl scale` の前に見る。** HPA 管理下のワークロードにレプリカ数を
+    /// 書き込んでも、次の調整周期（既定 15 秒）で HPA が戻す。断りが無いと
+    /// 「効かなかった」としか見えず、原因がアプリの側にあるように読める。
+    ///
+    /// 対象は名前と種別で突き合わせる。`scaleTargetRef` は uid を持たない
+    /// （HPA は「その名前のもの」を指す作りで、作り直しても追随する）。
+    func autoscalers(for object: K8sObject, context: String) async throws -> [K8sObject] {
+        var arguments = ["get", ResourceKind.horizontalPodAutoscaler.resourceName,
+                         "-o", "json",
+                         "--request-timeout=\(requestTimeout)",
+                         "--ignore-not-found=true"]
+        if let namespace = object.namespace, !namespace.isEmpty {
+            arguments += ["-n", namespace]
+        }
+        let result = try await run(arguments, context: context)
+        let all = try K8sObject.list(from: result.stdout, assuming: .horizontalPodAutoscaler)
+        return all.filter { hpa in
+            guard let ref = hpa.spec?["scaleTargetRef"] else { return false }
+            guard ref["name"]?.stringValue == object.name else { return false }
+            // 種別まで見る。同じ名前の Deployment と StatefulSet は同居できる。
+            guard let kind = ref["kind"]?.stringValue, !kind.isEmpty else { return true }
+            return kind == object.rawKind
+        }
     }
 
     /// resource は呼び出し側が持っている種別名を渡す。オブジェクトから
@@ -638,7 +801,7 @@ actor Kubectl {
     /// 一覧が読み直されてオブジェクトが差し替わっても影響を受けないようにする。
     func logStream(
         namespace: String, pod: String, options: LogOptions, context: String
-    ) throws -> (lines: AsyncStream<String>, handle: ProcessHandle) {
+    ) throws -> (lines: AsyncStream<[String]>, handle: ProcessHandle) {
         let environment = try environment()
         var arguments = ["--context", context, "logs", pod]
         if !namespace.isEmpty { arguments += ["-n", namespace] }

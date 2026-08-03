@@ -48,7 +48,7 @@ struct LogPanel: View {
             } label: {
                 Label("閉じる", systemImage: "xmark")
             }
-            .help("ログを閉じる。以後は行を選んでも開かない（もう一度開くと追従が戻る）")
+            .help("ログを閉じる。もう一度見るには「ログを見る」から開く")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)

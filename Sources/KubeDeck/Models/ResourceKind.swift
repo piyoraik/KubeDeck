@@ -28,6 +28,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
     case daemonSet
     case job
     case cronJob
+    /// **ワークロードに置く。** レプリカ数を決めているのはこれなので、
+    /// 一覧で Deployment の隣に並んでいないと、なぜ数が動くのか辿れない。
+    case horizontalPodAutoscaler
 
     case service
     case ingress
@@ -53,6 +56,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .daemonSet: return "daemonsets"
         case .job: return "jobs"
         case .cronJob: return "cronjobs"
+        // **API グループを付ける。** `autoscaling` は v1 / v2 が併存し、
+        // 短い名前だと環境によって別のバージョンを引く。
+        case .horizontalPodAutoscaler: return "horizontalpodautoscalers.autoscaling"
         case .service: return "services"
         case .ingress: return "ingresses"
         case .configMap: return "configmaps"
@@ -75,6 +81,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .daemonSet: return "DaemonSet"
         case .job: return "Job"
         case .cronJob: return "CronJob"
+        case .horizontalPodAutoscaler: return "HorizontalPodAutoscaler"
         case .service: return "Service"
         case .ingress: return "Ingress"
         case .configMap: return "ConfigMap"
@@ -103,6 +110,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .daemonSet: return "DaemonSet"
         case .job: return "Job"
         case .cronJob: return "CronJob"
+        // 略さない。サイドバーで `PersistentVolumeClaim` と並ぶので、
+        // ここだけ `HPA` にすると別の何かに見える。
+        case .horizontalPodAutoscaler: return "HorizontalPodAutoscaler"
         case .service: return "Service"
         case .ingress: return "Ingress"
         case .configMap: return "ConfigMap"
@@ -117,7 +127,8 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
 
     var category: ResourceCategory {
         switch self {
-        case .pod, .deployment, .replicaSet, .statefulSet, .daemonSet, .job, .cronJob:
+        case .pod, .deployment, .replicaSet, .statefulSet, .daemonSet, .job, .cronJob,
+             .horizontalPodAutoscaler:
             return .workloads
         case .service, .ingress:
             return .network
@@ -147,6 +158,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .daemonSet: return "square.grid.3x3"
         case .job: return "checkmark.seal"
         case .cronJob: return "clock.arrow.circlepath"
+        case .horizontalPodAutoscaler: return "arrow.up.arrow.down.circle"
         case .service: return "network"
         case .ingress: return "arrow.down.right.and.arrow.up.left"
         case .configMap: return "doc.text"

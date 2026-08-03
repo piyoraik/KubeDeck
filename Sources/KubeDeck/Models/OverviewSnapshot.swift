@@ -81,6 +81,12 @@ struct OverviewSnapshot: Sendable {
     var recentEvents: [K8sObject] = []
     /// 全ノードの割り当て可能量の合計。使用率の分母。
     var allocatable = ResourceUsage()
+    /// 権限が無くて読めなかった種別。
+    ///
+    /// **`counts` に 0 を入れない。** 入れると「拒まれた」が「無い」になる。
+    /// `counts` から抜いておけば、件数の消費側（サイドバー）は nil を
+    /// 「まだ分からない」として扱うので、既存の経路がそのまま正しく働く。
+    var deniedKinds: [ResourceKind] = []
 
     func count(_ kind: ResourceKind) -> Int { counts[kind] ?? 0 }
 }

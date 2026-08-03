@@ -30,3 +30,25 @@ struct LoadingView: View {
         .accessibilityLabel(Text(message))
     }
 }
+
+/// 中身は出せているが、一部が欠けていることの断り。
+///
+/// **画面を失敗にしない。** 読めたぶんは出したうえで、欠けていることだけを
+/// 上に細く置く。全体をエラーにすると、取れているデータまで見えなくなる
+/// （それが「無い」と「取れていない」を混ぜるということ）。
+struct PartialDataNotice: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: StatusLevel.warning.symbol)
+            .font(.caption)
+            .foregroundStyle(Palette.textColor(for: .warning))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                Palette.color(for: .warning).opacity(0.10),
+                in: RoundedRectangle(cornerRadius: 8))
+    }
+}

@@ -7,3 +7,6 @@ DerivedData/
 KubeDeck.xcodeproj/
 Resources/Info.plist
 dist/
+# 画面の確認で撮ったもの。配布物の図は Design/ にある。
+スクリーンショット*.png
+Screenshot*.png

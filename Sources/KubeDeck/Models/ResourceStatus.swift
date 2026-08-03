@@ -101,6 +101,7 @@ enum StatusResolver {
         case .daemonSet: return daemonSetStatus(object)
         case .job: return jobStatus(object)
         case .cronJob: return cronJobStatus(object)
+        case .horizontalPodAutoscaler: return hpaStatus(object)
         case .persistentVolumeClaim, .persistentVolume, .namespace:
             let phase = object.status?["phase"]?.stringValue ?? "Unknown"
             return ResourceStatus(text: phase, level: StatusLevel.classify(phase))
@@ -315,6 +316,42 @@ enum StatusResolver {
         if cronJob.spec?["suspend"]?.boolValue == true {
             return ResourceStatus(text: "Suspended", level: .serious)
         }
+        return ResourceStatus(text: "Active", level: .good)
+    }
+
+    /// HPA の状態。
+    ///
+    /// **数だけ見て「正常」にしない。** 指標が引けていない HPA は、
+    /// レプリカ数がぴたりと揃ったまま**何もしない**。数字の上では健全に
+    /// 見えるので、`ScalingActive=False` をここで表に出さないと気付けない
+    /// （metrics-server が落ちている環境でいちばん起きる）。
+    static func hpaStatus(_ hpa: K8sObject) -> ResourceStatus {
+        let conditions = hpa.status?["conditions"]?.arrayValue ?? []
+
+        func failing(_ type: String) -> String? {
+            guard let condition = conditions.first(where: {
+                $0["type"]?.stringValue == type
+            }), condition["status"]?.stringValue == "False" else { return nil }
+            // 理由（`FailedGetResourceMetric` など）のほうが対処に直結する。
+            let reason = condition["reason"]?.stringValue ?? ""
+            return reason.isEmpty ? "\(type)=False" : reason
+        }
+
+        if let reason = failing("AbleToScale") {
+            return ResourceStatus(text: reason, level: .serious)
+        }
+        if let reason = failing("ScalingActive") {
+            return ResourceStatus(text: reason, level: .serious)
+        }
+
+        let current = hpa.status?["currentReplicas"]?.intValue
+        let desired = hpa.status?["desiredReplicas"]?.intValue
+        if let current, let desired, current != desired {
+            return ResourceStatus(text: "Scaling", level: .warning)
+        }
+
+        // **条件が無いことを異常にしない。** `autoscaling/v1` は conditions を
+        // 持たず、動いていても空で返る。
         return ResourceStatus(text: "Active", level: .good)
     }
 }

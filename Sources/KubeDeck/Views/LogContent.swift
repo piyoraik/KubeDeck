@@ -11,7 +11,16 @@ struct LogContent: View {
 
     @State private var lines: [LogLine] = []
     @State private var container: String = ""
-    @State private var follow = Preferences.shared.logFollowsByDefault
+    /// `kubectl logs --follow` を付けるか。**取得そのものの話。**
+    /// 切ると、いま出ている範囲を読み終えた時点で kubectl が終了する。
+    @State private var streams = Preferences.shared.logFollowsByDefault
+    /// 新しい行が来たら末尾へスクロールするか。**見え方だけの話。**
+    ///
+    /// **`streams` と 1 つにしない。** 以前は 1 つのトグルが両方を兼ねており、
+    /// しかも取得の鍵（`reloadKey`）に入っていたので、**「スクロールを止めたい」
+    /// だけで切ると取得ごとやり直しになり、それまで読んでいた行が全部消えた。**
+    /// 遡って読もうとする場面がまさにそこなので、いちばん困る消え方だった。
+    @State private var autoScroll = Preferences.shared.logFollowsByDefault
     @State private var timestamps = Preferences.shared.logShowsTimestamps
     @State private var previous = false
     /// 折り返すか。切ると横スクロールになる。
@@ -30,12 +39,17 @@ struct LogContent: View {
     private var maximumLines: Int { Preferences.shared.logBufferLines }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // **1 度だけ絞り込む。** 本文・空の判定・件数の 3 か所がそれぞれ
+        // `visibleLines` を読んでいたので、絞り込み中は 1 回の描画で
+        // 全行を 3 度舐めていた。
+        let visible = visibleLines
+
+        return VStack(spacing: 0) {
             controls
             Divider()
-            output
+            output(visible)
             Divider()
-            status
+            status(visible)
         }
         .task(id: reloadKey) { await restart() }
         .onDisappear { stop() }
@@ -58,10 +72,19 @@ struct LogContent: View {
                 .frame(maxWidth: 200)
             }
 
-            Toggle(isOn: $follow) {
-                Label("追従", systemImage: "arrow.down.to.line")
+            // **取得と見え方を別のトグルにする。** 「末尾へ送る」を切るのは
+            // 遡って読みたいときで、そこで取得を切ると読んでいた行が消える。
+            Toggle(isOn: $streams) {
+                Label("追いかける", systemImage: "dot.radiowaves.left.and.right")
             }
-            .help("新しい行を追いかけて末尾へスクロールする")
+            .help("kubectl logs --follow を付けて、新しい行を受け取り続ける。"
+                + "切ると、いま出ている範囲まで読んで終わる")
+
+            Toggle(isOn: $autoScroll) {
+                Label("末尾へ送る", systemImage: "arrow.down.to.line")
+            }
+            .help("新しい行が来たら末尾までスクロールする。"
+                + "切っても取得は続くので、遡って読んでも行は消えない")
 
             Toggle(isOn: $wraps) {
                 Label("折り返し", systemImage: "text.append")
@@ -93,11 +116,11 @@ struct LogContent: View {
 
     // MARK: - 本文
 
-    private var output: some View {
+    private func output(_ visible: [LogLine]) -> some View {
         ScrollViewReader { proxy in
             ScrollView(wraps ? .vertical : [.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(visibleLines) { line in
+                    ForEach(visible) { line in
                         row(line)
                     }
                     Color.clear.frame(height: 1).id(-1)
@@ -106,14 +129,14 @@ struct LogContent: View {
             }
             .background(Color(nsColor: .textBackgroundColor))
             .onChange(of: lines.count) {
-                guard follow else { return }
+                guard autoScroll else { return }
                 proxy.scrollTo(-1, anchor: .bottom)
             }
-            .onChange(of: follow) { _, isOn in
+            .onChange(of: autoScroll) { _, isOn in
                 if isOn { proxy.scrollTo(-1, anchor: .bottom) }
             }
             .overlay {
-                if visibleLines.isEmpty { placeholder }
+                if visible.isEmpty { placeholder }
             }
         }
     }
@@ -204,14 +227,14 @@ struct LogContent: View {
 
     // MARK: - 状態
 
-    private var status: some View {
+    private func status(_ visible: [LogLine]) -> some View {
         HStack(spacing: 10) {
-            if isRunning, follow {
-                Label("追従中", systemImage: "dot.radiowaves.left.and.right")
+            if isRunning, streams {
+                Label("追いかけ中", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .good))
             }
-            Text(countText)
+            Text(countText(visible))
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -229,10 +252,9 @@ struct LogContent: View {
         .background(.bar)
     }
 
-    private var countText: String {
-        let shown = visibleLines.count
+    private func countText(_ visible: [LogLine]) -> String {
         let total = lines.count
-        return shown == total ? "\(total) 行" : "\(shown) / \(total) 行"
+        return visible.count == total ? "\(total) 行" : "\(visible.count) / \(total) 行"
     }
 
     private var visibleLines: [LogLine] {
@@ -249,9 +271,12 @@ struct LogContent: View {
 
     // MARK: - 取得
 
-    /// この 4 つのどれかが変われば取り直す。
+    /// これが変われば取り直す。
+    ///
+    /// **見え方だけの状態を入れない。** `autoScroll` はここに無い。入れると、
+    /// スクロールを止めるたびに取得がやり直しになって行が消える。
     private var reloadKey: String {
-        "\(request.id)|\(container)|\(follow)|\(timestamps)|\(previous)"
+        "\(request.id)|\(container)|\(streams)|\(timestamps)|\(previous)"
     }
 
     private func restart() async {
@@ -267,7 +292,7 @@ struct LogContent: View {
 
         var options = Kubectl.LogOptions()
         options.container = container.isEmpty ? nil : container
-        options.follow = follow
+        options.follow = streams
         options.timestamps = timestamps
         options.previous = previous
         options.tailLines = Preferences.shared.logTailLines
@@ -288,20 +313,41 @@ struct LogContent: View {
             }
             handle = processHandle
             isRunning = true
-            streamTask = Task {
-                var index = 0
-                for await line in stream {
-                    guard !Task.isCancelled, token == generation else { break }
-                    lines.append(LogLine(id: index, text: line))
-                    index += 1
-                    if lines.count > maximumLines {
-                        lines.removeFirst(lines.count - maximumLines)
-                        didTruncate = true
-                    }
-                }
-                if token == generation { isRunning = false }
-            }
+            streamTask = Task { await consume(stream, token: token) }
         }
+    }
+
+    /// 読めた塊ごとに反映する。
+    ///
+    /// **1 行ずつ append しない。** append のたびに body が作り直され、1 行あたり
+    /// - 上限に達したあとは `removeFirst` の O(n) の詰め直し
+    /// - 絞り込み中は `visibleLines` の O(n) が body 1 回につき 3 か所
+    /// - `ForEach` の同一性リストを上限（既定 5,000）ぶん歩き直す
+    ///
+    /// が走っていた。毎秒数百行を出す Pod を開くと UI が張り付く。
+    /// **溜め込みで直さない** — 溜めると、静かになった Pod の最後の数行が
+    /// 次の行が来るまで出ないことになる。塊はもともとパイプから塊で届いて
+    /// いるので、ばらさずに受ければよい（`ProcessRunner.stream`）。
+    private func consume(_ stream: AsyncStream<[String]>, token: Int) async {
+        for await chunk in stream {
+            guard !Task.isCancelled, token == generation else { break }
+            guard !chunk.isEmpty else { continue }
+
+            var next = lines
+            next.reserveCapacity(next.count + chunk.count)
+            var index = (next.last?.id ?? -1) + 1
+            for text in chunk {
+                next.append(LogLine(id: index, text: text))
+                index += 1
+            }
+            // 溢れたぶんは 1 度で落とす。1 行ごとの `removeFirst` をやめる。
+            if next.count > maximumLines {
+                next.removeFirst(next.count - maximumLines)
+                didTruncate = true
+            }
+            lines = next
+        }
+        if token == generation { isRunning = false }
     }
 
     private func stop() {

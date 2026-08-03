@@ -45,6 +45,7 @@ enum SettingsDigest {
         case .deployment, .statefulSet, .daemonSet, .replicaSet: return workloadGroups(object)
         case .job: return jobGroups(object)
         case .cronJob: return cronJobGroups(object)
+        case .horizontalPodAutoscaler: return autoscalerGroups(object)
         case .service: return serviceGroups(object)
         case .ingress: return ingressGroups(object)
         case .configMap, .secret: return dataGroups(object)
@@ -289,6 +290,51 @@ enum SettingsDigest {
         for container in spec?.path("jobTemplate.spec.template.spec.containers")?.arrayValue ?? [] {
             groups.append(containerGroup(container, status: nil))
         }
+        return groups
+    }
+
+    // MARK: - HPA
+
+    /// **「いま何レプリカか」より「どう決まるか」を出す。** 現在値は一覧の列に
+    /// あり、ここで見たいのは範囲・指標・調整の癖のほう。
+    private static func autoscalerGroups(_ hpa: K8sObject) -> [SettingGroup] {
+        let spec = hpa.spec
+        var groups = [
+            SettingGroup(
+                title: "調整の範囲",
+                rows: [
+                    SettingRow("対象", ResourceTable.hpaReference(hpa)),
+                    // 省略できて既定は 1。未設定と書くと「下限なし」に読める。
+                    SettingRow("最小", "\(spec?["minReplicas"]?.intValue ?? 1)"),
+                    SettingRow("最大", spec?["maxReplicas"]?.intValue.map { "\($0)" }),
+                    SettingRow("いまの目標", hpa.status?["desiredReplicas"]?.intValue.map { "\($0)" }),
+                ])
+        ]
+
+        let targets = ResourceTable.hpaTargets(hpa)
+        groups.append(
+            SettingGroup(
+                title: "指標",
+                rows: [SettingRow("使用率 / 目標", targets.text.isEmpty ? nil : targets.text)],
+                // 取れていない指標があることを、この画面でも言う。
+                subtitle: targets.hasUnknown ? "取得できていない指標があります" : nil))
+
+        if let behavior = spec?["behavior"] {
+            groups.append(
+                SettingGroup(
+                    title: "調整の癖",
+                    rows: [
+                        SettingRow(
+                            "増やすときの待ち",
+                            behavior.path("scaleUp.stabilizationWindowSeconds")?
+                                .intValue.map { "\($0) 秒" }),
+                        SettingRow(
+                            "減らすときの待ち",
+                            behavior.path("scaleDown.stabilizationWindowSeconds")?
+                                .intValue.map { "\($0) 秒" }),
+                    ]))
+        }
+
         return groups
     }
 
