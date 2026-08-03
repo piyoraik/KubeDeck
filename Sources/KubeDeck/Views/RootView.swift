@@ -61,6 +61,8 @@ struct RootView: View {
             switch store.selection {
             case .overview:
                 OverviewView()
+            case .placement:
+                PlacementView()
             case .resource(let target):
                 ResourceListView(target: target)
             }
@@ -70,6 +72,7 @@ struct RootView: View {
     private var title: String {
         switch store.selection {
         case .overview: return "概要"
+        case .placement: return "配置"
         case .resource(let target): return target.displayName
         }
     }
@@ -82,8 +85,13 @@ struct RootView: View {
     /// 入れてもツールバーでは描画されず、アイコンが空のボタンになる。
     private var subtitle: String {
         if store.isLoading { return "読み込み中…" }
-        guard case .resource = store.selection else { return "" }
         // 失敗しているときに「0 件」と出さない。数えられていない。
+        if store.selection == .placement {
+            if store.errorMessage != nil, store.objects.isEmpty { return "取得できません" }
+            return "\(store.placementNodes.count) ノード · "
+                + "\(store.filteredObjects.count) Pod"
+        }
+        guard case .resource = store.selection else { return "" }
         if store.errorMessage != nil, store.objects.isEmpty { return "取得できません" }
         let shown = store.filteredObjects.count
         let total = store.objects.count

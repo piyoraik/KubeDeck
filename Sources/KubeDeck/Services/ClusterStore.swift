@@ -7,6 +7,8 @@ import Observation
 final class ClusterStore {
     enum Selection: Hashable, Sendable {
         case overview
+        /// どの Pod がどのノードに載っているか。
+        case placement
         case resource(ResourceTarget)
 
         static func kind(_ kind: ResourceKind) -> Selection { .resource(.builtIn(kind)) }
@@ -15,6 +17,7 @@ final class ClusterStore {
         var storageKey: String {
             switch self {
             case .overview: return "overview"
+            case .placement: return "placement"
             case .resource(.builtIn(let kind)): return kind.rawValue
             case .resource(.custom(let type)): return "crd:\(type.resourceName)"
             }
@@ -23,6 +26,10 @@ final class ClusterStore {
         /// 保存値から戻す。CRD はクラスタを見ないと組み立てられないので、
         /// 見つかった種別の一覧を渡してもらう。読めなければ概要に落ちる。
         init(storageKey: String, customTypes: [CustomResourceType]) {
+            if storageKey == "placement" {
+                self = .placement
+                return
+            }
             if storageKey.hasPrefix("crd:") {
                 let name = String(storageKey.dropFirst(4))
                 if let type = customTypes.first(where: { $0.resourceName == name }) {
@@ -88,6 +95,9 @@ final class ClusterStore {
     }
 
     var objects: [K8sObject] = []
+    /// 配置画面のノード。Pod のほうは `objects` に入れる（検索と選択を
+    /// 一覧と同じ経路に載せるため）。
+    var placementNodes: [K8sObject] = []
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
 
@@ -179,7 +189,9 @@ final class ClusterStore {
     var showsNamespaceColumn: Bool { selectedNamespace == nil }
 
     var filteredObjects: [K8sObject] {
-        guard let target = currentTarget else { return [] }
+        // 配置画面も Pod を並べているので、一覧と同じ絞り込みに載せる。
+        let target = currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
+        guard let target else { return [] }
         guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return objects }
         return objects.filter { ResourceTable.matches($0, target: target, query: searchText) }
     }
@@ -332,6 +344,18 @@ final class ClusterStore {
                     self.overview = snapshot
                     self.loadedOverviewCounts = snapshot.counts
                     self.serverVersion = snapshot.serverVersion
+                case .placement:
+                    // Pod とノードを 1 回の kubectl でまとめて取る。
+                    // 別々に投げるとプロセスが 2 本になり、片方だけ新しい
+                    // 状態が混ざる（同じ時点の絵にならない）。
+                    let loaded = try await self.kubectl.list(
+                        kinds: [.pod, .node], context: context, namespace: namespace)
+                    guard token == self.generation else { return }
+                    self.objects = Self.sorted(
+                        loaded.filter { $0.kind == .pod }, kind: .pod)
+                    self.placementNodes = loaded
+                        .filter { $0.kind == .node }
+                        .sorted { $0.name < $1.name }
                 case .resource(let target):
                     let loaded: [K8sObject]
                     if target.builtIn == .event {

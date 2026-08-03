@@ -10,6 +10,9 @@ struct SidebarView: View {
             Section {
                 Label("概要", systemImage: "square.grid.2x2")
                     .tag(ClusterStore.Selection.overview)
+                // 種別の一覧ではないので、クラスタの節には入れず概要の隣に置く。
+                Label("配置", systemImage: "rectangle.3.group")
+                    .tag(ClusterStore.Selection.placement)
             }
 
             ForEach(ResourceCategory.allCases) { category in
