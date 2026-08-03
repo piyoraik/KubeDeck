@@ -41,15 +41,19 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 - **繰り返し起こさない。** rc を全部読むので 0.5〜1 秒かかる。`Kubectl` が 1 度だけ取って持ち回る（kubectl の場所を変えられたぐらいでは取り直さない）。
 - **ログインシェルの `PATH` を先頭に置く。** 同じ名前の実行ファイルが複数あるとき、ターミナルで選ばれるものと同じ実体を選ぶため。
 
-**環境変数はまるごと渡さず、認証プラグインが見るものだけ選ぶ**（`Kubectl.inheritedKeys`）。`CLOUDSDK_PYTHON` を落とすと、python を mise や pyenv でしか入れていない環境で gcloud 側が起動できず、ここでもターミナルでは通るのに `.app` では認証だけ失敗する。
+**環境変数も選んで渡さない。** 一度は「認証プラグインが見るもの」を並べた一覧を持ったが、追いつかなかった。プラグインの先で動く gcloud / aws が何を見るかは環境で違う。TLS を覗く社内プロキシの下では独自の CA を指す変数（`REQUESTS_CA_BUNDLE` など）が要り、落とすと**認証ではなく TLS の検証で落ちる**（`CERTIFICATE_VERIFY_FAILED`）。python を mise や pyenv でしか入れていなければ `CLOUDSDK_PYTHON` が要る。**PATH とまったく同じ話なので、同じ答えにする** — ログインシェルの環境をそのまま土台にし、`PATH` / `HOME` / `TERM` だけ上書きする。
+
+シェルの覚え書き（`PWD` / `OLDPWD` / `SHLVL` / `_`）だけは落とす。子プロセスの実際の cwd と食い違うため。
 
 確認は、Finder 相当の最小環境でアプリを起こして子プロセスの環境を見る。`env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=... SHELL=/bin/zsh KubeDeck.app/Contents/MacOS/KubeDeck` で起動し、`ps -Ewwp <kubectl の pid>` の `PATH` に**シェルの設定でしか足されない場所**（このマシンなら `~/.bun/bin`）が入っていること。
 
 ### 認証の失敗は言い換える
 
-`Kubectl.explain(_:)` が、原因と対処の決まっている失敗に日本語の説明を頭に足す。いまは 2 つ。
+`Kubectl.explain(_:)` が、原因と対処の決まっている失敗に日本語の説明を頭に足す。いまは 4 つ。
 
+- 証明書を検証できない（`CERTIFICATE_VERIFY_FAILED`）— **認証の失敗と混ぜない。** 資格情報は正しく検証で落ちているだけなので、`gcloud auth login` をいくら実行しても直らない。
 - exec プラグインが見つからない（`executable ... not found`）— 入れ方と、PATH を確かめる場所を出す。
+- プラグインは動いたがその先の gcloud が失敗（`failure while executing gcloud`）— 期限切れなら再ログイン。**対話的な再認証は代行できない**（プラグインは標準入力を持たない状態で動く）。
 - 古い `auth-provider: gcp` 形式（kubectl 1.26 で in-tree の GCP 認証が消えた）— `get-credentials` で作り直すよう出す。
 
 **元の文言を捨てない。** 言い換えだけにすると、当てはまらなかったときに何が起きたのか確かめる手段が無くなる。kubectl は同じ失敗を API グループの一覧を引くたびに書き出すので、重複行だけ落とす。

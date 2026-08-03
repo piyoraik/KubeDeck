@@ -68,45 +68,29 @@ actor Kubectl {
             throw KubectlSetupError.notFound
         }
 
-        var variables = [
-            "PATH": searchPath.joined(separator: ":"),
-            "HOME": NSHomeDirectory(),
-            // 認証プラグインが対話プロンプトを出すと待ち続けるので、非対話に倒す。
-            "TERM": "dumb",
-        ]
-        // 認証プラグインが見る変数だけを選んで渡す（環境をまるごと渡さない）。
-        // ログインシェルの値を土台に、アプリ自身の環境で上書きする。
+        // ログインシェルの環境をそのまま土台にする。
+        //
+        // **渡す変数を選ばない。** 一度は「認証プラグインが見るもの」だけを並べたが、
+        // 追いつかなかった。プラグインの先で動く gcloud / aws が何を見るかは環境で
+        // 違う。TLS を覗く社内プロキシの下では独自の CA を指す変数（`REQUESTS_CA_BUNDLE`
+        // など）が要り、落とすと認証ではなく TLS の検証で落ちる。python を mise や
+        // pyenv でしか入れていなければ `CLOUDSDK_PYTHON` が要る。**PATH と同じで、
+        // 候補を並べても追いつかない。** ターミナルで通る組み合わせをそのまま渡す。
+        var variables = loginShell
         // ターミナルから `.app` を起動して変数を指定したときは、そちらを採る。
-        for key in Self.inheritedKeys {
-            if let value = loginShell[key] { variables[key] = value }
-            if let value = ProcessInfo.processInfo.environment[key] { variables[key] = value }
-        }
+        variables.merge(ProcessInfo.processInfo.environment) { _, own in own }
+        // シェルの覚え書きは持ち込まない。子プロセスの実際の cwd と食い違う。
+        for key in ["PWD", "OLDPWD", "SHLVL", "_"] { variables.removeValue(forKey: key) }
+
+        variables["PATH"] = searchPath.joined(separator: ":")
+        variables["HOME"] = NSHomeDirectory()
+        // 認証プラグインが対話プロンプトを出すと待ち続けるので、非対話に倒す。
+        variables["TERM"] = "dumb"
 
         let resolved = KubectlEnvironment(executable: executable, variables: variables)
         cachedEnvironment = resolved
         return resolved
     }
-
-    /// 子プロセスへ持ち込む変数。
-    private static let inheritedKeys = [
-        // kubeconfig の場所をユーザが変えている場合はそれに従う。
-        "KUBECONFIG",
-        // EKS の exec プラグイン（aws）。
-        "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
-        "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
-        // GKE の exec プラグイン（gke-gcloud-auth-plugin）と、それが呼ぶ gcloud。
-        // CLOUDSDK_PYTHON を落とすと、python を mise や pyenv でしか入れていない
-        // 環境で gcloud 側が起動できず、ターミナルでは通るのに `.app` では
-        // 認証だけ失敗する、という切り分けの難しい壊れ方をする。
-        "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
-        "CLOUDSDK_PYTHON", "CLOUDSDK_PYTHON_SITEPACKAGES",
-        "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_PROJECT",
-        "USE_GKE_GCLOUD_AUTH_PLUGIN",
-        // 共通。
-        "SSL_CERT_FILE", "SSL_CERT_DIR",
-        "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
-        "https_proxy", "http_proxy", "no_proxy",
-    ]
 
     /// ログインシェルの環境。1 度取ったら使い回す。
     private func loginShellEnvironment() -> [String: String] {
@@ -206,6 +190,21 @@ actor Kubectl {
     }
 
     private static func authenticationHint(for stderr: String) -> String? {
+        // TLS を覗く社内プロキシの下で、独自の CA が信頼されていない。
+        // **認証の失敗と混ぜない。** 資格情報は正しく、検証で落ちているだけなので、
+        // `gcloud auth login` をいくら実行しても直らない。
+        if stderr.contains("CERTIFICATE_VERIFY_FAILED")
+            || stderr.contains("self-signed certificate")
+            || stderr.contains("certificate signed by unknown authority") {
+            return "サーバの証明書を検証できませんでした。認証情報ではなく TLS の問題です。\n"
+                + "TLS を覗くプロキシの下では、その CA を信頼させる環境変数"
+                + "（`REQUESTS_CA_BUNDLE` や `SSL_CERT_FILE` など）が要ります。\n"
+                + "KubeDeck はログインシェルの環境をそのまま子プロセスへ渡すので、"
+                + "シェルの設定ファイルでこれらを設定していれば効きます。"
+                + "ターミナルでだけ通る場合は、その設定が対話シェルより後で"
+                + "行われていないか確かめてください。"
+        }
+
         // kubeconfig が要求する exec 認証プラグインが PATH に無い。
         if let match = stderr.firstMatch(of: /executable (\S+) not found/) {
             let plugin = String(match.1)
@@ -219,6 +218,28 @@ actor Kubectl {
             }
             lines.append("入っているのにここで見つからないときは、KubeDeck から見える PATH に "
                 + "その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。")
+            return lines.joined(separator: "\n")
+        }
+
+        // プラグインは動いたが、その先の gcloud が資格情報を出せなかった。
+        // gcloud は access token を取り直すのに再ログインや再認証（2 段階認証）を
+        // 求めることがあり、それは対話的な操作なので、ここからは代行できない。
+        // **プラグインが見つからない話と混ぜない。** 対処がまったく違う。
+        if stderr.contains("failure while executing gcloud")
+            || stderr.contains("print credential failed") {
+            var lines = [
+                "exec 認証プラグインは動きましたが、その先の gcloud が"
+                    + "アクセストークンを出せませんでした。",
+            ]
+            if stderr.contains("UNAUTHENTICATED") || stderr.contains("invalid authentication") {
+                lines.append("gcloud の資格情報が期限切れか、再認証を求められている状態です。"
+                    + "ターミナルで `gcloud auth login` を実行してから、もう一度読み込んでください。")
+            }
+            // 認証プラグインは標準入力を持たない状態で動く（対話プロンプトが
+            // 出ると待ち続けてしまうため、意図的にそうしてある）。
+            lines.append("再認証は対話的な操作なので、KubeDeck からは代行できません。"
+                + "下の元の文言にある gcloud のコマンドをターミナルでそのまま実行すると、"
+                + "同じ失敗になるか確かめられます。")
             return lines.joined(separator: "\n")
         }
 
