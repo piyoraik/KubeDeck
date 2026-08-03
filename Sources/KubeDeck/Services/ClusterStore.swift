@@ -207,6 +207,16 @@ final class ClusterStore {
 
     var namespaceLabel: String { selectedNamespace ?? "すべての Namespace" }
 
+    /// ノードの詰まり具合。CPU とメモリのうち高いほう。並べ替えに使う。
+    /// 取れないときは nil（0 とみなすと「測れていない」が「空いている」になる）。
+    func nodeUsageRatio(_ node: K8sObject?) -> Double? {
+        guard let node, let usage = metrics.nodes[node.name] else { return nil }
+        let allocatable = node.nodeAllocatable
+        let cpu = Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores)
+        let memory = Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes)
+        return [cpu, memory].compactMap { $0 }.max()
+    }
+
     /// 配置画面が所有者を辿るための索引。`Namespace/種別/名前` で引く。
     /// 毎回 `first(where:)` で舐めると Pod の数だけ線形探索になる。
     var controllerIndex: [String: K8sObject] {

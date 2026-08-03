@@ -29,7 +29,7 @@ final class Preferences {
         static let placementTileSize = "placementTileSize"
         static let placementNodeOrder = "placementNodeOrder"
         static let placementHidesEmptyNodes = "placementHidesEmptyNodes"
-        static let placementGroupsByWorkload = "placementGroupsByWorkload"
+        static let placementGrouping = "placementGrouping"
 
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
@@ -105,10 +105,10 @@ final class Preferences {
         didSet { store.set(placementHidesEmptyNodes, forKey: Key.placementHidesEmptyNodes) }
     }
 
-    /// Pod を所有者（Deployment など）でまとめるか。
-    /// **既定はまとめる。** レプリカが並ぶだけの Pod 名を数百並べても読めない。
-    var placementGroupsByWorkload = true {
-        didSet { store.set(placementGroupsByWorkload, forKey: Key.placementGroupsByWorkload) }
+    /// 何を箱にするか。ノードを箱にすると「どこに載っているか」、
+    /// ワークロードを箱にすると「どこに散っているか」が見える。
+    var placementGrouping: PlacementGrouping = .nodeByWorkload {
+        didSet { store.set(placementGrouping.rawValue, forKey: Key.placementGrouping) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -266,8 +266,9 @@ final class Preferences {
             ?? .name
         placementHidesEmptyNodes =
             store.object(forKey: Key.placementHidesEmptyNodes) as? Bool ?? false
-        placementGroupsByWorkload =
-            store.object(forKey: Key.placementGroupsByWorkload) as? Bool ?? true
+        placementGrouping =
+            PlacementGrouping(rawValue: store.string(forKey: Key.placementGrouping) ?? "")
+            ?? .nodeByWorkload
 
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
@@ -327,7 +328,7 @@ final class Preferences {
         placementTileSize = .medium
         placementNodeOrder = .name
         placementHidesEmptyNodes = false
-        placementGroupsByWorkload = true
+        placementGrouping = .nodeByWorkload
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
@@ -452,4 +453,25 @@ enum PlacementNodeOrder: String, CaseIterable, Identifiable, Sendable {
         case .usage: return "使用率が高い順"
         }
     }
+}
+
+
+/// 配置画面で何を箱にするか。
+enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
+    case node
+    case nodeByWorkload
+    case workload
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .node: return "ノード別"
+        case .nodeByWorkload: return "ノード別（まとめる）"
+        case .workload: return "ワークロード別"
+        }
+    }
+
+    /// 箱がノードかどうか。
+    var isNodeFirst: Bool { self != .workload }
 }

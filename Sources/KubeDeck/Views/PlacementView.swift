@@ -3,11 +3,16 @@ import SwiftUI
 /// どの Pod がどのノードに載っているか。
 ///
 /// 一覧の「ノード」列でも同じことは分かるが、**列の文字を目で数えないと偏りが
-/// 見えない。** ノードを箱にして Pod をタイルで並べると、どこに寄っているかが
-/// 一目で分かる。件数と使用率は見出しに文字でも出す（形と色だけに意味を
-/// 持たせない）。
+/// 見えない。** 箱とタイルにすると、どこに寄っているかが一目で分かる。
+///
+/// 箱は 2 通りある。**両方要る。**
+/// - ノードを箱にすると「このノードに何が載っているか」（ノードの混み具合）
+/// - ワークロードを箱にすると「この Deployment がどこに散っているか」（冗長性）
+///
+/// 件数と使用率は文字でも出す（形と色だけに意味を持たせない）。
 struct PlacementView: View {
     @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
 
     var body: some View {
         if store.placementNodes.isEmpty && store.objects.isEmpty {
@@ -21,8 +26,14 @@ struct PlacementView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(groups, id: \.id) { group in
-                        NodeCard(group: group)
+                    if preferences.placementGrouping.isNodeFirst {
+                        ForEach(nodeGroups, id: \.id) { group in
+                            NodeCard(group: group)
+                        }
+                    } else {
+                        ForEach(spreads, id: \.id) { spread in
+                            WorkloadCard(spread: spread)
+                        }
                     }
                 }
                 .padding(16)
@@ -35,7 +46,7 @@ struct PlacementView: View {
         }
     }
 
-    // MARK: - 集計
+    // MARK: - ノードを箱にする
 
     /// ノード 1 つぶんの中身。
     struct Group: Identifiable {
@@ -50,13 +61,12 @@ struct PlacementView: View {
     /// 片側（受け入れ先があるのに寄っている）が分からない。
     /// スケジュールされていない Pod は最後にまとめる。ノードの箱に混ぜると
     /// 「どこかに載っている」ように見える。
-    private var groups: [Group] {
-        let pods = store.filteredObjects
+    private var nodeGroups: [Group] {
         var byNode: [String: [K8sObject]] = [:]
         var unscheduled: [K8sObject] = []
 
-        for pod in pods {
-            guard let node = pod.spec?["nodeName"]?.stringValue, !node.isEmpty else {
+        for pod in store.filteredObjects {
+            guard let node = Self.nodeName(of: pod) else {
                 unscheduled.append(pod)
                 continue
             }
@@ -66,7 +76,7 @@ struct PlacementView: View {
         var groups = store.placementNodes.map { node in
             Group(id: node.name, node: node, pods: byNode.removeValue(forKey: node.name) ?? [])
         }
-        if Preferences.shared.placementHidesEmptyNodes {
+        if preferences.placementHidesEmptyNodes {
             groups.removeAll { $0.pods.isEmpty }
         }
         groups = sorted(groups)
@@ -85,7 +95,7 @@ struct PlacementView: View {
     /// **並べ替えるのはノードの箱だけ。** 出自の分からない箱と未スケジュールは
     /// 常に最後に置く（並びの中に紛れると、ノードの 1 つに見える）。
     private func sorted(_ groups: [Group]) -> [Group] {
-        switch Preferences.shared.placementNodeOrder {
+        switch preferences.placementNodeOrder {
         case .name:
             return groups.sorted { $0.name < $1.name }
         case .podCount:
@@ -97,8 +107,8 @@ struct PlacementView: View {
             // 使用率が取れないノードは末尾へ。0 とみなして上に出すと、
             // 「使っていない」と「測れていない」が混ざる。
             return groups.sorted {
-                let left = usageRatio(of: $0)
-                let right = usageRatio(of: $1)
+                let left = store.nodeUsageRatio($0.node)
+                let right = store.nodeUsageRatio($1.node)
                 if let left, let right { return left == right ? $0.name < $1.name : left > right }
                 if left != nil { return true }
                 if right != nil { return false }
@@ -107,121 +117,62 @@ struct PlacementView: View {
         }
     }
 
-    private func usageRatio(of group: Group) -> Double? {
-        guard let node = group.node, let usage = store.metrics.nodes[node.name] else { return nil }
-        let allocatable = node.nodeAllocatable
-        let cpu = Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores)
-        let memory = Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes)
-        guard let value = [cpu, memory].compactMap({ $0 }).max() else { return nil }
-        return value
+    // MARK: - ワークロードを箱にする
+
+    /// ワークロード 1 つが、どのノードに何個載っているか。
+    struct Spread: Identifiable {
+        let name: String
+        /// ノード名ごとの Pod。多い順。
+        let byNode: [(node: String, pods: [K8sObject])]
+
+        var id: String { name }
+        var podCount: Int { byNode.reduce(0) { $0 + $1.pods.count } }
+        var nodeCount: Int { byNode.count }
+
+        /// 2 つ以上あるのに 1 つのノードに固まっている状態。
+        /// **これを見るための画面なので、文字で言う。**
+        var isConcentrated: Bool { podCount > 1 && nodeCount == 1 }
     }
 
-    // MARK: - 中身が無いとき
-
-    private var failureState: some View {
-        ContentUnavailableView {
-            Label("配置を取得できません", systemImage: StatusLevel.critical.symbol)
-        } description: {
-            Text("\(store.currentContext) から応答がありませんでした。")
-        } actions: {
-            Button("もう一度試す") { store.reload() }
-        }
-    }
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("ノードがありません", systemImage: "tray")
-        } description: {
-            Text("このコンテキストではノードを読めませんでした。")
-        }
-    }
-}
-
-// MARK: - ノード 1 枚
-
-private struct NodeCard: View {
-    @Environment(ClusterStore.self) private var store
-    let group: PlacementView.Group
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            if group.pods.isEmpty {
-                Text("このノードに Pod はありません。")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            } else if Preferences.shared.placementGroupsByWorkload {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(workloads, id: \.name) { workload in
-                        WorkloadRow(workload: workload)
-                    }
-                }
-            } else {
-                PodTileGrid(pods: group.pods)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Palette.hairline, lineWidth: 1))
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            if let node = group.node {
-                let status = StatusResolver.status(for: node)
-                Image(systemName: status.level.symbol)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Palette.color(for: status.level))
-                Text(node.name)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(status.text)
-                    .font(.caption)
-                    .foregroundStyle(Palette.textColor(for: status.level))
-            } else {
-                Image(systemName: StatusLevel.neutral.symbol)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Palette.color(for: .neutral))
-                Text(group.name)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-            // 件数は必ず文字で出す。タイルの数を目で数えさせない。
-            Text("\(group.pods.count) Pod")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            if let usage = usageText {
-                Text(usage)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    /// 所有者でまとめたもの。多い順に出す（偏りを見る画面なので）。
-    private var workloads: [Workload] {
+    private var spreads: [Spread] {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
-        var order: [String] = []
-        for pod in group.pods {
-            let name = Self.owner(of: pod, controllers: index) ?? "単体の Pod"
-            if byOwner[name] == nil { order.append(name) }
-            byOwner[name, default: []].append(pod)
+        for pod in store.filteredObjects {
+            byOwner[Self.owner(of: pod, controllers: index) ?? "単体の Pod", default: []]
+                .append(pod)
         }
-        return order
-            .map { Workload(name: $0, pods: byOwner[$0] ?? []) }
-            .sorted {
-                $0.pods.count == $1.pods.count
-                    ? $0.name < $1.name : $0.pods.count > $1.pods.count
+
+        var result: [Spread] = []
+        for (name, pods) in byOwner {
+            var byNode: [String: [K8sObject]] = [:]
+            for pod in pods {
+                let node = Self.nodeName(of: pod) ?? "未スケジュール"
+                byNode[node, default: []].append(pod)
             }
+            var ordered: [(node: String, pods: [K8sObject])] = []
+            for (node, pods) in byNode {
+                ordered.append((node: node, pods: pods))
+            }
+            ordered.sort { left, right in
+                left.pods.count == right.pods.count
+                    ? left.node < right.node : left.pods.count > right.pods.count
+            }
+            result.append(Spread(name: name, byNode: ordered))
+        }
+        // 固まっているものを先に。次に数の多い順。見たいものが上に来る。
+        result.sort { lhs, rhs in
+            if lhs.isConcentrated != rhs.isConcentrated { return lhs.isConcentrated }
+            if lhs.podCount != rhs.podCount { return lhs.podCount > rhs.podCount }
+            return lhs.name < rhs.name
+        }
+        return result
+    }
+
+    // MARK: - 所有者とノードの解決
+
+    static func nodeName(of pod: K8sObject) -> String? {
+        guard let name = pod.spec?["nodeName"]?.stringValue, !name.isEmpty else { return nil }
+        return name
     }
 
     /// Pod の所有者の名前。
@@ -257,19 +208,233 @@ private struct NodeCard: View {
         return (kind, name)
     }
 
-    /// ノードの使用率。取れないときは行ごと出さない（`0%` と書かない）。
-    private var usageText: String? {
-        guard let node = group.node,
-              let usage = store.metrics.nodes[node.name] else { return nil }
-        let allocatable = node.nodeAllocatable
-        guard let cpu = Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores),
-              let memory = Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes)
-        else { return nil }
-        return "CPU \(Quantity.formatPercent(cpu)) · メモリ \(Quantity.formatPercent(memory))"
+    // MARK: - 中身が無いとき
+
+    private var failureState: some View {
+        ContentUnavailableView {
+            Label("配置を取得できません", systemImage: StatusLevel.critical.symbol)
+        } description: {
+            Text("\(store.currentContext) から応答がありませんでした。")
+        } actions: {
+            Button("もう一度試す") { store.reload() }
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("ノードがありません", systemImage: "tray")
+        } description: {
+            Text("このコンテキストではノードを読めませんでした。")
+        }
     }
 }
 
-// MARK: - 所有者ごとの 1 行
+// MARK: - 箱の共通の見た目
+
+private struct PlacementCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Palette.hairline, lineWidth: 1))
+    }
+}
+
+// MARK: - ノード 1 枚
+
+private struct NodeCard: View {
+    @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
+    let group: PlacementView.Group
+
+    var body: some View {
+        PlacementCard {
+            header
+            // **使用量を右のパネルに追い出さない。** 「このノードは混んでいるか」
+            // は配置を見る目的そのもので、行を選ばないと分からないのでは遅い。
+            if let node = group.node {
+                NodeUsageBars(node: node)
+            }
+            Divider().opacity(0.5)
+            if group.pods.isEmpty {
+                Text("このノードに Pod はありません。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else if preferences.placementGrouping == .nodeByWorkload {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(workloads, id: \.name) { workload in
+                        LabeledTiles(label: workload.name, count: workload.pods.count) {
+                            PodTileGrid(pods: workload.pods)
+                        }
+                    }
+                }
+            } else {
+                PodTileGrid(pods: group.pods)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            if let node = group.node {
+                let status = StatusResolver.status(for: node)
+                Image(systemName: status.level.symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.color(for: status.level))
+                Text(node.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(Palette.textColor(for: status.level))
+            } else {
+                Image(systemName: StatusLevel.neutral.symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.color(for: .neutral))
+                Text(group.name)
+                    .font(.headline)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+            // 件数は必ず文字で出す。タイルの数を目で数えさせない。
+            Text("\(group.pods.count) Pod")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 所有者でまとめたもの。多い順に出す（偏りを見る画面なので）。
+    private var workloads: [Workload] {
+        let index = store.controllerIndex
+        var byOwner: [String: [K8sObject]] = [:]
+        for pod in group.pods {
+            byOwner[PlacementView.owner(of: pod, controllers: index) ?? "単体の Pod", default: []]
+                .append(pod)
+        }
+        return byOwner
+            .map { Workload(name: $0.key, pods: $0.value) }
+            .sorted {
+                $0.pods.count == $1.pods.count
+                    ? $0.name < $1.name : $0.pods.count > $1.pods.count
+            }
+    }
+}
+
+/// ノードの CPU とメモリ。取れないときは棒を出さず、その旨を書く。
+private struct NodeUsageBars: View {
+    @Environment(ClusterStore.self) private var store
+    let node: K8sObject
+
+    var body: some View {
+        if let usage = store.metrics.nodes[node.name] {
+            let allocatable = node.nodeAllocatable
+            HStack(alignment: .top, spacing: 20) {
+                bar(
+                    "CPU", used: usage.cpuCores, of: allocatable.cpuCores,
+                    format: { Quantity.formatCPU(cores: $0) })
+                bar(
+                    "メモリ", used: usage.memoryBytes, of: allocatable.memoryBytes,
+                    format: { Quantity.formatMemory(bytes: $0) })
+            }
+        } else {
+            // 0% と描かない。「使っていない」と「測れていない」は別。
+            Text("使用量を取得できません。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// ノードは状態の色のまま。ここは「割り当て可能に対してどれだけ近いか」が
+    /// 主役で、系列という考え方が無い。
+    private func bar(
+        _ title: String, used: Double, of base: Double, format: (Double) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Text(format(used))
+                    .font(.caption)
+                    .monospacedDigit()
+                if base > 0 {
+                    Text("/ \(format(base))")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                if let ratio = Quantity.ratio(used, of: base) {
+                    Text(Quantity.formatPercent(ratio))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(
+                            Palette.textColor(for: ResourceTable.usageLevel(ratio) ?? .good))
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
+            }
+            if let ratio = Quantity.ratio(used, of: base) {
+                UsageBar(ratio: ratio)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - ワークロード 1 枚（ノードへの散らばり）
+
+private struct WorkloadCard: View {
+    let spread: PlacementView.Spread
+
+    var body: some View {
+        PlacementCard {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(spread.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text("\(spread.podCount) Pod · \(spread.nodeCount) ノード")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            // **固まっていることを色だけで言わない。** 冗長性が無い状態は
+            // この画面でいちばん見たいものなので、文字で書く。
+            if spread.isConcentrated {
+                Label(
+                    "\(spread.podCount) 個すべてが 1 つのノードに載っています。"
+                        + "このノードが落ちると全部止まります。",
+                    systemImage: StatusLevel.warning.symbol)
+                    .font(.caption)
+                    .foregroundStyle(Palette.textColor(for: .warning))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider().opacity(0.5)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(spread.byNode, id: \.node) { entry in
+                    LabeledTiles(label: entry.node, count: entry.pods.count) {
+                        PodTileGrid(pods: entry.pods)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 見出しつきのタイルの並び
 
 struct Workload: Identifiable {
     let name: String
@@ -278,29 +443,31 @@ struct Workload: Identifiable {
     var id: String { name }
 }
 
-/// 所有者の名前と件数を左に、その Pod のタイルを右に。
+/// 左に名前と件数、右にタイル。
 ///
 /// **タイルを 1 つにまとめない。** まとめると個々の Pod を選べなくなり、
-/// 1 つだけ落ちている、という配置画面でいちばん見たい状態が消える。
-/// まとめるのは見出しだけで、タイルはそのまま並べる。
-private struct WorkloadRow: View {
-    let workload: Workload
+/// 「1 つだけ落ちている」という、この画面でいちばん見たい状態が消える。
+/// まとめるのは見出しだけ。
+private struct LabeledTiles<Content: View>: View {
+    let label: String
+    let count: Int
+    @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 12) {
             HStack(spacing: 4) {
-                Text(workload.name)
+                Text(label)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("×\(workload.pods.count)")
+                Text("×\(count)")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 190, alignment: .leading)
+            .frame(width: 200, alignment: .leading)
 
-            PodTileGrid(pods: workload.pods)
+            content
         }
     }
 }
@@ -367,29 +534,59 @@ private struct PodTile: View {
                         lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .help("\(pod.namespace ?? "-")/\(pod.name) · \(status.text)")
+        .help(helpText(status))
     }
 
     /// **小のときも色だけにしない。** 名前が入らないぶん、指したときに
-    /// 名前と状態が出るようにしてある（`help`）。形と色だけで意味を運ばせない。
+    /// 名前と状態と使用量が出るようにしてある。
     @ViewBuilder
     private func tileBody(_ status: ResourceStatus) -> some View {
         if size.showsName {
-            HStack(spacing: 6) {
-                // 色だけに意味を持たせない。同じ色のしるしを添える。
-                Image(systemName: status.level.symbol)
-                    .font(.system(size: 8))
-                    .foregroundStyle(Palette.color(for: status.level))
-                Text(pod.name)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    // 色だけに意味を持たせない。同じ色のしるしを添える。
+                    Image(systemName: status.level.symbol)
+                        .font(.system(size: 8))
+                        .foregroundStyle(Palette.color(for: status.level))
+                    Text(pod.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                // Pod ごとの使用量も、行を選ばずに見えるようにする。
+                // 分母が取れないものは棒を出さない（0% と描かない）。
+                if let ratio = usageRatio {
+                    UsageBar(ratio: ratio)
+                        .frame(height: 4)
+                }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, 6)
         } else {
             Color.clear.frame(width: 22, height: 22)
         }
+    }
+
+    /// 上限に対する割合。上限が無ければ要求に落とす（一覧や詳細と同じ順序）。
+    private var usageRatio: Double? {
+        guard let usage = store.metrics.usage(for: pod) else { return nil }
+        let limits = pod.containerResourceTotal("limits")
+        let requests = pod.containerResourceTotal("requests")
+        let cpu = Quantity.ratio(usage.cpuCores, of: limits.cpuCores)
+            ?? Quantity.ratio(usage.cpuCores, of: requests.cpuCores)
+        let memory = Quantity.ratio(usage.memoryBytes, of: limits.memoryBytes)
+            ?? Quantity.ratio(usage.memoryBytes, of: requests.memoryBytes)
+        // 詰まっているほうを出す。2 本並べると、この大きさでは読めない。
+        return [cpu, memory].compactMap { $0 }.max()
+    }
+
+    private func helpText(_ status: ResourceStatus) -> String {
+        var text = "\(pod.namespace ?? "-")/\(pod.name) · \(status.text)"
+        if let usage = store.metrics.usage(for: pod) {
+            text += " · CPU \(Quantity.formatCPU(cores: usage.cpuCores))"
+                + " · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))"
+        }
+        return text
     }
 }
