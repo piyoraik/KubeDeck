@@ -667,7 +667,8 @@ final class ClusterStore {
                         loaded = try await self.kubectl.list(
                             resource: target.resourceName,
                             namespaced: target.isNamespaced,
-                            context: context, namespace: namespace)
+                            context: context, namespace: namespace,
+                            assuming: target.builtIn)
                     }
                     guard token == self.generation else { return }
                     // 既定の並びに落としてから、見出しを押していればその列で並べ直す。
@@ -1189,7 +1190,7 @@ final class ClusterStore {
 
     // MARK: - ログ
 
-    /// 選択に合わせてログを切り替える。Pod 以外を選んだときは何もしない。
+    /// 選択に合わせてログを切り替える。ログを開けない種別のときは何もしない。
     ///
     /// **閉じているパネルをここで開かない。** 行を選んだだけで
     /// `kubectl logs -f` が走るのは、見るつもりのない Pod にも取得を掛けること
@@ -1199,14 +1200,40 @@ final class ClusterStore {
         guard logRequest != nil,
               followsSelectionForLogs,
               let object = selectedObject,
-              object.kind == .pod
+              let request = PodLogRequest(object: object)
         else { return }
-        logRequest = PodLogRequest(pod: object)
+        logRequest = request
     }
 
     /// 明示的にログを開く。パネルが開くのはここだけ。
-    func showLogs(for pod: K8sObject) {
-        logRequest = PodLogRequest(pod: pod)
+    ///
+    /// Pod だけでなく Job も受ける。**Job の Pod をここで解決しない** —
+    /// 解決には kubectl が要り、しかも「1 つも無い」「引けなかった」が起こる。
+    /// それを言える場所（`LogContent`）まで Job のまま持っていく。
+    func showLogs(for object: K8sObject) {
+        guard let request = PodLogRequest(object: object) else { return }
+        logRequest = request
+    }
+
+    /// Job が掴んでいる Pod。新しい順に返す。
+    ///
+    /// **「1 つも無い」と「引けなかった」を分ける。** 完了した Job の Pod は
+    /// `ttlSecondsAfterFinished` や Pod のガベージコレクションで消え、ログも
+    /// 一緒に消える。引けなかっただけのときに「もう残っていません」と書くと、
+    /// 確かめていないことを断定することになる。
+    func pods(forJobSelector selector: [String: String], namespace: String)
+        async -> Result<[K8sObject], Error>
+    {
+        do {
+            let pods = try await kubectl.pods(
+                matchingLabels: selector, namespace: namespace, context: currentContext)
+            // 再試行で作り直された Pod が並ぶので、新しいものを先に。
+            return .success(pods.sorted {
+                ($0.creationTimestamp ?? .distantPast) > ($1.creationTimestamp ?? .distantPast)
+            })
+        } catch {
+            return .failure(error)
+        }
     }
 
     /// パネルを閉じる。

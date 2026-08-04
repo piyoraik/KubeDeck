@@ -21,14 +21,17 @@ struct LogPanel: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "text.alignleft")
+            // Job で開いたときは Job のしるしにする。名前だけだと、同名の
+            // Pod のログを見ているように読める。読んでいる Pod 自身の名前は
+            // `LogContent` の下の帯（または Pod の Picker）が持つ。
+            Image(systemName: request.isJob ? "checkmark.seal" : "text.alignleft")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(request.pod)
+            Text(request.name)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Text(request.namespace)
+            Text(request.isJob ? "\(request.namespace) · Job" : request.namespace)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -64,7 +67,8 @@ struct LogView: View {
 
     var body: some View {
         LogContent(request: request)
-            .navigationTitle(request.pod)
-            .navigationSubtitle(request.namespace)
+            .navigationTitle(request.name)
+            .navigationSubtitle(
+                request.isJob ? "\(request.namespace) · Job" : request.namespace)
     }
 }

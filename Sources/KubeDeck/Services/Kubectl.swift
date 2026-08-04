@@ -535,8 +535,15 @@ actor Kubectl {
     }
 
     /// 任意の種別の一覧。組み込みでも CRD でも同じ経路で引く。
+    ///
+    /// **要求した種別を `assuming:` で補う。** 単一種別の `get -o json` は
+    /// items に `kind` を入れてこない版があり、そうなると `K8sObject.kind` が
+    /// nil になる。一覧の表示には効かないので気付きにくいが、種別で分岐する
+    /// ところ（詳細パネルの「ログ」、`PodLogRequest(object:)`）が黙って
+    /// 消える。CRD には対応する値が無いので、そのときだけ nil を渡す。
     func list(
-        resource: String, namespaced: Bool, context: String, namespace: String?
+        resource: String, namespaced: Bool, context: String, namespace: String?,
+        assuming kind: ResourceKind? = nil
     ) async throws -> [K8sObject] {
         var arguments = ["get", resource, "-o", "json",
                          "--request-timeout=\(requestTimeout)"]
@@ -548,7 +555,7 @@ actor Kubectl {
             }
         }
         let result = try await run(arguments, context: context)
-        return try K8sObject.list(from: result.stdout)
+        return try K8sObject.list(from: result.stdout, assuming: kind)
     }
 
     /// イベントは新しい順に見たいので、取得時に並べ替える。
@@ -610,6 +617,35 @@ actor Kubectl {
                 > (ResourceTable.lastSeen($1) ?? .distantPast)
         }
         return Array(sorted.prefix(limit))
+    }
+
+    /// ラベルで絞った Pod。Job が掴んでいる Pod を引くのに使う。
+    ///
+    /// **サーバ側で絞る。** Namespace の Pod を全部引いて手元で
+    /// `ownerReferences` を見ることもできるが、Pod が数百ある Namespace では
+    /// ログを 1 つ開くたびに全件を運ぶことになる。
+    ///
+    /// **`--ignore-not-found` を付けても「0 件」と「引けなかった」は混ざらない。**
+    /// 権限やネットワークで落ちたときは従来どおり投げる（`run` が投げる）ので、
+    /// 空の配列が返るのは本当に 1 件も無いときだけ。
+    func pods(
+        matchingLabels labels: [String: String], namespace: String, context: String
+    ) async throws -> [K8sObject] {
+        guard !labels.isEmpty else { return [] }
+        let selector = labels
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+            .joined(separator: ",")
+
+        var arguments = ["get", ResourceKind.pod.resourceName, "-o", "json",
+                         "--selector=\(selector)",
+                         "--request-timeout=\(requestTimeout)",
+                         "--ignore-not-found=true"]
+        if !namespace.isEmpty { arguments += ["-n", namespace] }
+
+        let result = try await run(arguments, context: context)
+        guard !result.stdout.isEmpty else { return [] }
+        return try K8sObject.list(from: result.stdout, assuming: .pod)
     }
 
     /// このオブジェクトを対象にしている HPA。

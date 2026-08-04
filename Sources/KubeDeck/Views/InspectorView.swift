@@ -108,7 +108,9 @@ struct InspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                if object.kind == .pod {
+                // 開ける種別かの判定は `PodLogRequest` が持つ。ここと一覧の
+                // メニューで別々に書くと、片方からしか開けない種別ができる。
+                if PodLogRequest(object: object) != nil {
                     Button {
                         store.showLogs(for: object)
                     } label: {

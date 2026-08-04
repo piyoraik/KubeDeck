@@ -9,7 +9,37 @@ struct LogContent: View {
     /// 下部パネルでは行を詰める。窓では少し余裕を持たせる。
     var isCompact = false
 
+    /// Job から開いたときに、掴んでいる Pod をどこまで確かめられたか。
+    ///
+    /// **4 つを分ける** — まだ引いていない / 引けた / 1 つも無い / 引けなかった。
+    /// `.resolved([])` と `.failed` を 1 つにすると、権限やネットワークで
+    /// 引けなかっただけなのに「Pod はもう残っていません」と断定することになる。
+    private enum PodResolution: Equatable {
+        case pending
+        case resolved([PodChoice])
+        case failed(String)
+
+        var choices: [PodChoice] {
+            if case .resolved(let choices) = self { return choices }
+            return []
+        }
+    }
+
+    /// 選べる Pod 1 つ。名前だけだと、どれが最後の試行かも、まだ動いて
+    /// いるのかも分からないので状態を添える。
+    private struct PodChoice: Hashable, Identifiable {
+        var name: String
+        var status: String
+
+        var id: String { name }
+        var label: String { status.isEmpty ? name : "\(name) · \(status)" }
+    }
+
     @State private var lines: [LogLine] = []
+    /// 実際に読んでいる Pod。`.pod` で開いたときは指定そのもの、
+    /// `.job` で開いたときは解決した結果。
+    @State private var pod: String = ""
+    @State private var resolution: PodResolution = .pending
     @State private var container: String = ""
     /// `kubectl logs --follow` を付けるか。**取得そのものの話。**
     /// 切ると、いま出ている範囲を読み終えた時点で kubectl が終了する。
@@ -51,6 +81,9 @@ struct LogContent: View {
             Divider()
             status(visible)
         }
+        // **解決と取得を 1 つの task にまとめない。** 対象が同じまま
+        // 「時刻を出す」を切り替えただけで Pod を引き直すことになる。
+        .task(id: request.id) { await resolvePods() }
         .task(id: reloadKey) { await restart() }
         .onDisappear { stop() }
         .onAppear {
@@ -62,6 +95,19 @@ struct LogContent: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
+            // Job は Pod を複数掴む（再試行、`completions`）。どれのログかを
+            // 選べないと、最後の試行しか見られない。
+            if resolution.choices.count > 1 {
+                Picker("Pod", selection: $pod) {
+                    ForEach(resolution.choices) { choice in
+                        Text(choice.label).tag(choice.name)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
+                .help("この Job の Pod。再試行や completions で複数になる")
+            }
+
             if request.containers.count > 1 {
                 Picker("コンテナ", selection: $container) {
                     ForEach(request.containers, id: \.self) { name in
@@ -208,9 +254,28 @@ struct LogContent: View {
         return text
     }
 
+    /// **「引いていない」「引けなかった」「Pod が無い」「ログが無い」を
+    /// 別の表示にする。** どれも本文が空になるが、見る場所も打つ手も違う。
     @ViewBuilder
     private var placeholder: some View {
-        if !lines.isEmpty {
+        if case .pending = resolution {
+            LoadingView(message: "Pod を探しています")
+        } else if case .failed(let message) = resolution {
+            ContentUnavailableView(
+                "Pod を引けませんでした",
+                systemImage: "exclamationmark.triangle",
+                // 「ログがありません」と書かない。引けていないので、
+                // ログがあるかどうかはまだ分かっていない。
+                description: Text("この Job が掴んでいる Pod を引けませんでした。"
+                    + "ログが残っているかどうかは分かりません。\n\n\(message)"))
+        } else if pod.isEmpty {
+            ContentUnavailableView(
+                "Pod が残っていません",
+                systemImage: "clock.arrow.circlepath",
+                description: Text("この Job の Pod は見つかりませんでした。"
+                    + "完了した Job の Pod は ttlSecondsAfterFinished や"
+                    + " Pod のガベージコレクションで消え、ログも一緒に消えます。"))
+        } else if !lines.isEmpty {
             ContentUnavailableView(
                 "一致する行がありません",
                 systemImage: "line.3.horizontal.decrease.circle",
@@ -233,6 +298,16 @@ struct LogContent: View {
                 Label("追いかけ中", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .good))
+            }
+            // **どの Pod を読んでいるかを言う。** Job を指して開いているので、
+            // 名前が出ていないと「どの試行のログか」が分からない。選び直せる
+            // とき（Pod が複数）は上の Picker が同じことを言うので出さない。
+            if request.isJob, !pod.isEmpty, resolution.choices.count <= 1 {
+                Text(pod)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             Text(countText(visible))
                 .font(.caption)
@@ -276,7 +351,38 @@ struct LogContent: View {
     /// **見え方だけの状態を入れない。** `autoScroll` はここに無い。入れると、
     /// スクロールを止めるたびに取得がやり直しになって行が消える。
     private var reloadKey: String {
-        "\(request.id)|\(container)|\(streams)|\(timestamps)|\(previous)"
+        "\(request.id)|\(pod)|\(container)|\(streams)|\(timestamps)|\(previous)"
+    }
+
+    /// 読む Pod を決める。
+    ///
+    /// Pod を指して開いたときは指定そのもの。Job のときは Job 自身のセレクタで
+    /// 引き直す。**`kubectl logs job/<名前>` に任せない** — あれは Pod を 1 つ
+    /// 選んで出すので、再試行した Job では最後の試行しか見られないうえ、
+    /// どれを見ているのかも画面に出ない。
+    private func resolvePods() async {
+        switch request.source {
+        case .pod:
+            resolution = .resolved([PodChoice(name: request.name, status: "")])
+            pod = request.name
+
+        case .job(let selector):
+            resolution = .pending
+            pod = ""
+            switch await store.pods(
+                forJobSelector: selector, namespace: request.namespace)
+            {
+            case .success(let objects):
+                let choices = objects.map {
+                    PodChoice(name: $0.name, status: StatusResolver.status(for: $0).text)
+                }
+                resolution = .resolved(choices)
+                // 新しい順に並んでいるので、既定は最後の試行。
+                pod = choices.first?.name ?? ""
+            case .failure(let error):
+                resolution = .failed(error.localizedDescription)
+            }
+        }
     }
 
     private func restart() async {
@@ -289,6 +395,9 @@ struct LogContent: View {
         if !request.containers.contains(container) {
             container = request.containers.first ?? ""
         }
+        // Pod が決まるまでは何も起こさない。決まった時点で `reloadKey` が
+        // 変わり、ここへもう一度来る。
+        guard !pod.isEmpty else { return }
 
         var options = Kubectl.LogOptions()
         options.container = container.isEmpty ? nil : container
@@ -298,7 +407,7 @@ struct LogContent: View {
         options.tailLines = Preferences.shared.logTailLines
 
         switch await store.logStream(
-            namespace: request.namespace, pod: request.pod, options: options)
+            namespace: request.namespace, pod: pod, options: options)
         {
         case .failure(let error):
             guard token == generation else { return }

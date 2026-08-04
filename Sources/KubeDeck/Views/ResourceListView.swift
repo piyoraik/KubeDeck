@@ -298,10 +298,12 @@ struct ResourceListView: View {
     private func singleMenu(for object: K8sObject) -> some View {
         Button("詳細を見る") { store.selectOnly(object) }
 
-        if kind == .pod {
+        // Pod だけでなく Job からも開ける。**Pod をここで解決しない** —
+        // メニューを組み立てるたびに kubectl が走ることになる。
+        if let logRequest = PodLogRequest(object: object) {
             Button("ログを見る") { store.showLogs(for: object) }
             Button("ログを別ウインドウで見る") {
-                openWindow(id: LogWindow.id, value: PodLogRequest(pod: object))
+                openWindow(id: LogWindow.id, value: logRequest)
             }
         }
         if kind?.isScalable == true {
