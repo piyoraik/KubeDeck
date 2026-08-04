@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(ClusterStore.self) private var store
+    /// 絞り込み欄の文言だけが設定を見る（配置の「たどる」では相手が変わる）。
+    @State private var preferences = Preferences.shared
     @State private var showsInspector = true
     /// ログパネルの高さ。仕切りのドラッグで変わる。
     @State private var logHeight: CGFloat = 280
@@ -15,7 +17,7 @@ struct RootView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
         } detail: {
-            detailWithLogs
+            detailWithSearch
                 .navigationTitle(title)
                 .navigationSubtitle(subtitle)
                 .toolbar { toolbar }
@@ -29,9 +31,44 @@ struct RootView: View {
                 }
         }
         .overlay(alignment: .bottom) { errorBar }
+        // 知らせは帯より上に積む。両方が出るのは、成功の直後に自動更新が
+        // 失敗したときぐらいだが、そのとき重なると読めない。
+        .overlay(alignment: .bottom) { noticeBar }
+        // **消える側に付けても効かない。** 出入りを animate させるには、
+        // 残っているほう（この親）に置く必要がある。
+        .animation(.easeOut(duration: 0.18), value: store.actionNotice)
     }
 
     // MARK: - 本体
+
+    /// 絞り込み欄を持つのはここ 1 か所だけ。
+    ///
+    /// **画面ごとに `.searchable` を付け外ししない。** 以前は
+    /// `ResourceListView` と `PlacementView` がそれぞれ持っており、両者は
+    /// `detail` の switch の枝なので、概要 → 一覧では項目が足され、
+    /// 配置 → 一覧では外して足す、とツールバーの項目集合が動いていた。
+    /// この更新は `NSHostingView.layout` の最中に `ToolbarBridge` 経由で走るため、
+    /// `-[NSToolbar _insertNewItemWithItemIdentifier:atIndex:]` が例外を投げて
+    /// **アプリごと落ちる**（クラッシュログ 11 件中 9 件がこれ）。ここに集めると
+    /// 項目集合は静的になり、変わるのは文言と有効・無効だけになる。
+    ///
+    /// **`.disabled` を本体に掛けない。** 概要には絞り込む相手がいないので欄は
+    /// 無効にしたいが、素直に重ねると `detailWithLogs` ごと無効になり、
+    /// 取得に失敗したときの「もう一度試す」まで押せなくなる。ZStack の兄弟に
+    /// 分けておけば、無効になるのは欄だけで済む（`.toolbar` も外側なので、
+    /// コンテキストや再読み込みは概要でも生きる）。
+    private var detailWithSearch: some View {
+        ZStack {
+            detailWithLogs
+            Color.clear
+                .allowsHitTesting(false)
+                .searchable(
+                    text: Binding(get: { store.searchText }, set: { store.searchText = $0 }),
+                    placement: .toolbar,
+                    prompt: searchPrompt)
+                .disabled(store.selection == .overview)
+        }
+    }
 
     /// ログは一覧の下に積む。掴んで高さを変えられる。
     ///
@@ -95,7 +132,26 @@ struct RootView: View {
         if store.errorMessage != nil, store.objects.isEmpty { return "取得できません" }
         let shown = store.filteredObjects.count
         let total = store.objects.count
-        return shown == total ? "\(total) 件" : "\(shown) / \(total) 件"
+        let counts = shown == total ? "\(total) 件" : "\(shown) / \(total) 件"
+        // **選んでいる数はここに出す。** 件数の持ち場は副題（同じ数字を
+        // 2 か所に置かない）。1 件のときは書かない — ふつうがそちらなので、
+        // 常に出すと件数が読みにくくなるだけ。
+        let selected = store.selectedObjectIDs.count
+        return selected > 1 ? "\(counts) · \(selected) 件選択中" : counts
+    }
+
+    /// 絞り込み欄の文言。**画面ごとに相手が違う。** 配置の「たどる」で絞るのは
+    /// 左の起点の一覧であって図ではないので、そこだけ書き分ける。
+    private var searchPrompt: String {
+        switch store.selection {
+        case .overview:
+            return "絞り込み"
+        case .placement:
+            return preferences.placementGrouping == .map
+                ? "たどる起点を絞り込む" : "Pod を絞り込む"
+        case .resource(let target):
+            return "\(target.displayName) を絞り込む"
+        }
     }
 
     // MARK: - ツールバー
@@ -202,6 +258,34 @@ struct RootView: View {
         .help("いま表示しているものを読み直す（⌘R）")
     }
 
+
+    // MARK: - 操作が通ったことの知らせ
+
+    /// **エラー帯と同じ見た目にしない。** あちらは赤い縁で留まり続けるもの、
+    /// こちらは数秒で消えるもの。同じ形だと「また何か起きた」と身構える。
+    @ViewBuilder
+    private var noticeBar: some View {
+        if let notice = store.actionNotice {
+            HStack(spacing: 8) {
+                Image(systemName: StatusLevel.good.symbol)
+                    .foregroundStyle(Palette.color(for: .good))
+                Text(notice)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Palette.cardStroke, lineWidth: 1))
+            // エラー帯が出ているときはその上に載せる。
+            .padding(.bottom, store.errorMessage == nil ? 16 : 96)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            // 押せるものではないので、下の一覧の操作を邪魔しない。
+            .allowsHitTesting(false)
+            .accessibilityLabel(Text(notice))
+        }
+    }
 
     // MARK: - エラー表示
 

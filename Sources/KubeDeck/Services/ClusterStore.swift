@@ -89,7 +89,9 @@ final class ClusterStore {
         didSet {
             guard selection != oldValue else { return }
             Defaults.selection = selection.storageKey
-            selectedObjectID = nil
+            // 別の種別へ移るときは複数選択も捨てる。持ち越すと、見えていない
+            // ものを選んだまま「まとめて削除」を押せてしまう。
+            clearSelection()
             searchText = ""
             objects = []
             deniedKinds = []
@@ -103,7 +105,18 @@ final class ClusterStore {
         }
     }
 
-    var objects: [K8sObject] = []
+    var objects: [K8sObject] = [] {
+        didSet {
+            objectIndex = Dictionary(
+                objects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            updateFilteredObjects()
+        }
+    }
+
+    /// id から 1 つ引くための索引。**`first(where:)` で舐めない** —
+    /// 詳細パネルは毎フレーム選択中のものを引くので、行数ぶんの線形探索になる。
+    private var objectIndex: [K8sObject.ID: K8sObject] = [:]
+
     /// 配置画面のノード。Pod のほうは `objects` に入れる（検索と選択を
     /// 一覧と同じ経路に載せるため）。
     var placementNodes: [K8sObject] = []
@@ -148,7 +161,12 @@ final class ClusterStore {
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
 
-    var searchText: String = ""
+    var searchText: String = "" {
+        didSet {
+            guard searchText != oldValue else { return }
+            updateFilteredObjects()
+        }
+    }
 
     /// 一覧の並べ替え。nil なら既定（異常が上、次に Namespace と名前）。
     ///
@@ -205,6 +223,14 @@ final class ClusterStore {
     }
 
     var isLoading = false
+
+    /// 操作が通ったことの短い知らせ。数秒で自分から消える。
+    ///
+    /// **エラーと同じ持ち場にしない。** あちらは読んで対処するもので、
+    /// こちらは「効いた」と分かればよいもの。残し続けると画面を塞ぐ。
+    var actionNotice: String?
+    private var noticeTask: Task<Void, Never>?
+
     var errorMessage: String?
     var setupErrorMessage: String?
     var lastUpdated: Date?
@@ -253,17 +279,30 @@ final class ClusterStore {
     /// Namespace 列を出すのは「すべて」を見ているときだけ。
     var showsNamespaceColumn: Bool { selectedNamespace == nil }
 
-    var filteredObjects: [K8sObject] {
+    /// いま画面に出ている行。
+    ///
+    /// **計算プロパティにしない。** 1 描画のあいだに副題・一覧・詳細パネルの
+    /// 内訳・配置の 2 か所から読まれるので、素直に計算すると同じ絞り込みが
+    /// 5〜6 回走る。中身は全件 × 全列を舐めるので、そのぶんがそのまま重なる。
+    /// `objects` と `searchText` が変わったときだけ組み直す。
+    private(set) var filteredObjects: [K8sObject] = []
+
+    private func updateFilteredObjects() {
         // 配置画面も Pod を並べているので、一覧と同じ絞り込みに載せる。
         let target = currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
-        guard let target else { return [] }
-        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return objects }
-        return objects.filter { ResourceTable.matches($0, target: target, query: searchText) }
+        guard let target else {
+            filteredObjects = []
+            return
+        }
+        // **絞り込みは 1 度だけ組み立てる。** 語の解析も列の構築も、
+        // 問い合わせと対象が同じなら結果は同じ（`ResourceSearch`）。
+        let search = ResourceSearch(query: searchText, target: target)
+        filteredObjects = search.isEmpty ? objects : objects.filter(search.matches)
     }
 
     var selectedObject: K8sObject? {
         guard let selectedObjectID else { return nil }
-        return objects.first { $0.id == selectedObjectID }
+        return objectIndex[selectedObjectID]
     }
 
     /// いま開いている一覧の列。**画面と store で 2 つ持たない** —
@@ -297,17 +336,86 @@ final class ClusterStore {
 
     /// キーボードで選択を動かす。一覧は自前の行なので、`List` のような
     /// 上下移動が付いてこない。
-    func moveSelection(by offset: Int) {
+    func moveSelection(by offset: Int, extending: Bool = false) {
         let rows = filteredObjects
         guard !rows.isEmpty else { return }
         guard let current = selectedObjectID,
               let index = rows.firstIndex(where: { $0.id == current })
         else {
-            selectedObjectID = rows.first?.id
+            selectOnly(rows[0])
             return
         }
         let next = min(max(0, index + offset), rows.count - 1)
-        selectedObjectID = rows[next].id
+        if extending {
+            extendSelection(to: rows[next])
+        } else {
+            selectOnly(rows[next])
+        }
+    }
+
+    // MARK: - 複数選択
+
+    /// いま選ばれているもの全部。
+    ///
+    /// **主役（`selectedObjectID`）は常にこの中に居る。** 詳細パネル・ログ・
+    /// 履歴は主役だけを見るので、そちらの経路は 1 つのままでよい。ここが
+    /// 増えるのは「まとめて何かする」ときだけ。
+    private(set) var selectedObjectIDs: Set<K8sObject.ID> = []
+
+    /// 範囲選択の起点。**主役とは別に持つ。** 主役は shift を押すたびに動くので、
+    /// それを起点にすると選択範囲が引きずられて伸び続ける。
+    private var selectionAnchorID: K8sObject.ID?
+
+    /// 選ばれているものを**一覧の並びのまま**返す。操作の順序が画面と
+    /// 食い違わないようにする。
+    var selectedObjects: [K8sObject] {
+        filteredObjects.filter { selectedObjectIDs.contains($0.id) }
+    }
+
+    func selectOnly(_ object: K8sObject) {
+        selectedObjectIDs = [object.id]
+        selectionAnchorID = object.id
+        selectedObjectID = object.id
+    }
+
+    /// ⌘ クリック。入っていれば外し、無ければ足す。
+    func toggleSelection(of object: K8sObject) {
+        if selectedObjectIDs.contains(object.id) {
+            selectedObjectIDs.remove(object.id)
+            // 主役を外したら、残っているものの中から選び直す。
+            // **空のまま主役だけ残さない** — 詳細パネルが、選ばれていない
+            // ものを映し続けることになる。
+            if selectedObjectID == object.id {
+                selectedObjectID = filteredObjects
+                    .last { selectedObjectIDs.contains($0.id) }?.id
+            }
+        } else {
+            selectedObjectIDs.insert(object.id)
+            selectedObjectID = object.id
+        }
+        selectionAnchorID = selectedObjectID
+    }
+
+    /// shift クリック。起点からそこまでをまとめて選ぶ。
+    func extendSelection(to object: K8sObject) {
+        let rows = filteredObjects
+        guard let target = rows.firstIndex(where: { $0.id == object.id }) else { return }
+        guard let anchorID = selectionAnchorID ?? selectedObjectID,
+              let anchor = rows.firstIndex(where: { $0.id == anchorID })
+        else {
+            selectOnly(object)
+            return
+        }
+        let range = anchor <= target ? anchor...target : target...anchor
+        selectedObjectIDs = Set(rows[range].map(\.id))
+        // 起点は動かさない。動かすと次の shift クリックで範囲がずれる。
+        selectedObjectID = object.id
+    }
+
+    func clearSelection() {
+        selectedObjectIDs = []
+        selectionAnchorID = nil
+        selectedObjectID = nil
     }
 
     /// 表示用の並び。既定は `sorted(_:kind:)`、見出しを押していればその列。
@@ -968,41 +1076,114 @@ final class ClusterStore {
 
     func delete(_ object: K8sObject) async {
         guard let resource = currentResourceName else { return }
-        await perform {
+        // **「削除しました」と言わない。** `--wait=false` で投げているので、
+        // 戻ってきた時点ではまだ消えていない。行もしばらく残る（Terminating）。
+        await perform("\(object.name) の削除を要求しました。消えるまで少しかかります") {
             try await self.kubectl.delete(
                 resource: resource, object: object, context: self.currentContext)
         }
     }
 
+    /// 選んでいるものをまとめて消す。
+    func deleteSelected() async {
+        guard let resource = currentResourceName else { return }
+        let objects = selectedObjects
+        guard !objects.isEmpty else { return }
+        if objects.count == 1 {
+            await delete(objects[0])
+            return
+        }
+        await perform("\(objects.count) 件の削除を要求しました。消えるまで少しかかります") {
+            try await self.kubectl.delete(
+                resource: resource, objects: objects, context: self.currentContext)
+        }
+    }
+
     func scale(_ object: K8sObject, to replicas: Int) async {
-        await perform {
+        await perform("\(object.name) のレプリカ数を \(replicas) にしました") {
             try await self.kubectl.scale(object, to: replicas, context: self.currentContext)
         }
     }
 
     func restart(_ object: K8sObject) async {
-        await perform {
+        // 入れ替わるのはこれから。「再起動しました」は言い過ぎ。
+        await perform("\(object.name) のローリング再起動を始めました") {
             try await self.kubectl.rolloutRestart(object, context: self.currentContext)
         }
     }
 
     func setCordon(_ node: K8sObject, unschedulable: Bool) async {
-        await perform {
+        let notice = unschedulable
+            ? "\(node.name) への新しい Pod の配置を止めました"
+            : "\(node.name) への配置を許可しました"
+        await perform(notice) {
             try await self.kubectl.cordon(
                 node, unschedulable: unschedulable, context: self.currentContext)
         }
     }
 
-    private func perform(_ action: @escaping () async throws -> Void) async {
+    /// drain したら何が起きるかを、実際には動かさずに聞く。
+    ///
+    /// **確認の文面を自分で組み立てない。** 退避できるかどうかは
+    /// PodDisruptionBudget や DaemonSet の有無で決まり、こちらで数えた
+    /// 「Pod が N 個あります」は kubectl が実際にやることとずれる。
+    /// `--dry-run=server` に答えさせれば、出るのは本番と同じ判断。
+    func drainPreview(
+        _ node: K8sObject, options: Kubectl.DrainOptions
+    ) async -> Result<String, Error> {
+        var options = options
+        options.dryRun = true
+        do {
+            return .success(
+                try await kubectl.drain(node, options: options, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    func drain(_ node: K8sObject, options: Kubectl.DrainOptions) async {
+        await perform("\(node.name) からの退避を要求しました") {
+            try await self.kubectl.drain(
+                node, options: options, context: self.currentContext)
+        }
+    }
+
+    /// 操作を実行し、**通ったことを必ず知らせる**。
+    ///
+    /// **黙って成功しない。** 以前は失敗のときだけ帯を出していた。削除は
+    /// `--wait=false` なので押しても行が残り、再起動は見た目が何も変わらない。
+    /// 合図が無いと**押せていないように見える**ので、もう一度押すことになる。
+    ///
+    /// **やったことより多く言わない。** 要求を投げただけのものは「要求しました」。
+    /// ここで「削除しました」と書くと、残っている行のほうが間違いに見える。
+    private func perform(
+        _ notice: String, _ action: @escaping () async throws -> Void
+    ) async {
         do {
             try await action()
             errorMessage = nil
+            showNotice(notice)
             // 変更の結果が反映されるまで一拍置く。即座に読み直すと
             // 変更前の状態が返ってきて、失敗したように見える。
             try? await Task.sleep(for: .milliseconds(400))
             reload(showsSpinner: false)
         } catch {
+            // 失敗したときに前の成功が残っていると、どちらの話か分からない。
+            actionNotice = nil
+            noticeTask?.cancel()
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 数秒で自分から消える。**閉じる操作を持たせない** — 消えるものに
+    /// ✕ を付けると、押す前に消えて押し損ねる。
+    private func showNotice(_ message: String) {
+        actionNotice = message
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.actionNotice = nil
         }
     }
 

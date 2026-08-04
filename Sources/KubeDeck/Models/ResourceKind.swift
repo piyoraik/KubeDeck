@@ -5,6 +5,10 @@ enum ResourceCategory: String, CaseIterable, Identifiable, Sendable {
     case workloads
     case network
     case config
+    /// **「クラスタ」に混ぜない。** RBAC は 5 種あり、混ぜるとノードや
+    /// Namespace が埋もれる。権限を追うときは 5 つを行き来するので、
+    /// まとまっているほうが速い。
+    case access
     case cluster
 
     var id: String { rawValue }
@@ -14,6 +18,7 @@ enum ResourceCategory: String, CaseIterable, Identifiable, Sendable {
         case .workloads: return "ワークロード"
         case .network: return "ネットワーク"
         case .config: return "設定と保存"
+        case .access: return "アクセス制御"
         case .cluster: return "クラスタ"
         }
     }
@@ -38,6 +43,12 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
     case configMap
     case secret
     case persistentVolumeClaim
+
+    case serviceAccount
+    case role
+    case roleBinding
+    case clusterRole
+    case clusterRoleBinding
 
     case persistentVolume
     case node
@@ -64,6 +75,12 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .configMap: return "configmaps"
         case .secret: return "secrets"
         case .persistentVolumeClaim: return "persistentvolumeclaims"
+        case .serviceAccount: return "serviceaccounts"
+        // RBAC は必ず API グループを付ける。`roles` は別グループにも居る。
+        case .role: return "roles.rbac.authorization.k8s.io"
+        case .roleBinding: return "rolebindings.rbac.authorization.k8s.io"
+        case .clusterRole: return "clusterroles.rbac.authorization.k8s.io"
+        case .clusterRoleBinding: return "clusterrolebindings.rbac.authorization.k8s.io"
         case .persistentVolume: return "persistentvolumes"
         case .node: return "nodes"
         case .namespace: return "namespaces"
@@ -87,6 +104,11 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .configMap: return "ConfigMap"
         case .secret: return "Secret"
         case .persistentVolumeClaim: return "PersistentVolumeClaim"
+        case .serviceAccount: return "ServiceAccount"
+        case .role: return "Role"
+        case .roleBinding: return "RoleBinding"
+        case .clusterRole: return "ClusterRole"
+        case .clusterRoleBinding: return "ClusterRoleBinding"
         case .persistentVolume: return "PersistentVolume"
         case .node: return "Node"
         case .namespace: return "Namespace"
@@ -118,6 +140,11 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .configMap: return "ConfigMap"
         case .secret: return "Secret"
         case .persistentVolumeClaim: return "PersistentVolumeClaim"
+        case .serviceAccount: return "ServiceAccount"
+        case .role: return "Role"
+        case .roleBinding: return "RoleBinding"
+        case .clusterRole: return "ClusterRole"
+        case .clusterRoleBinding: return "ClusterRoleBinding"
         case .persistentVolume: return "PersistentVolume"
         case .node: return "Node"
         case .namespace: return "Namespace"
@@ -134,6 +161,8 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
             return .network
         case .configMap, .secret, .persistentVolumeClaim:
             return .config
+        case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
+            return .access
         case .persistentVolume, .node, .namespace, .event:
             // PersistentVolume はクラスタ全体のもので Namespace に属さない。
             // Kubernetes Dashboard も「クラスタ」に置いている。
@@ -144,7 +173,8 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
     /// Namespace に属さないもの（Namespace 絞り込みを効かせない）。
     var isNamespaced: Bool {
         switch self {
-        case .node, .namespace, .persistentVolume: return false
+        case .node, .namespace, .persistentVolume, .clusterRole, .clusterRoleBinding:
+            return false
         default: return true
         }
     }
@@ -164,6 +194,11 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .configMap: return "doc.text"
         case .secret: return "key"
         case .persistentVolumeClaim: return "externaldrive"
+        case .serviceAccount: return "person.badge.key"
+        case .role: return "checklist"
+        case .roleBinding: return "link"
+        case .clusterRole: return "list.bullet.rectangle"
+        case .clusterRoleBinding: return "link.circle"
         case .persistentVolume: return "internaldrive"
         case .node: return "server.rack"
         case .namespace: return "folder"

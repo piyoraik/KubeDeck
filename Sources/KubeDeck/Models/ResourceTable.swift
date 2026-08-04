@@ -272,6 +272,45 @@ enum ResourceTable {
                 },
             ]
 
+        case .serviceAccount:
+            return [
+                ResourceColumn(title: "シークレット", width: .fixed(100), trailing: true) {
+                    ResourceCell(
+                        text: "\($0.raw["secrets"]?.arrayValue.count ?? 0)", emphasis: .mono)
+                },
+                ResourceColumn(title: "取得用シークレット", width: .fixed(130), trailing: true) {
+                    ResourceCell(
+                        text: "\($0.raw["imagePullSecrets"]?.arrayValue.count ?? 0)",
+                        emphasis: .mono)
+                },
+            ]
+
+        case .role, .clusterRole:
+            return [
+                ResourceColumn(title: "規則", width: .fixed(56), trailing: true) {
+                    ResourceCell(text: "\($0.raw["rules"]?.arrayValue.count ?? 0)", emphasis: .mono)
+                },
+                // **一覧で中身まで見せる。** 名前だけ並べても、どの Role が
+                // 強いのかが分からない。YAML を開かずに危ないものが目に入る。
+                ResourceColumn(title: "できること", width: .flexible(min: 260)) { role in
+                    let summary = ruleSummary(role)
+                    return ResourceCell(
+                        text: summary.text, emphasis: .secondary,
+                        // `*` は「なんでもできる」。ここだけは色を付ける。
+                        level: summary.isWildcard ? .warning : nil)
+                },
+            ]
+
+        case .roleBinding, .clusterRoleBinding:
+            return [
+                ResourceColumn(title: "参照するロール", width: .fixed(220)) {
+                    ResourceCell(text: roleRef($0), emphasis: .secondary)
+                },
+                ResourceColumn(title: "誰に", width: .flexible(min: 220)) {
+                    ResourceCell(text: subjectSummary($0), emphasis: .secondary)
+                },
+            ]
+
         case .service:
             return [
                 ResourceColumn(title: "種類", width: .fixed(120)) {
@@ -611,6 +650,75 @@ enum ResourceTable {
     // MARK: - イベント
 
     /// core/v1 と events.k8s.io/v1 でフィールド名が違うので両方見る。
+    // MARK: - RBAC
+
+    /// Role / ClusterRole の `rules` を 1 行にまとめる。
+    ///
+    /// **全部は書けないので、強いものから書く。** 見たいのは「何ができるか」で、
+    /// とくに `*`（なんでも）が入っているかどうか。先頭に出す。
+    static func ruleSummary(_ role: K8sObject) -> (text: String, isWildcard: Bool) {
+        let rules = role.raw["rules"]?.arrayValue ?? []
+        guard !rules.isEmpty else { return ("", false) }
+
+        var verbs = Set<String>()
+        var resources = Set<String>()
+        for rule in rules {
+            for verb in rule["verbs"]?.arrayValue ?? [] {
+                if let value = verb.stringValue { verbs.insert(value) }
+            }
+            for resource in rule["resources"]?.arrayValue ?? [] {
+                if let value = resource.stringValue { resources.insert(value) }
+            }
+            // `nonResourceURLs` しか持たない規則もある（/healthz など）。
+            for url in rule["nonResourceURLs"]?.arrayValue ?? [] {
+                if let value = url.stringValue { resources.insert(value) }
+            }
+        }
+
+        let isWildcard = verbs.contains("*") || resources.contains("*")
+        // `*` は必ず見えるところへ。並び順で沈ませない。
+        func ordered(_ set: Set<String>) -> [String] {
+            set.sorted { lhs, rhs in
+                if (lhs == "*") != (rhs == "*") { return lhs == "*" }
+                return lhs < rhs
+            }
+        }
+        let verbText = joined(ordered(verbs), limit: 4)
+        let resourceText = joined(ordered(resources), limit: 4)
+        guard !verbText.isEmpty || !resourceText.isEmpty else { return ("", isWildcard) }
+        return ("\(verbText) → \(resourceText)", isWildcard)
+    }
+
+    /// 長い一覧は頭だけ出して「他 N」。**黙って切らない。**
+    private static func joined(_ values: [String], limit: Int) -> String {
+        guard values.count > limit else { return values.joined(separator: ",") }
+        return values.prefix(limit).joined(separator: ",") + " 他 \(values.count - limit)"
+    }
+
+    /// RoleBinding / ClusterRoleBinding が指しているロール。
+    static func roleRef(_ binding: K8sObject) -> String {
+        guard let ref = binding.raw["roleRef"] else { return "" }
+        let kind = ref["kind"]?.stringValue ?? ""
+        let name = ref["name"]?.stringValue ?? ""
+        return kind.isEmpty ? name : "\(kind)/\(name)"
+    }
+
+    /// 誰に効いているか。**種別を落とさない** — 同じ名前の User と
+    /// ServiceAccount は別物で、混ぜると誰に効いているのか分からない。
+    static func subjectSummary(_ binding: K8sObject) -> String {
+        let subjects = binding.raw["subjects"]?.arrayValue ?? []
+        let names = subjects.map { subject -> String in
+            let kind = subject["kind"]?.stringValue ?? ""
+            let name = subject["name"]?.stringValue ?? ""
+            // ServiceAccount は Namespace まで書かないと、どれか決まらない。
+            if kind == "ServiceAccount", let namespace = subject["namespace"]?.stringValue {
+                return "\(kind)/\(namespace)/\(name)"
+            }
+            return kind.isEmpty ? name : "\(kind)/\(name)"
+        }
+        return joined(names, limit: 3)
+    }
+
     // MARK: - HPA
 
     /// `kubectl get hpa` の REFERENCE 列。
@@ -690,23 +798,150 @@ enum ResourceTable {
 
     // MARK: - 検索
 
-    /// 一覧の検索ボックス。名前とラベル、それに各セルの表示文字列を対象にする。
+    /// 1 件だけを見るとき用。**一覧を絞るのにこれを使わない** —
+    /// 呼ぶたびに `ResourceSearch` を組み立て直すことになる（`ResourceSearch` の
+    /// 説明を参照）。絞り込みは `ResourceSearch` を 1 つ作って回す。
     static func matches(_ object: K8sObject, target: ResourceTarget, query: String) -> Bool {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty else { return true }
-        if object.name.lowercased().contains(needle) { return true }
-        if object.namespace?.lowercased().contains(needle) == true { return true }
-        if object.labels.contains(where: {
-            $0.key.lowercased().contains(needle) || $0.value.lowercased().contains(needle)
-        }) {
-            return true
+        ResourceSearch(query: query, target: target).matches(object)
+    }
+}
+
+// MARK: - 組み立て済みの絞り込み
+
+/// 一覧の検索ボックス。名前とラベル、それに各セルの表示文字列を対象にする。
+///
+/// **オブジェクトごとに組み立て直さない。** 以前は 1 件ごとに
+/// `SearchTerm.parse` と列定義の構築が走っていた。どちらも問い合わせと対象が
+/// 同じなら結果も同じなのに、Pod 2,000 件なら 1 打鍵で 2,000 回ずつ回っていた
+/// （しかも列は 1 件あたり全列ぶんの JSON を辿る）。外で 1 度だけ作る。
+struct ResourceSearch: Sendable {
+    private let terms: [SearchTerm]
+    /// 素の文字の項があるときだけ持つ。名前やラベルだけを見る問い合わせで
+    /// 列を組み立てても使わない。
+    private let columns: [ResourceColumn]
+
+    init(query: String, target: ResourceTarget) {
+        let terms = SearchTerm.parse(query)
+        self.terms = terms
+        let needsColumns = terms.contains {
+            if case .free = $0 { return true }
+            return false
         }
-        let columns: [ResourceColumn]
+        guard needsColumns else {
+            columns = []
+            return
+        }
         switch target {
-        case .builtIn(let kind): columns = self.columns(for: kind, showNamespace: false)
-        case .custom(let type): columns = self.columns(for: type, showNamespace: false)
+        case .builtIn(let kind):
+            columns = ResourceTable.columns(for: kind, showNamespace: false)
+        case .custom(let type):
+            columns = ResourceTable.columns(for: type, showNamespace: false)
         }
-        return columns.contains { $0.value(object).text.lowercased().contains(needle) }
     }
 
+    /// 語が 1 つも無い＝何も絞らない。呼び出し側は元の配列をそのまま使える。
+    var isEmpty: Bool { terms.isEmpty }
+
+    func matches(_ object: K8sObject) -> Bool {
+        // **空白区切りは AND。** `app=web crash` のように「絞ってから探す」の
+        // が絞り込みのふつうの使い方で、OR にすると項目を足すほど増えていく。
+        terms.allSatisfy { matches(object, term: $0) }
+    }
+
+    private func matches(_ object: K8sObject, term: SearchTerm) -> Bool {
+        switch term {
+        case .free(let needle):
+            if object.name.lowercased().contains(needle) { return true }
+            if object.namespace?.lowercased().contains(needle) == true { return true }
+            if object.labels.contains(where: {
+                $0.key.lowercased().contains(needle) || $0.value.lowercased().contains(needle)
+            }) {
+                return true
+            }
+            return columns.contains { $0.value(object).text.lowercased().contains(needle) }
+
+        case .label(let key, let value):
+            guard let found = object.labels.first(where: {
+                $0.key.lowercased() == key
+            }) else { return false }
+            // `app=` は「そのラベルを持つもの」。値まで求めない。
+            guard let value else { return true }
+            // **値は完全一致。** ラベルはセレクタの語彙なので、`env=prod` が
+            // `env=production` を拾うと絞り込んだつもりで絞れていない。
+            return found.value.lowercased() == value
+
+        case .field(let field, let needle):
+            switch field {
+            case .namespace:
+                return object.namespace?.lowercased().contains(needle) == true
+            case .status:
+                return StatusResolver.status(for: object).text.lowercased().contains(needle)
+            case .node:
+                return object.spec?["nodeName"]?.stringValue?.lowercased()
+                    .contains(needle) == true
+            }
+        }
+    }
+}
+
+// MARK: - 検索語
+
+/// 絞り込みの 1 項目。
+///
+/// **素の部分一致だけでは足りない。** Kubernetes はラベルで全部が動くのに、
+/// 名前の一部でしか探せないと「この Deployment の Pod だけ」が出せない。
+/// かといって本物のセレクタ（`in`、`notin`、`!key`）まで実装すると、
+/// 絞り込み欄 1 つのために式の評価を背負うことになる。**よく打つ形だけ**を
+/// 見て、それ以外は素の文字として扱う。
+enum SearchTerm: Equatable, Sendable {
+    /// 素の文字。名前・Namespace・ラベル・各セルの表示文字列を見る。
+    case free(String)
+    /// `app=nginx`。値が nil（`app=`）なら「そのラベルを持つもの」。
+    case label(key: String, value: String?)
+    /// `ns:kube-system` のように場所を指定したもの。
+    case field(Field, String)
+
+    enum Field: Sendable {
+        case namespace
+        case status
+        case node
+
+        /// 打ちやすい別名を受ける。**知らない語は場所として扱わない** —
+        /// `nginx:1.21` のような素の文字を絞り込みの指定と取り違えないため。
+        init?(keyword: String) {
+            switch keyword {
+            case "ns", "namespace": self = .namespace
+            case "status", "state": self = .status
+            case "node": self = .node
+            default: return nil
+            }
+        }
+    }
+
+    /// 空白で区切って 1 語ずつ読む。
+    static func parse(_ query: String) -> [SearchTerm] {
+        query.split(whereSeparator: \.isWhitespace).compactMap { token in
+            let text = token.lowercased()
+            guard !text.isEmpty else { return nil }
+
+            // `=` はラベル。名前に `=` はまず入らない。
+            if let separator = text.firstIndex(of: "="), separator != text.startIndex {
+                let key = String(text[..<separator])
+                let value = String(text[text.index(after: separator)...])
+                return .label(key: key, value: value.isEmpty ? nil : value)
+            }
+
+            // `:` は場所の指定。ただし知らない語なら素の文字に落とす
+            // （`nginx:1.21` を「nginx という場所」と読まないため）。
+            if let separator = text.firstIndex(of: ":"),
+               separator != text.startIndex,
+               let field = Field(keyword: String(text[..<separator])) {
+                let value = String(text[text.index(after: separator)...])
+                guard !value.isEmpty else { return nil }
+                return .field(field, value)
+            }
+
+            return .free(text)
+        }
+    }
 }

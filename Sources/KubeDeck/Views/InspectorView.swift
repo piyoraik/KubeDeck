@@ -43,6 +43,21 @@ struct InspectorView: View {
 
     private func content(for object: K8sObject) -> some View {
         VStack(spacing: 0) {
+            // **どれの話をしているかを言う。** 複数選んでいると一覧は何行も
+            // 光っているのに、ここは 1 つぶんしか出ない。断りが無いと、
+            // 選択と詳細が食い違っているように見える。
+            if store.selectedObjectIDs.count > 1 {
+                HStack(spacing: 6) {
+                    Image(systemName: "checklist")
+                        .font(.caption)
+                    Text("\(store.selectedObjectIDs.count) 件を選択中。詳細はこの 1 件です。")
+                        .font(.caption)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+            }
             header(for: object)
             Divider()
             Picker("", selection: $tab) {

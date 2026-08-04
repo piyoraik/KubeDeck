@@ -765,6 +765,45 @@ actor Kubectl {
         try await run(arguments, context: context)
     }
 
+    /// まとめて消す。
+    ///
+    /// **1 つずつ起こさない。** 選んだ数だけ kubectl が立ち上がる。`-n` は
+    /// 1 つしか渡せないので、Namespace ごとに 1 回にまとめる。
+    ///
+    /// **途中で止めない。** 1 つの Namespace が権限で拒まれても、残りは
+    /// 消せる。ここで抜けると「どこまで消えたのか」が分からなくなる。
+    /// 最後まで試して、失敗したぶんだけをまとめて投げる。
+    func delete(resource: String, objects: [K8sObject], context: String) async throws {
+        let groups = Dictionary(grouping: objects) { $0.namespace ?? "" }
+        var failures: [String] = []
+
+        for (namespace, group) in groups.sorted(by: { $0.key < $1.key }) {
+            var arguments = ["delete", resource] + group.map(\.name) + ["--wait=false"]
+            if !namespace.isEmpty { arguments += ["-n", namespace] }
+            do {
+                try await run(arguments, context: context)
+            } catch {
+                failures.append(
+                    namespace.isEmpty
+                        ? error.localizedDescription
+                        : "\(namespace): \(error.localizedDescription)")
+            }
+        }
+
+        guard failures.isEmpty else {
+            throw CommandError(
+                command: "kubectl delete \(resource)",
+                exitCode: 1,
+                message: failures.count == groups.count
+                    ? failures.joined(separator: "\n\n")
+                    // **一部だけ消えたことを黙らない。** 全部失敗したのと
+                    // 見分けが付かないと、残っている行の意味が読めない。
+                    : "一部の Namespace で削除できませんでした。"
+                        + "他は削除を要求済みです。\n\n"
+                        + failures.joined(separator: "\n\n"))
+        }
+    }
+
     func scale(_ object: K8sObject, to replicas: Int, context: String) async throws {
         guard let kind = object.kind, kind.isScalable else { return }
         var arguments = ["scale", kind.resourceName, object.name, "--replicas=\(replicas)"]
@@ -785,6 +824,44 @@ actor Kubectl {
 
     func cordon(_ node: K8sObject, unschedulable: Bool, context: String) async throws {
         try await run([unschedulable ? "cordon" : "uncordon", node.name], context: context)
+    }
+
+    struct DrainOptions: Sendable, Equatable {
+        /// emptyDir の中身は退避すると**消える**。付けないと drain は止まる。
+        var deleteEmptyDirData = false
+        /// ReplicaSet などに管理されていない Pod も消す。**作り直されない。**
+        var force = false
+        /// 実際には動かさず、何が起きるかだけを返す。
+        var dryRun = false
+    }
+
+    /// ノードから Pod を退避させる。
+    ///
+    /// **`--force` と `--delete-emptydir-data` を既定にしない。** 前者は
+    /// 管理下にない Pod（消したら二度と作られない）を消し、後者は emptyDir の
+    /// 中身を捨てる。どちらも戻せないので、押した人に選ばせる。
+    ///
+    /// **`--ignore-daemonsets` は既定で付ける。** DaemonSet の Pod はそもそも
+    /// 退避できず（消しても同じノードに作り直される）、付けないと drain は
+    /// 必ず止まる。ここを選ばせても、選べる答えが 1 つしかない。
+    ///
+    /// **`--timeout` を必ず付ける。** 既定は 0（無制限）で、退避できない Pod が
+    /// 1 つあると待ち続ける。`run` のプロセス上限で殺すこともできるが、それだと
+    /// 「こちらが殺した」になり、kubectl 自身の理由（PodDisruptionBudget で
+    /// 弾かれた、など）が残らない。
+    @discardableResult
+    func drain(
+        _ node: K8sObject, options: DrainOptions, context: String
+    ) async throws -> String {
+        // `requestTimeout` は "15s" のように単位まで含む。ここで `s` を足さない。
+        var arguments = ["drain", node.name,
+                         "--ignore-daemonsets",
+                         "--timeout=\(requestTimeout)",
+                         "--request-timeout=\(requestTimeout)"]
+        if options.deleteEmptyDirData { arguments.append("--delete-emptydir-data") }
+        if options.force { arguments.append("--force") }
+        if options.dryRun { arguments.append("--dry-run=server") }
+        return try await run(arguments, context: context).stdoutText
     }
 
     // MARK: - ログ

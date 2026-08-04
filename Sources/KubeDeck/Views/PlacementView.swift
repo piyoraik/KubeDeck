@@ -55,14 +55,10 @@ struct PlacementView: View {
                     }
                 }
             }
-            // 並べているのは Pod なので、一覧と同じ絞り込みを付ける。
-            // **たどるでは相手が違う。** 絞るのは左の起点の一覧なので、
-            // 同じ「Pod を絞り込む」と書くと、図が絞られるように読める。
-            .searchable(
-                text: Binding(get: { store.searchText }, set: { store.searchText = $0 }),
-                placement: .toolbar,
-                prompt: preferences.placementGrouping == .map
-                    ? "たどる起点を絞り込む" : "Pod を絞り込む")
+            // **絞り込み欄はここに置かない。** ツールバーの項目を画面ごとに
+            // 出し入れすると、レイアウト中の `NSToolbar` の書き換えで落ちる。
+            // `RootView` が 1 つだけ持ち、文言だけを切り替える（たどるでは
+            // 絞る相手が図ではなく左の起点の一覧なので、そこも向こうで書き分け）。
         }
     }
 

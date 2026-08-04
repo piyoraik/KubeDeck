@@ -46,6 +46,9 @@ enum SettingsDigest {
         case .job: return jobGroups(object)
         case .cronJob: return cronJobGroups(object)
         case .horizontalPodAutoscaler: return autoscalerGroups(object)
+        case .serviceAccount: return serviceAccountGroups(object)
+        case .role, .clusterRole: return roleGroups(object)
+        case .roleBinding, .clusterRoleBinding: return bindingGroups(object)
         case .service: return serviceGroups(object)
         case .ingress: return ingressGroups(object)
         case .configMap, .secret: return dataGroups(object)
@@ -291,6 +294,93 @@ enum SettingsDigest {
             groups.append(containerGroup(container, status: nil))
         }
         return groups
+    }
+
+    // MARK: - RBAC
+
+    private static func serviceAccountGroups(_ account: K8sObject) -> [SettingGroup] {
+        [
+            SettingGroup(
+                title: "シークレット",
+                rows: [
+                    SettingRow("紐づくシークレット", names(account.raw["secrets"])),
+                    SettingRow("イメージ取得用", names(account.raw["imagePullSecrets"])),
+                    SettingRow(
+                        "トークンを自動で入れる",
+                        yesNo(account.raw["automountServiceAccountToken"]?.boolValue)),
+                ])
+        ]
+    }
+
+    /// **規則は 1 つずつ出す。** まとめると「どの動詞がどの資源に効くのか」が
+    /// 混ざる。`get` できるのは Pod だけなのに Secret にも効くように読めてしまう。
+    private static func roleGroups(_ role: K8sObject) -> [SettingGroup] {
+        let rules = role.raw["rules"]?.arrayValue ?? []
+        guard !rules.isEmpty else {
+            // **空欄にしない。** 規則の無い Role は「何もできない」ので、
+            // それ自体が言うべきこと。
+            return [SettingGroup(title: "できること", rows: [SettingRow("規則", nil)])]
+        }
+
+        return rules.enumerated().map { index, rule in
+            SettingGroup(
+                title: "規則 \(index + 1)",
+                rows: [
+                    SettingRow("できること", list(rule["verbs"])),
+                    SettingRow("対象", list(rule["resources"])),
+                    // 空文字の API グループは core（Pod や Service）。
+                    // そのまま出すと空欄に見えるので言い換える。
+                    SettingRow("API グループ", apiGroups(rule["apiGroups"])),
+                    SettingRow("名前を限定", list(rule["resourceNames"])),
+                    SettingRow("URL", list(rule["nonResourceURLs"])),
+                ])
+        }
+    }
+
+    private static func bindingGroups(_ binding: K8sObject) -> [SettingGroup] {
+        var groups = [
+            SettingGroup(
+                title: "与える権限",
+                rows: [SettingRow("参照するロール", ResourceTable.roleRef(binding))])
+        ]
+
+        let subjects = binding.raw["subjects"]?.arrayValue ?? []
+        guard !subjects.isEmpty else {
+            // 誰にも効いていない Binding は設定の誤りとしてよくある。
+            groups.append(
+                SettingGroup(title: "誰に", rows: [SettingRow("対象", nil)]))
+            return groups
+        }
+
+        for (index, subject) in subjects.enumerated() {
+            groups.append(
+                SettingGroup(
+                    title: "対象 \(index + 1)",
+                    rows: [
+                        SettingRow("種別", subject["kind"]?.stringValue),
+                        SettingRow("名前", subject["name"]?.stringValue),
+                        SettingRow("Namespace", subject["namespace"]?.stringValue),
+                    ]))
+        }
+        return groups
+    }
+
+    /// 文字列の配列をそのまま並べる。空なら nil（＝「未設定」と出る）。
+    private static func list(_ value: JSONValue?) -> String? {
+        let values = value?.arrayValue.compactMap { $0.stringValue } ?? []
+        return values.isEmpty ? nil : values.joined(separator: ", ")
+    }
+
+    private static func apiGroups(_ value: JSONValue?) -> String? {
+        let values = value?.arrayValue.compactMap { $0.stringValue } ?? []
+        guard !values.isEmpty else { return nil }
+        return values.map { $0.isEmpty ? "core" : $0 }.joined(separator: ", ")
+    }
+
+    /// `secrets` や `imagePullSecrets` は `{name: ...}` の配列。
+    private static func names(_ value: JSONValue?) -> String? {
+        let values = value?.arrayValue.compactMap { $0["name"]?.stringValue } ?? []
+        return values.isEmpty ? nil : values.joined(separator: ", ")
     }
 
     // MARK: - HPA
