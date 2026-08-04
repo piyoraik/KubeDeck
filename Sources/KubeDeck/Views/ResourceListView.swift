@@ -103,6 +103,14 @@ struct ResourceListView: View {
             }
             // 収まっているときに横方向へ跳ねないようにする。
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            // **見えている幅で切る。** `ScrollView` は safe area まで広がるので、
+            // 表が幅より広いとき（metrics-server が入って CPU / メモリ列が
+            // 増えたときなど）、はみ出した列が**詳細パネルの下に潜り込む**。
+            // 向こうは半透明なので、読めない文字が透けて出るうえ、列がある
+            // ことにも気付けない。`GeometryReader` が測っているのは見えている
+            // 幅（safe area の内側）なので、そこで切れば横スクロールで届く。
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
             // **`List` を使っていないので、上下移動は付いてこない。** 一覧を
             // 見ながら 1 行ずつ確かめるのは基本の操作なので、自前で足す。
             .focusable()

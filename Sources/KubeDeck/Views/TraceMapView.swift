@@ -35,6 +35,15 @@ struct TraceMapView: View {
                 .frame(maxHeight: .infinity)
             detail
         }
+        // **図の最小幅を外へ伝えない。** 段が 5 つ並ぶこの画面は、詰まった
+        // ときの最小幅が詳細の欄より広くなることがある。そのまま伝えると
+        // `NavigationSplitView` が列を押し広げ、**サイドバーの左端が切れる**
+        // （1367pt 幅・詳細パネルを出した状態で実際に起きた。「ワークロード」が
+        // 「ドロード」になり、下端のコンテキスト名も頭が消えた）。
+        // 下限を 0 にして、足りないぶんは図の側で詰める。
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        // 詰めきれずにはみ出した場合も、隣の欄の上に描かせない。
+        .clipped()
     }
 
     // MARK: - 起点の一覧
@@ -89,7 +98,10 @@ struct TraceMapView: View {
                 }
             }
         }
-        .frame(width: 236)
+        // **縮められる幅にする。** 決め打ちだと、この欄のぶんがそのまま
+        // 図に使える幅を削る。狭い窓では先にこちらを詰めさせる（名前は
+        // 真ん中を落として出る。図のほうが答えそのもの）。
+        .frame(minWidth: 176, idealWidth: 236, maxWidth: 236)
         .background(Palette.insetFill.opacity(0.5))
         // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
         // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。

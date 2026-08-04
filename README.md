@@ -26,38 +26,46 @@ xattr -dr com.apple.quarantine /Applications/KubeDeck.app
 
 ## できること
 
-**概要** — Pod・ワークロード・ノードの状態をドーナツで、リソース件数をタイルで、直近のイベントを一覧で。タイルを押すとその一覧へ飛ぶ。
+画面ごとの操作・絞り込みの書き方・つまずいたときに見る場所は [使い方](docs/how-to-use.md) に。
+
+**概要** — カードは 3 枚。Pod・ワークロード・ノードの状態をドーナツで、クラスタ全体の CPU / メモリを（推移が取れれば折れ線、取れなければ棒で）、直近のイベントを一覧で。種別ごとの件数はサイドバーの行末が持っている。
 
 **一覧** — 種別ごとに列を変えて表示する。kubectl の `-o wide` に相当する列を出し、STATUS は kubectl と同じ判定で出す（`CrashLoopBackOff` を `Running` と表示しない）。問題のあるものが上に来る順で並ぶ。名前・Namespace・ラベル・セルの中身を横断して絞り込める。
 
 | 分類 | 種別 |
 |---|---|
-| ワークロード | Pod / Deployment / ReplicaSet / StatefulSet / DaemonSet / Job / CronJob |
+| ワークロード | Pod / Deployment / ReplicaSet / StatefulSet / DaemonSet / Job / CronJob / HorizontalPodAutoscaler |
 | ネットワーク | Service / Ingress |
 | 設定と保存 | ConfigMap / Secret / PersistentVolumeClaim |
+| アクセス制御 | ServiceAccount / Role / RoleBinding / ClusterRole / ClusterRoleBinding |
 | クラスタ | Node / Namespace / PersistentVolume / Event |
 | カスタムリソース | クラスタに入っている CRD を API グループごとに（Argo CD の Application、cert-manager の Certificate など） |
 
-CRD の一覧は、CRD 自身が宣言している表示列（`additionalPrinterColumns`）をそのまま出すので、`kubectl get` と同じ列が並ぶ。
+CRD の一覧は、CRD 自身が宣言している表示列（`additionalPrinterColumns`）をそのまま出すので、`kubectl get` と同じ列が並ぶ。Role / ClusterRole は規則の要約（`get,list → pods`）、Binding は参照ロールと対象を列に出すので、名前だけ見て 1 つずつ開かなくてよい。
 
-**詳細パネル** — 3 つのタブ。**概要**は基本情報・使用量・推移・コンテナ・条件・ラベル。**設定**は種別ごとに項目を選んだ表（配置・ネットワーク・権限・コンテナごとのイメージやプローブなど）。API のフィールド名ではなく日本語の見出しで、未設定の項目も薄く並ぶ。CRD はスキーマが分からないので木で出す。**YAML** は `kubectl get -o yaml` そのまま（折り返しの切り替えあり）。
+絞り込みはラベルまで見る。`app=nginx`（値が一致）・`app=`（そのラベルを持つ）・`ns:kube-system` / `status:CrashLoopBackOff` / `node:node-a`（場所の指定）。空白で区切ると AND。
 
-**ログ** — `kubectl logs` の追従を一覧の下のパネルに出す。仕切りで高さを変えられ、開いたまま一覧を操作できる。コンテナの切り替え、追従、折り返し、時刻表示、`--previous`、行の絞り込み、表示中の行のコピー。複数の Pod を並べて見たいときは別ウインドウにも出せる。
+**配置** — どの Pod がどのノードに載っているか。見方は 3 つで、**ノード別**（このノードは混んでいるか）・**ワークロード別**（どれがどこに散っているか）・**たどる**（この 1 つはどう繋がっているか）。たどるは Ingress・Service・ワークロード・ReplicaSet / Job・ノードのどれからでも起点にでき、入口 → ワークロード → 世代 → Pod → ノードの図になる。図の中の器を押すとそこが次の起点になる。
 
-**設定（⌘,）** — 4 つのタブ。
+**詳細パネル** — 4 つのタブ。**概要**は基本情報・使用量・推移・コンテナ・条件・ラベル。**イベント**は選んでいるものだけのイベントをサーバ側で絞って引き直す（`Pending` や `CrashLoopBackOff` の理由はここにしか出ない）。**設定**は種別ごとに項目を選んだ表（配置・ネットワーク・権限・コンテナごとのイメージやプローブなど）。API のフィールド名ではなく日本語の見出しで、未設定の項目も薄く並ぶ。CRD はスキーマが分からないので木で出す。**YAML** は `kubectl get -o yaml` そのまま（折り返しの切り替えあり）。
+
+**ログ** — Pod と Job の `kubectl logs` の追従を一覧の下のパネルに出す。Job は Pod に潰さずに開き、掴んでいる Pod が複数あれば選べる（完了して Pod ごと消えている場合は、引けなかったのではなく消えたと書き分ける）。仕切りで高さを変えられ、開いたまま一覧を操作できる。コンテナの切り替え、追従、折り返し、時刻表示、`--previous`、行の絞り込み、表示中の行のコピー。複数の Pod を並べて見たいときは別ウインドウにも出せる。
+
+**設定（⌘,）** — 5 つのタブ。
 
 | タブ | 項目 |
 |---|---|
-| 一般 | 起動時に開く画面、サイドバーの件数表示 / CRD の表示 / 0 件の種別を隠す、**出す種別の取捨選択**、一覧の行の詰め方、すべて既定値に戻す |
+| 一般 | 起動時に開く画面、サイドバーの件数表示 / CRD の表示 / 0 件の種別を隠す、**出す種別の取捨選択**、一覧の行の詰め方、配置の見え方（タイルの大きさ・ノードの並び・棒が表すもの）、すべて既定値に戻す |
 | ログ | 選択への追従、開いたときの既定（追従 / 折り返し / 時刻）、遡って読む行数、画面に残す上限 |
 | メトリクス | 取得元（自動 / metrics-server / Prometheus）、推移の範囲と取り直す間隔、使用率のしきい値、検出結果と再検出、Prometheus の手動指定 |
-| 接続 | 自動更新と間隔、kubectl の待ち上限、kubectl の場所（手動指定と解決結果の表示） |
+| 接続 | 自動更新と間隔、kubectl の待ち上限、kubectl の場所（手動指定と解決結果の表示）、子プロセスに渡している PATH と環境 |
+| 更新 | いまの版と最後の確認、自動で確認するか・間隔・先にダウンロードしておくか |
 
 設定の定義は `Sources/KubeDeck/Models/Preferences.swift` に集めてある。項目を足すときはそこと `SettingsView` の 2 か所で済む。
 
-**メトリクス** — metrics-server が入っていれば Pod と Node の一覧に CPU / メモリの列が出て、概要にクラスタ全体の使用率が出る。Node は allocatable、Pod は requests を分母にした割合も添える。Prometheus（Thanos / VictoriaMetrics 互換も）が見つかれば、直近 30 分の推移をスパークラインで出す。接続は API サーバのプロキシ経由なので port-forward は不要。どちらも入っていなければ、その部分を出さないだけで他は普通に動く。
+**メトリクス** — metrics-server が入っていれば Pod と Node の一覧に CPU / メモリの列が出て、概要にクラスタ全体の使用率が出る。割合の分母は、Node が allocatable、Pod が limits（無ければ requests に落とす）。Prometheus（Thanos / VictoriaMetrics 互換も）が見つかれば、直近 30 分の推移をスパークラインで出す。接続は API サーバのプロキシ経由なので port-forward は不要。どちらも入っていなければ、その部分を出さないだけで他は普通に動く。
 
-**操作** — 削除、Deployment / StatefulSet / ReplicaSet のレプリカ数変更、ローリング再起動、ノードの cordon / uncordon。削除は確認を挟む。
+**操作** — 削除（⌘ や shift で複数選んでまとめても）、Deployment / StatefulSet / ReplicaSet のレプリカ数変更、ローリング再起動、ノードの cordon / uncordon と drain。**どれも確認を挟み、何が起きるかを文面に書く。** drain は実行前に `--dry-run=server` の結果を出し、レプリカ数の変更は対象が HPA 管理下なら「次の調整で戻される」ことを先に断る。
 
 **クラスタの稼働表示** — ツールバーと概要の見出しに Kubernetes 公式ロゴを置いている。回転が稼働の合図で、取得中は速く、自動更新が生きているあいだはゆっくり右回りに回り、自動更新を切ると止まる。回転は Core Animation に任せてあるので、回っていてもアプリの CPU は 0%。異常があるときだけ隅に状態のしるしが付き、同じ内容を文字でも出す。
 
