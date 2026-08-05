@@ -35,7 +35,7 @@ struct OverviewView: View {
                 // **読めたぶんは出したうえで、欠けを断る。** 権限の無い種別が
                 // 1 つあるだけで概要ごと消していた（kubectl は読めた種別を
                 // 標準出力に書いているのに、終了コードだけ見て捨てていた）。
-                if let notice = store.deniedKindsNotice {
+                if let notice = store.partialDataNotice {
                     PartialDataNotice(text: notice)
                 }
                 ClusterStatusCard(

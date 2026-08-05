@@ -276,8 +276,35 @@ actor Kubectl {
     /// **元の文言を捨てない。** 言い換えだけにすると、当てはまらなかったときに
     /// 何が起きたのか確かめる手段が無くなる。
     private static func explain(_ stderr: String) -> String {
-        guard let hint = authenticationHint(for: stderr) else { return stderr }
+        guard let hint = authenticationHint(for: stderr) ?? discoveryHint(for: stderr) else {
+            return stderr
+        }
         return hint + "\n\n" + condense(stderr)
+    }
+
+    /// 「サーバがその種別を知らない」の言い換え。
+    ///
+    /// **認証や経路の失敗と混ぜない。** ここまで来ている時点で API サーバとは
+    /// 話せている。**「無い」と断定もしない** — 本当に無いのか、kubectl の
+    /// discovery に出てこないだけなのかは、この文言からは決まらない。
+    /// 見分け方のほうを書く。
+    ///
+    /// `authenticationHint` の後に見る。届いていないときは kubectl が
+    /// discovery を引けず、この形の失敗も一緒に書き出すことがある。
+    private static func discoveryHint(for stderr: String) -> String? {
+        guard let match = stderr.firstMatch(
+            of: #/doesn't have a resource type "([^"]+)"/#) else { return nil }
+        return """
+            クラスタに `\(match.1)` という種別が見つかりませんでした。認証や経路ではなく、\
+            kubectl がこの種別を解決できていません。
+            考えられるのは 2 つで、対処が違います。
+            ・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。
+            ・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が\
+            応答しないと、そのグループが丸ごと一覧から落ちます。
+            ターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` に\
+            AVAILABLE=False が無いかを確かめてください。一覧に出るのにここで見つからない\
+            ときは、kubectl が覚えている一覧が古いので、`~/.kube/cache` を消すと直ります。
+            """
     }
 
     private static func authenticationHint(for stderr: String) -> String? {
@@ -434,8 +461,16 @@ actor Kubectl {
         var objects: [K8sObject] = []
         /// 権限が無くて読めなかった種別。**0 件と区別するために持つ。**
         var denied: [ResourceKind] = []
+        /// サーバがその名前の種別を知らなかったもの。
+        ///
+        /// **拒まれたのとは別に持つ。** 見る場所が違う。拒まれたのは権限の話で、
+        /// こちらは「そもそも API に無い」か「kubectl の discovery に出てこない」
+        /// 話。**0 件とも混ぜない** — 数えられていないだけ。
+        var unknown: [ResourceKind] = []
 
         var isDenied: Bool { !denied.isEmpty }
+        /// 数に入れてはいけない種別。拒まれたものと知られていないもの。
+        var uncounted: [ResourceKind] { denied + unknown }
     }
 
     /// 複数種別を 1 回の kubectl で取る。概要画面が 10 個以上プロセスを
@@ -451,23 +486,50 @@ actor Kubectl {
     func list(
         kinds: [ResourceKind], context: String, namespace: String?
     ) async throws -> PartialList {
-        guard !kinds.isEmpty else { return PartialList() }
+        try await list(kinds: kinds, context: context, namespace: namespace, unknown: [])
+    }
+
+    /// - Parameter unknown: ここまでに「サーバが知らない」と言われた種別。
+    ///   除いて引き直すたびに積み上がる。
+    private func list(
+        kinds: [ResourceKind], context: String, namespace: String?, unknown: [ResourceKind]
+    ) async throws -> PartialList {
+        guard !kinds.isEmpty else { return PartialList(unknown: unknown) }
         let names = kinds.map(\.resourceName).joined(separator: ",")
         var arguments = ["get", names, "-o", "json",
                          "--request-timeout=\(requestTimeout)",
-                         // 消えた種別（アドオンを外した直後の CRD など）を
-                         // 落とす。**権限にはこれは効かない。**
+                         // **これは NotFound にしか効かない。** 権限にも、
+                         // 知らない種別にも効かないので、どちらも別に始末する。
                          "--ignore-not-found=true"]
         // 種別が混ざるので、Namespace 非依存のものが含まれていても
         // --all-namespaces / -n はそのまま通る。
         arguments += scope(for: kinds.contains { $0.isNamespaced } ? .pod : .node,
                            namespace: namespace)
 
-        let result = try await runAllowingPartialFailure(arguments, context: context)
-        guard !result.stdout.isEmpty else { return PartialList() }
+        let result: CommandResult
+        do {
+            result = try await runAllowingPartialFailure(arguments, context: context)
+        } catch let error as CommandError {
+            // **知らない種別 1 つで全部を捨てない。** ここは Forbidden とは
+            // 壊れ方が違う。kubectl は要求を組み立てる段で諦めるので、
+            // **標準出力には 1 バイトも来ない**（実測。`get pods,hoges` は
+            // exit 1・stdout 0 バイト）。つまり Pod も Service も読めていたのに
+            // 画面はまるごと「取得できません」になる。実際そうなっていた。
+            //
+            // **1 回の引き直しで済ませない。** kubectl が名前を出すのは
+            // **最初の 1 つだけ**なので（`get pods,hoges,fugas` でも `hoges` しか
+            // 出ない）、残った種別で引き直しては除く、を繰り返す。
+            let missing = Self.unknownKinds(in: error.rawStderr, among: kinds)
+            guard !missing.isEmpty else { throw error }
+            return try await list(
+                kinds: kinds.filter { !missing.contains($0) },
+                context: context, namespace: namespace, unknown: unknown + missing)
+        }
+        guard !result.stdout.isEmpty else { return PartialList(unknown: unknown) }
         return PartialList(
             objects: try K8sObject.list(from: result.stdout),
-            denied: Self.deniedKinds(in: result.stderr, among: kinds))
+            denied: Self.deniedKinds(in: result.stderr, among: kinds),
+            unknown: unknown)
     }
 
     /// 終了コードが 0 でなくても、標準出力が読めるなら結果として受け取る。
@@ -512,6 +574,32 @@ actor Kubectl {
             denied.insert(String(match.1).split(separator: ".").first.map(String.init) ?? "")
         }
         return kinds.filter { denied.contains($0.resourceName) }
+    }
+
+    /// stderr から、サーバが知らないと言われた種別を拾う。
+    ///
+    /// ```
+    /// error: the server doesn't have a resource type "hoges"
+    /// ```
+    ///
+    /// **書式に 2 つ依存している。** どちらも実測で確かめてある。
+    /// - **グループが落ちる。** `hoges.example.com` と頼んでも `"hoges"` としか
+    ///   書かれない。だから要求した種別のほうを最初の `.` で切って突き合わせる。
+    /// - **1 つしか書かれない。** 知らない種別が複数あっても、最初に当たった
+    ///   1 つで諦める。呼び出し側が引き直しを繰り返すのはこのため。
+    static func unknownKinds(
+        in stderr: String, among kinds: [ResourceKind]
+    ) -> [ResourceKind] {
+        guard stderr.contains("doesn't have a resource type") else { return [] }
+        var missing = Set<String>()
+        for match in stderr.matches(of: #/doesn't have a resource type "([^"]+)"/#) {
+            missing.insert(String(match.1))
+        }
+        // **要求した種別に当たったものだけ。** 当てはまらない失敗を
+        // 「サーバが知らない」ことにしない。
+        return kinds.filter { kind in
+            missing.contains(kind.resourceName.split(separator: ".").first.map(String.init) ?? "")
+        }
     }
 
     /// クラスタに入っている CRD の種別。

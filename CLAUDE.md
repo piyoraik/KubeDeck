@@ -125,7 +125,44 @@ Secret だけ読めないクラスタで概要が丸ごと消えていた。**�
 埋めておく** — 1 件も無い種別は `items` に現れないので、埋めないと「0 件」と
 「まだ数えていない」が同じ nil になる。
 
-欠けは画面を失敗にせず、`PartialDataNotice` の帯で断る（`deniedKindsNotice`）。
+欠けは画面を失敗にせず、`PartialDataNotice` の帯で断る（`partialDataNotice`）。
+
+### 知らない種別が 1 つあると、まとめ取得が丸ごと消える
+
+**`--ignore-not-found` は「サーバが知らない種別」にも効かない。** 効くのは
+NotFound だけ。しかも Forbidden とは**壊れ方が違う** — kubectl は要求を
+組み立てる段で諦めるので、**標準出力に 1 バイトも来ない**。実測:
+
+```
+$ kubectl get pods,hoges -A -o json --ignore-not-found=true
+exit=1  stdout=0 バイト
+error: the server doesn't have a resource type "hoges"
+```
+
+つまり Pod も Service も読めていたのに、種別 1 つのせいで概要・配置・
+サイドバーの件数が**まとめて**「取得できません」になる。API グループが 1 つ
+discovery から落ちているだけのクラスタで（集約 API サーバが応答しない、
+CRD やアドオンを外した直後）これが起きる。**ターミナルで `kubectl get pods` が
+通るのに、アプリでは全部が取れない**という見え方をするので、原因を kubectl 側に
+探しに行けない。
+
+`Kubectl.list(kinds:)` は、知らないと言われた種別を除いて引き直す。
+**1 回では済まない** — kubectl が名前を出すのは**最初の 1 つだけ**なので
+（`get pods,hoges,fugas` でも `hoges` しか出ない）、残りで引き直しては除く、を
+繰り返す。書式に依存しているので `KubectlTests` で固めてある。
+
+**拒まれた種別と混ぜない**（`PartialList.unknown`）。権限の話ではないし、
+「本当に無い」のか「kubectl の一覧が欠けている」のかもここでは決まらない。
+`counts` に 0 で入れないのは拒まれた種別と同じ理由。
+
+**「無い」と断定しない。** `Kubectl.discoveryHint` は見分け方のほうを書く
+（`kubectl api-resources` に出るか、`kubectl get apiservices` に AVAILABLE=False が
+無いか、一覧に出るのに見つからないなら `~/.kube/cache` が古い）。
+
+**知らない種別を毎周期たずねない。** 実測すると、知らない種別を 1 回 get する
+だけで kubectl は**覚えている API の一覧を丸ごと捨てて引き直す**（`~/.kube/cache/
+discovery` の全グループの mtime が更新される。存在する種別の get では更新されない）。
+遅いクラスタでこれが自動更新のたびに走ると、そのぶん discovery が失敗しやすくなる。
 
 ## リソースの型付けは metadata だけ
 

@@ -38,7 +38,7 @@ struct PlacementView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             // Service が読めていないだけなのに「入口が無い」と
                             // 読めてしまう。欠けは図ではなく文字で断る。
-                            if let notice = store.deniedKindsNotice {
+                            if let notice = store.partialDataNotice {
                                 PartialDataNotice(text: notice)
                             }
                             if preferences.placementGrouping.isNodeFirst {

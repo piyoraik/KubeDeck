@@ -49,6 +49,40 @@ struct KubectlTests {
         #expect(Kubectl.deniedKinds(in: "", among: [.pod]).isEmpty)
     }
 
+    // MARK: - サーバが知らない種別
+
+    /// **Forbidden と壊れ方が違う。** kubectl は要求を組み立てる段で諦めるので
+    /// 標準出力は空になり、1 種別のせいでまとめ取得が丸ごと消える。
+    /// 実測した文言そのまま（`kubectl get pods,hoges` は exit 1・stdout 0 バイト）。
+    @Test("サーバが知らないと言われた種別を拾う")
+    func unknownKinds() {
+        let stderr = #"error: the server doesn't have a resource type "ingresses""#
+        let unknown = Kubectl.unknownKinds(in: stderr, among: [.pod, .ingress, .service])
+
+        #expect(unknown == [.ingress])
+    }
+
+    /// **グループが落ちる。** `roles.rbac.authorization.k8s.io` と頼んでも、
+    /// kubectl は `"roles"` としか書かない。要求した側を切って突き合わせる。
+    @Test("グループ付きで頼んだ種別も、グループ無しの文言から拾う")
+    func unknownKindsIgnoreAPIGroup() {
+        let stderr = #"error: the server doesn't have a resource type "roles""#
+        let unknown = Kubectl.unknownKinds(in: stderr, among: [.pod, .role, .clusterRole])
+
+        // ClusterRole は別の複数形なので巻き込まない。
+        #expect(unknown == [.role])
+    }
+
+    /// **当てはまらない失敗を「サーバが知らない」ことにしない。**
+    @Test("他の失敗では知らない種別を作らない")
+    func otherFailuresAreNotUnknownKinds() {
+        #expect(Kubectl.unknownKinds(in: forbidden, among: [.pod, .secret]).isEmpty)
+        #expect(Kubectl.unknownKinds(in: "", among: [.pod]).isEmpty)
+        // 要求していない種別は拾わない。
+        let stderr = #"error: the server doesn't have a resource type "hoges""#
+        #expect(Kubectl.unknownKinds(in: stderr, among: [.pod, .ingress]).isEmpty)
+    }
+
     /// 失敗しても標準出力を捨てないための受け皿。
     @Test("CommandError は書き出されていた標準出力を持ち回る")
     func commandErrorCarriesPartialOutput() throws {

@@ -142,13 +142,32 @@ final class ClusterStore {
     /// うえで、欠けていることを画面に書く。
     var deniedKinds: [ResourceKind] = []
 
+    /// いま開いている画面で、サーバが名前を知らなかった種別。
+    ///
+    /// **権限と混ぜない。** 対処が違ううえ、こちらは「本当に無い」場合と
+    /// 「kubectl の一覧が欠けている」場合の両方がありうる。
+    var unknownKinds: [ResourceKind] = []
+
     /// 欠けている種別の断り書き。読めているなら nil。
-    var deniedKindsNotice: String? {
-        let kinds = deniedKinds.isEmpty ? overview.deniedKinds : deniedKinds
-        guard !kinds.isEmpty else { return nil }
-        let names = kinds.map(\.displayName).joined(separator: "・")
-        return "\(names) を読む権限がありません。この画面にはこれらが出ていません"
-            + "（0 件という意味ではありません）。"
+    ///
+    /// **2 つの欠け方を 1 文にまとめない。** 権限が無いのと、サーバが種別を
+    /// 知らないのとでは見る場所が違う。どちらも「0 件ではない」ことだけが同じ。
+    var partialDataNotice: String? {
+        let denied = deniedKinds.isEmpty ? overview.deniedKinds : deniedKinds
+        let unknown = unknownKinds.isEmpty ? overview.unknownKinds : unknownKinds
+        var lines: [String] = []
+        if !denied.isEmpty {
+            let names = denied.map(\.displayName).joined(separator: "・")
+            lines.append("\(names) を読む権限がありません。この画面にはこれらが出ていません"
+                + "（0 件という意味ではありません）。")
+        }
+        if !unknown.isEmpty {
+            let names = unknown.map(\.displayName).joined(separator: "・")
+            lines.append("\(names) はクラスタに見つかりませんでした（`kubectl` がこの種別を"
+                + "解決できていません）。読めたぶんだけ出しています。"
+                + "`kubectl api-resources` に出るかを確かめてください。")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// たどるが解く材料。**画面から都度組み立てない** — 同じ 1 回の kubectl で
@@ -658,6 +677,7 @@ final class ClusterStore {
                     // **図に欠けがあることを黙らない。** Service が読めていない
                     // だけなのに「入口が無い」と読めてしまう。
                     self.deniedKinds = listed.denied
+                    self.unknownKinds = listed.unknown
                 case .resource(let target):
                     let loaded: [K8sObject]
                     if target.builtIn == .event {
@@ -727,7 +747,9 @@ final class ClusterStore {
         var byKind: [ResourceKind: [K8sObject]] = [:]
         // **要求した種別は 0 で埋めておく。** 1 件も無い種別は items に現れない
         // ので、埋めないと「0 件」と「まだ数えていない」が同じ nil になる。
-        for kind in kinds where !listed.denied.contains(kind) { counts[kind] = 0 }
+        // **サーバが知らなかった種別も外す。** ここを 0 で埋めると、
+        // 「解決できなかった」が「1 件も無い」になる。
+        for kind in kinds where !listed.uncounted.contains(kind) { counts[kind] = 0 }
         for object in all {
             guard let kind = object.kind else { continue }
             counts[kind, default: 0] += 1
@@ -737,6 +759,7 @@ final class ClusterStore {
         if let readNodes { counts[.node] = readNodes.count }
         snapshot.counts = counts
         snapshot.deniedKinds = listed.denied + (readNodes == nil ? [.node] : [])
+        snapshot.unknownKinds = listed.unknown
 
         snapshot.pods = StatusTally.make(from: byKind[.pod] ?? [])
         snapshot.nodes = StatusTally.make(from: nodeObjects)
@@ -982,15 +1005,17 @@ final class ClusterStore {
         else { return }
         guard token == contextGeneration else { return }
 
-        // 拒まれた種別は数に入れない（`nil` のままにして「まだ分からない」を保つ）。
+        // 拒まれた種別と、サーバが知らなかった種別は数に入れない
+        // （`nil` のままにして「まだ分からない」を保つ）。
         var counts: [ResourceKind: Int] = [:]
-        for kind in Self.countedKinds where !listed.denied.contains(kind) { counts[kind] = 0 }
+        for kind in Self.countedKinds where !listed.uncounted.contains(kind) { counts[kind] = 0 }
         for object in listed.objects {
             guard let kind = object.kind else { continue }
             counts[kind, default: 0] += 1
         }
         overview.counts = counts
         overview.deniedKinds = listed.denied
+        overview.unknownKinds = listed.unknown
         loadedOverviewCounts = counts
     }
 

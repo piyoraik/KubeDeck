@@ -87,6 +87,10 @@ struct OverviewSnapshot: Sendable {
     /// `counts` から抜いておけば、件数の消費側（サイドバー）は nil を
     /// 「まだ分からない」として扱うので、既存の経路がそのまま正しく働く。
     var deniedKinds: [ResourceKind] = []
+    /// サーバが名前を知らなかった種別。**拒まれたのとは分けて持つ**
+    /// （権限の話ではないので、見る場所も対処も違う）。`counts` に
+    /// 入れないのは拒まれた種別と同じ理由。
+    var unknownKinds: [ResourceKind] = []
 
     func count(_ kind: ResourceKind) -> Int { counts[kind] ?? 0 }
 }
