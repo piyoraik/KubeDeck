@@ -87,6 +87,21 @@ private struct GeneralSettings: View {
             }
 
             Section {
+                Picker("置き場所", selection: $preferences.inspectorPlacement) {
+                    ForEach(InspectorPlacement.allCases) { placement in
+                        Text(placement.title).tag(placement)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("詳細パネル")
+            } footer: {
+                Text("選んだ行の詳細・設定・イベント・YAML を出す欄です。列の多い一覧を見るときは下、縦に長い一覧を見るときは右のほうが読めます。下に置いたときはログと同じ帯に横並びで入り（上下に積むとどちらも数行しか残らないため）、仕切りを掴めば高さと幅を変えられます。出す／畳むはツールバーの「詳細」で、置き場所もその ▾ から選べます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Picker("タイルの大きさ", selection: $preferences.placementTileSize) {
                     ForEach(PlacementTileSize.allCases) { size in
                         Text(size.title).tag(size)

@@ -60,13 +60,19 @@ struct InspectorView: View {
             }
             header(for: object)
             Divider()
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { tab in
-                    Text(tab.title).tag(tab)
+            // **横いっぱいに伸ばさない。** 下に置くと欄が 1,000pt を超え、
+            // 4 つのタブが端まで散って押しにくい（切り替えの塊に見えなくなる）。
+            HStack(spacing: 0) {
+                Picker("", selection: $tab) {
+                    ForEach(Tab.allCases) { tab in
+                        Text(tab.title).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 420)
+                Spacer(minLength: 0)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(12)
 
             switch tab {
@@ -147,7 +153,8 @@ private struct SummaryPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            // 幅が余っていれば段に割る（下に置いたとき）。右の欄では 1 列のまま。
+            SectionColumns {
                 if let usage = store.metrics.usage(for: object) {
                     InfoSection(title: "使用量") {
                         usageMeters(usage)
@@ -206,6 +213,7 @@ private struct SummaryPane: View {
                 }
             }
             .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -788,7 +796,7 @@ private struct ClusterSummaryPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            SectionColumns {
                 InfoSection(title: "クラスタ") {
                     ForEach(clusterRows, id: \.0) { row in
                         InfoRow(label: row.0, value: row.1)
@@ -827,6 +835,7 @@ private struct ClusterSummaryPane: View {
                 }
             }
             .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -875,30 +884,36 @@ private struct ListSummaryPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    // カードと違い、ここは畳む理由がない。1 種類でも出す。
-                    InfoSection(title: "状態") {
-                        ForEach(tally.buckets) { bucket in
-                            countRow(
-                                label: bucket.label, count: bucket.count,
-                                level: bucket.level)
-                        }
-                    }
-
-                    let notable = tally.reasons.filter { $0.level != .good && $0.level != .neutral }
-                    if !notable.isEmpty {
-                        InfoSection(title: "内訳") {
-                            ForEach(notable) { reason in
+                    // 見出しと添え書きは段に混ぜない。混ぜると、どちらも
+                    // 節の 1 つとして中ほどの段に落ちる。
+                    SectionColumns {
+                        // カードと違い、ここは畳む理由がない。1 種類でも出す。
+                        InfoSection(title: "状態") {
+                            ForEach(tally.buckets) { bucket in
                                 countRow(
-                                    label: reason.reason, count: reason.count,
-                                    level: reason.level)
+                                    label: bucket.label, count: bucket.count,
+                                    level: bucket.level)
                             }
                         }
-                    }
 
-                    if namespaceCounts.count > 1 {
-                        InfoSection(title: "Namespace 別") {
-                            ForEach(namespaceCounts, id: \.name) { entry in
-                                countRow(label: entry.name, count: entry.count, level: nil)
+                        let notable = tally.reasons.filter {
+                            $0.level != .good && $0.level != .neutral
+                        }
+                        if !notable.isEmpty {
+                            InfoSection(title: "内訳") {
+                                ForEach(notable) { reason in
+                                    countRow(
+                                        label: reason.reason, count: reason.count,
+                                        level: reason.level)
+                                }
+                            }
+                        }
+
+                        if namespaceCounts.count > 1 {
+                            InfoSection(title: "Namespace 別") {
+                                ForEach(namespaceCounts, id: \.name) { entry in
+                                    countRow(label: entry.name, count: entry.count, level: nil)
+                                }
                             }
                         }
                     }
@@ -910,6 +925,7 @@ private struct ListSummaryPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

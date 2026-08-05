@@ -16,12 +16,15 @@ struct SettingsDigestView: View {
             SpecOutline(object: object)
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                // 下に置いた詳細パネルでは幅が余るので段に割る（`SectionColumns`）。
+                // 右の欄では 1 列のまま。
+                SectionColumns(rowSpacing: 16) {
                     ForEach(groups) { group in
                         SettingTable(group: group)
                     }
                 }
                 .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

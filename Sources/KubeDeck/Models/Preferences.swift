@@ -22,6 +22,7 @@ final class Preferences {
         static let startupScreen = "startupScreen"
         static let showsSidebarCounts = "showsSidebarCounts"
         static let rowDensity = "rowDensity"
+        static let inspectorPlacement = "inspectorPlacement"
         static let hiddenKinds = "hiddenKinds"
         static let showsCustomResources = "showsCustomResources"
         static let hidesEmptyKinds = "hidesEmptyKinds"
@@ -71,6 +72,15 @@ final class Preferences {
     /// 一覧の行の詰め方。
     var rowDensity: RowDensity {
         didSet { store.set(rowDensity.rawValue, forKey: Key.rowDensity) }
+    }
+
+    /// 詳細パネルを右に置くか、下に置くか。
+    ///
+    /// 縦に長い一覧を見るときは右、列の多い一覧を見るときは下のほうが読める。
+    /// **下に置いたときはログと同じ帯に横並びで入れる**（`RootView.dockBody`）。
+    /// 上下に積むと 2 本の仕切りができ、どちらも本文が数行しか残らない。
+    var inspectorPlacement: InspectorPlacement = .trailing {
+        didSet { store.set(inspectorPlacement.rawValue, forKey: Key.inspectorPlacement) }
     }
 
     /// サイドバーに出さない種別。
@@ -280,6 +290,9 @@ final class Preferences {
             ?? .lastViewed
         showsSidebarCounts = store.object(forKey: Key.showsSidebarCounts) as? Bool ?? true
         rowDensity = RowDensity(rawValue: store.string(forKey: Key.rowDensity) ?? "") ?? .standard
+        inspectorPlacement =
+            InspectorPlacement(rawValue: store.string(forKey: Key.inspectorPlacement) ?? "")
+            ?? .trailing
         hiddenKinds = Set(store.stringArray(forKey: Key.hiddenKinds) ?? [])
         showsCustomResources = store.object(forKey: Key.showsCustomResources) as? Bool ?? true
         hidesEmptyKinds = store.object(forKey: Key.hidesEmptyKinds) as? Bool ?? false
@@ -352,6 +365,7 @@ final class Preferences {
         startupScreen = .lastViewed
         showsSidebarCounts = true
         rowDensity = .standard
+        inspectorPlacement = .trailing
         hiddenKinds = []
         showsCustomResources = true
         hidesEmptyKinds = false
@@ -431,6 +445,31 @@ enum RowDensity: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+
+/// 詳細パネルの置き場所。
+///
+/// **「出す／畳む」と混ぜない。** そちらはツールバーのボタンが持つ一時的な状態で、
+/// こちらは「いちど決めたら変えない」類のものなので設定に残す。
+enum InspectorPlacement: String, CaseIterable, Identifiable, Sendable {
+    case trailing
+    case bottom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .trailing: return "右"
+        case .bottom: return "下"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .trailing: return "sidebar.trailing"
+        case .bottom: return "rectangle.bottomthird.inset.filled"
+        }
+    }
+}
 
 /// 配置画面のタイルの大きさ。
 enum PlacementTileSize: String, CaseIterable, Identifiable, Sendable {

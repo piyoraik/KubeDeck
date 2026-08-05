@@ -5,8 +5,10 @@ struct RootView: View {
     /// 絞り込み欄の文言だけが設定を見る（配置の「たどる」では相手が変わる）。
     @State private var preferences = Preferences.shared
     @State private var showsInspector = true
-    /// ログパネルの高さ。仕切りのドラッグで変わる。
-    @State private var logHeight: CGFloat = 280
+    /// 下の帯の高さ。仕切りのドラッグで変わる。**ログと詳細で 1 つ。**
+    @State private var dockHeight: CGFloat = 280
+    /// 下の帯を分け合うとき、詳細に割く幅。
+    @State private var dockInspectorWidth: CGFloat = 380
     /// エラーの元の文言を開いているか。既定は畳んでおく。
     @State private var showsErrorDetail = false
 
@@ -25,9 +27,23 @@ struct RootView: View {
                 // 左で種別を選んだ瞬間にパネルが現れ、AppKit がその列を作るために
                 // ウインドウごと広げる（選ぶたびに窓の幅が変わる）。出す / 畳むは
                 // ツールバーのボタンだけが決める。
-                .inspector(isPresented: $showsInspector) {
-                    InspectorView()
-                        .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
+                //
+                // **下に置いているときも `.inspector` は外さない。** ここは
+                // `NSSplitView` そのもので、付け外しはビュー階層から split view が
+                // 消えることになる（`VSplitView` の件と同じ危うさ）。畳んだ状態に
+                // するだけにして、中身だけを止める。
+                .inspector(isPresented: Binding(
+                    get: { showsInspector && preferences.inspectorPlacement == .trailing },
+                    set: { showsInspector = $0 })
+                ) {
+                    Group {
+                        // 畳んでいるあいだも中身を作らない。作ると詳細パネルが
+                        // 2 つ生き、イベントの取得が両方から走る。
+                        if preferences.inspectorPlacement == .trailing {
+                            InspectorView()
+                        }
+                    }
+                    .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
                 }
         }
         .overlay(alignment: .bottom) { errorBar }
@@ -53,13 +69,13 @@ struct RootView: View {
     /// 項目集合は静的になり、変わるのは文言と有効・無効だけになる。
     ///
     /// **`.disabled` を本体に掛けない。** 概要には絞り込む相手がいないので欄は
-    /// 無効にしたいが、素直に重ねると `detailWithLogs` ごと無効になり、
+    /// 無効にしたいが、素直に重ねると `detailWithDock` ごと無効になり、
     /// 取得に失敗したときの「もう一度試す」まで押せなくなる。ZStack の兄弟に
     /// 分けておけば、無効になるのは欄だけで済む（`.toolbar` も外側なので、
     /// コンテキストや再読み込みは概要でも生きる）。
     private var detailWithSearch: some View {
         ZStack {
-            detailWithLogs
+            detailWithDock
             Color.clear
                 .allowsHitTesting(false)
                 .searchable(
@@ -70,24 +86,71 @@ struct RootView: View {
         }
     }
 
-    /// ログは一覧の下に積む。掴んで高さを変えられる。
+    /// 一覧の下の帯。ログと、下に置いた詳細パネルが入る。掴んで高さを変えられる。
     ///
     /// **`VSplitView` を使わない。** `NavigationSplitView` と `.inspector` で
     /// すでに 2 つの `NSSplitView` が入れ子になっており、そこへ 3 つ目を足して
     /// 出し入れすると、レイアウト中に AppKit が例外を投げて落ちる
     /// （`-[NSView _layoutSubtreeWithOldSize:]` → `_crashOnException:`）。
     /// 高さは自分で持ち、仕切りは自前のドラッグにする。
-    private var detailWithLogs: some View {
+    private var detailWithDock: some View {
         detail
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let request = store.logRequest {
+                if store.logRequest != nil || showsBottomInspector {
                     VStack(spacing: 0) {
-                        LogPanelHandle(height: $logHeight)
-                        LogPanel(request: request)
+                        PanelResizeHandle(
+                            axis: .height, value: $dockHeight, range: 120...900,
+                            label: "下の帯の高さを変える")
+                        dockBody
                     }
-                    .frame(height: logHeight)
+                    .frame(height: dockHeight)
                 }
             }
+    }
+
+    private var showsBottomInspector: Bool {
+        showsInspector && preferences.inspectorPlacement == .bottom
+    }
+
+    /// 帯の中身。**ログと詳細を上下に積まない。** 積むと仕切りが 2 本になり、
+    /// 帯を 2 倍に広げないとどちらも数行しか残らない（狭い画面ではそれもできない）。
+    /// 横に並べれば高さは 1 つで済み、片方だけのときはそのまま横いっぱいを使う。
+    ///
+    /// 詳細を右端に置くのは、右に置いていたものを下ろしたときに左右の関係が
+    /// 変わらないため。ログは行が長いので、伸び縮みするのはそちら。
+    ///
+    /// **`GeometryReader` で包む。** `frame(width:)` は縮められない最小幅になる
+    /// ので、そのまま置くと窓が狭いときに詳細パネルの幅が外へ伝わり、
+    /// サイドバーの左端が切れる（`TraceMapView` で踏んだのと同じ）。
+    /// `GeometryReader` は提案された大きさをそのまま受けるので、中で決めた幅は
+    /// 外へ出ない。測った幅で上限も掛けられる。
+    private var dockBody: some View {
+        GeometryReader { proxy in
+            let sharing = store.logRequest != nil && showsBottomInspector
+            HStack(spacing: 0) {
+                if let request = store.logRequest {
+                    LogPanel(request: request)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                if showsBottomInspector {
+                    if sharing {
+                        PanelResizeHandle(
+                            axis: .width, value: $dockInspectorWidth, range: 240...760,
+                            label: "詳細パネルの幅を変える")
+                    }
+                    DockedInspector(
+                        moveToTrailing: { preferences.inspectorPlacement = .trailing },
+                        close: { showsInspector = false })
+                        .frame(width: sharing ? inspectorWidth(in: proxy.size.width) : nil)
+                        .frame(maxWidth: sharing ? nil : .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+    }
+
+    /// 掴んだ幅を、いま使える幅に収める。ログ側が消えるところまで詰めさせない。
+    private func inspectorWidth(in available: CGFloat) -> CGFloat {
+        min(dockInspectorWidth, max(240, available * 0.6))
     }
 
     @ViewBuilder
@@ -161,14 +224,34 @@ struct RootView: View {
         ToolbarItem(placement: .navigation) { contextMenu }
         ToolbarItem(placement: .navigation) { namespaceMenu }
         ToolbarItem { refreshControl }
-        ToolbarItem {
-            Button {
-                showsInspector.toggle()
-            } label: {
-                Label("詳細", systemImage: "sidebar.trailing")
+        ToolbarItem { inspectorControl }
+    }
+
+    /// 押すと出し入れ、長押し（▾）で置き場所。**項目を 2 つに割らない** —
+    /// ツールバーの項目集合は静的に保つ（画面ごとに変えると落ちる件と同じ理由で、
+    /// 数が動く経路は増やさない）。
+    private var inspectorControl: some View {
+        Menu {
+            Picker("置き場所", selection: Binding(
+                get: { preferences.inspectorPlacement },
+                set: { placement in
+                    preferences.inspectorPlacement = placement
+                    // 置き場所を選ぶのは見たいときなので、畳んだままにしない
+                    // （選んでも何も起きないと、効かなかったように見える）。
+                    showsInspector = true
+                })
+            ) {
+                ForEach(InspectorPlacement.allCases) { placement in
+                    Label(placement.title, systemImage: placement.symbol).tag(placement)
+                }
             }
-            .help("詳細パネルの表示を切り替える")
+            .pickerStyle(.inline)
+        } label: {
+            Label("詳細", systemImage: preferences.inspectorPlacement.symbol)
+        } primaryAction: {
+            showsInspector.toggle()
         }
+        .help("詳細パネルの表示を切り替える（▾ で右／下を選ぶ）")
     }
 
     private var contextMenu: some View {
@@ -373,39 +456,108 @@ struct SetupErrorView: View {
 }
 
 
-/// ログパネルの仕切り。掴んで上下に動かすと高さが変わる。
-private struct LogPanelHandle: View {
-    @Binding var height: CGFloat
-    /// ドラッグ開始時の高さ。translation は開始点からの差分なので、
-    /// 毎回の変化量として足すと動きが加速してしまう。
-    @State private var startHeight: CGFloat?
+/// 下の帯の仕切り。掴んで動かすと高さ（上の縁）か幅（左の縁）が変わる。
+///
+/// **`VSplitView` / `HSplitView` を使わない。** すでに `NSSplitView` が 2 つ
+/// 入れ子になっており、3 つ目を出し入れするとレイアウト中に AppKit が例外を
+/// 投げて落ちる。掴める場所は自前で持つ。
+private struct PanelResizeHandle: View {
+    enum Axis {
+        /// 下の帯の上の縁。上へ引くと高くなる。
+        case height
+        /// 帯の中の縦の仕切り。左へ引くと右の欄が広くなる。
+        case width
+    }
 
-    private static let minimum: CGFloat = 120
-    private static let maximum: CGFloat = 900
+    let axis: Axis
+    @Binding var value: CGFloat
+    let range: ClosedRange<CGFloat>
+    let label: String
+
+    /// ドラッグ開始時の値。translation は開始点からの差分なので、
+    /// 毎回の変化量として足すと動きが加速してしまう。
+    @State private var start: CGFloat?
+
+    private static let thickness: CGFloat = 7
 
     var body: some View {
         ZStack {
-            Divider()
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(
+                    width: axis == .width ? 1 : nil,
+                    height: axis == .height ? 1 : nil)
             Color.clear
-                .frame(height: 7)
                 .contentShape(Rectangle())
         }
-        .frame(height: 7)
+        .frame(
+            width: axis == .width ? Self.thickness : nil,
+            height: axis == .height ? Self.thickness : nil)
         .onHover { inside in
             if inside {
-                NSCursor.resizeUpDown.push()
+                (axis == .height ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
             } else {
                 NSCursor.pop()
             }
         }
         .gesture(
             DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    let start = startHeight ?? height
-                    if startHeight == nil { startHeight = start }
-                    height = min(Self.maximum, max(Self.minimum, start - value.translation.height))
+                .onChanged { drag in
+                    let base = start ?? value
+                    if start == nil { start = base }
+                    // どちらも「引いた向きと逆に伸びる」縁に付くので符号は負。
+                    let delta = axis == .height ? -drag.translation.height : -drag.translation.width
+                    value = min(range.upperBound, max(range.lowerBound, base + delta))
                 }
-                .onEnded { _ in startHeight = nil })
-        .accessibilityLabel(Text("ログの高さを変える"))
+                .onEnded { _ in start = nil })
+        .accessibilityLabel(Text(label))
+    }
+}
+
+/// 下に置いたときの詳細パネル。
+///
+/// **中身は右に置くときと同じ `InspectorView`。** 置き場所ごとに別の画面を
+/// 作ると、タブを 1 つ足すたびに 2 か所を直すことになる。変わるのは上の 1 行
+/// （ログパネルと同じ作りの見出し）だけ。
+private struct DockedInspector: View {
+    let moveToTrailing: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            InspectorView()
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// **名前を書かない。** すぐ下の `InspectorView` の見出しが対象の名前を
+    /// 出しており、並べると同じ名前が 2 行続く。ここが持つのは行き先だけ。
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sidebar.squares.trailing")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("詳細")
+                .font(.subheadline.weight(.medium))
+
+            Spacer(minLength: 8)
+
+            Button(action: moveToTrailing) {
+                Label("右に戻す", systemImage: "sidebar.trailing")
+            }
+            .help("詳細パネルを右の欄に戻す")
+
+            Button(action: close) {
+                Label("閉じる", systemImage: "xmark")
+            }
+            .help("詳細パネルを閉じる。もう一度出すにはツールバーの「詳細」")
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
     }
 }
