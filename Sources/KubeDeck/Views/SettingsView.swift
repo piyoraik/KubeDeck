@@ -386,6 +386,8 @@ private struct ConnectionSettings: View {
     @State private var resolvedPath: String?
     @State private var searchPath: String?
     @State private var variables: [String: String] = [:]
+    @State private var cacheDirectory: String?
+    @State private var lastDiscoveryReset: Date?
 
     var body: some View {
         @Bindable var store = store
@@ -429,6 +431,28 @@ private struct ConnectionSettings: View {
                 Text("kubectl の場所")
             } footer: {
                 Text("Homebrew・krew・gcloud SDK の場所は自動で探します。指定した場所が実行できないときは、自動探索に戻ります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Text(cacheDirectory ?? "確認中")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                LabeledContent("最後に捨てた時刻") {
+                    // **「まだ捨てていない」と「捨てた」を混ぜない。**
+                    Text(lastDiscoveryReset.map {
+                        $0.formatted(date: .omitted, time: .standard)
+                    } ?? "まだありません")
+                    .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("API の一覧（discovery）の置き場所")
+            } footer: {
+                Text("kubectl が覚えている API の一覧です。ターミナルの kubectl（~/.kube/cache）とは別に持っているので、片方が壊れてももう片方は巻き込みません。実在する種別に「the server doesn't have a resource type」と言われたときは、ここを捨てて 1 度だけ引き直します（1 分に 1 回まで）。これが何度も起きるときは、API サーバやゲートウェイが欠けた一覧を返しています。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -480,6 +504,9 @@ private struct ConnectionSettings: View {
             resolvedPath = await Kubectl.shared.resolvedExecutablePath() ?? "見つかりません"
             searchPath = await Kubectl.shared.resolvedSearchPath() ?? "確認できません"
             variables = await Kubectl.shared.resolvedVariables()
+            let cache = await Kubectl.shared.resolvedCacheDirectory()
+            cacheDirectory = cache.path
+            lastDiscoveryReset = cache.lastReset
         }
     }
 }

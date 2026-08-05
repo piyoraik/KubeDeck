@@ -143,12 +143,127 @@ actor Kubectl {
         return nil
     }
 
+    // MARK: - API の一覧（discovery）のキャッシュ
+
+    /// kubectl が API の一覧を覚えておく場所。`--cache-dir` で必ず指定する。
+    ///
+    /// **既定（`~/.kube/cache`）を使わない。** そこはターミナルの kubectl と
+    /// 共有の置き場所で、**どちらかが壊した一覧をもう一方も読む。**
+    ///
+    /// 実際に踏んだ壊れ方: `discovery/<サーバ>/servergroups.json` が、本来 63
+    /// グループあるところ 1 グループだけの状態で残っていた。
+    ///
+    /// ```json
+    /// {"kind":"APIGroupList","groups":[{"name":"","versions":null,
+    ///  "preferredVersion":{"groupVersion":"","version":""}}]}
+    /// ```
+    ///
+    /// コアグループ（`name: ""`）の `versions` が null なので、kubectl は
+    /// 「v1 というバージョンが存在しない」と読み、`pods` も `services` も
+    /// `configmaps` も解決できなくなる。出る文言は
+    /// `the server doesn't have a resource type "pods"` で、アプリ側では
+    /// **全種別が一斉に「知らない種別」になり、概要も配置も一覧も丸ごと消える。**
+    /// クラスタにも認証にも異常が無いので、原因を kubectl 側に探しに行けない
+    /// （ターミナルの kubectl も同じファイルを読むので、そちらでも同じ症状が出る）。
+    ///
+    /// **書き込みが途中で切れたわけではない。** 残っていたのは valid な JSON で、
+    /// 縮退した応答をそのまま覚えている。**誰が壊したかに関わらず起こりうる**ので、
+    /// 「壊さない」ではなく「巻き込まない」「自力で捨てて引き直す」で受ける
+    /// （`resetDiscoveryCache`）。
+    static let cacheDirectory: String = {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent("Library/Caches", isDirectory: true)
+        return caches
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.piyoraik.KubeDeck",
+                                    isDirectory: true)
+            .appendingPathComponent("kube", isDirectory: true)
+            .path
+    }()
+
+    /// 最後に discovery のキャッシュを捨てた時刻。設定の「接続」に出す。
+    private(set) var lastDiscoveryReset: Date?
+
+    /// 捨て直しの間隔。**毎回捨てない。**
+    ///
+    /// 本当に存在しない種別（外した CRD など）を毎周期たずねる画面があると、
+    /// そのたびに全 API グループを引き直すことになる。知らない種別を 1 回 get
+    /// するだけで kubectl は覚えている一覧を丸ごと捨てて引き直すので、遅い
+    /// クラスタではそれ自体が discovery を失敗しやすくする。
+    private static let discoveryResetCooldown: TimeInterval = 60
+
+    /// 覚えている API の一覧を捨てる。捨てたときだけ true。
+    ///
+    /// **アプリ専用のキャッシュだから捨てられる。** ターミナルと共有していたら、
+    /// こちらの都合で相手の一覧まで消すことになる。
+    ///
+    /// 並行して走っている別の kubectl が同じ場所を読んでいることはある
+    /// （概要は 4 本まとめて投げる）。捨てられた側は自分で引き直すので、
+    /// 失敗しても次の自動更新で戻る。**間隔を空けているのはこのためでもある。**
+    private func resetDiscoveryCache() -> Bool {
+        if let lastDiscoveryReset,
+           Date().timeIntervalSince(lastDiscoveryReset) < Self.discoveryResetCooldown {
+            return false
+        }
+        guard Self.removeDiscoveryCache(in: Self.cacheDirectory) else { return false }
+        lastDiscoveryReset = Date()
+        return true
+    }
+
+    /// `<キャッシュ>/discovery` を消す。消したときだけ true。
+    ///
+    /// **消せなかったときに true を返さない。** 呼び出し側はこれを見て
+    /// 引き直すかどうかを決めるので、消えていないのに引き直すと、同じ失敗を
+    /// もう 1 度取りに行くだけになる。
+    ///
+    /// 場所を引数で受けるのは、テストで本物のキャッシュを消さないため。
+    /// **消す先を間違えると黙って直らなくなる**（消えていないのに引き直す）ので、
+    /// ここは `KubectlTests` で固めてある。
+    static func removeDiscoveryCache(in cacheDirectory: String) -> Bool {
+        let discovery = URL(fileURLWithPath: cacheDirectory, isDirectory: true)
+            .appendingPathComponent("discovery", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: discovery.path) else { return false }
+        return (try? FileManager.default.removeItem(at: discovery)) != nil
+    }
+
+    /// 「その種別を知らない」と言われたか。
+    ///
+    /// **これだけでは、キャッシュが壊れているのか本当に無いのかは決まらない。**
+    /// 決められないからこそ、1 度だけ捨てて引き直して**確かめる**。
+    /// 書式に依存しているので、`unknownKinds` と同じくテストで固めてある。
+    static func mentionsMissingResourceType(_ stderr: String) -> Bool {
+        stderr.contains("doesn't have a resource type")
+    }
+
     // MARK: - 実行
 
+    /// kubectl を 1 度呼ぶ。
+    ///
+    /// **「種別が無い」で終わらせない。** 覚えている API の一覧が縮退していると、
+    /// 実在する `pods` すら `the server doesn't have a resource type "pods"` に
+    /// なる（`cacheDirectory` の説明を参照）。文言からは「本当に無い」のか
+    /// 「一覧が欠けている」のかが決まらないので、**1 度だけ一覧を捨てて引き直し、
+    /// どちらだったかを確かめる。** 引き直しても同じなら、それは本当に無い。
+    ///
+    /// **捨てられなかったときは引き直さない。** 間隔を空けている最中か、
+    /// そもそも覚えていない（＝キャッシュのせいではない）ということなので、
+    /// もう 1 度同じことをしても結果は変わらない。
     @discardableResult
     func run(_ arguments: [String], context: String?) async throws -> CommandResult {
+        do {
+            return try await execute(arguments, context: context)
+        } catch let error as CommandError
+            where Self.mentionsMissingResourceType(error.rawStderr) {
+            guard resetDiscoveryCache() else { throw error }
+            return try await execute(arguments, context: context)
+        }
+    }
+
+    private func execute(_ arguments: [String], context: String?) async throws -> CommandResult {
         let environment = try environment()
         var fullArguments = arguments
+        // **必ず付ける。** 付けないと `~/.kube/cache` をターミナルと共有する。
+        fullArguments.insert("--cache-dir=\(Self.cacheDirectory)", at: 0)
         if let context, !context.isEmpty {
             fullArguments.insert(contentsOf: ["--context", context], at: 0)
         }
@@ -223,6 +338,15 @@ actor Kubectl {
     /// 切り分けに要るので、設定画面に出す。
     func resolvedSearchPath() -> String? {
         (try? environment())?.variables["PATH"]
+    }
+
+    /// API の一覧を覚えている場所と、最後に捨てた時刻。設定画面に出す。
+    ///
+    /// **黙って直さない。** 自力で捨てて引き直すのは正しいが、それが何度も
+    /// 起きているなら見に行く先がある（縮退した応答を返しているゲートウェイなど）。
+    /// 復帰のたびに帯を出すほどではないので、確かめられる場所にだけ置く。
+    func resolvedCacheDirectory() -> (path: String, lastReset: Date?) {
+        (Self.cacheDirectory, lastDiscoveryReset)
     }
 
     /// 子プロセスに渡している環境。設定画面に出す。
@@ -301,9 +425,13 @@ actor Kubectl {
             ・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。
             ・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が\
             応答しないと、そのグループが丸ごと一覧から落ちます。
+            KubeDeck はこの文言を受けると、覚えている一覧を捨てて 1 度だけ引き直します\
+            （捨て直しは 1 分に 1 回まで）。それでも同じなので、覚えている一覧が古いだけ、\
+            という線は薄いです。
             ターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` に\
-            AVAILABLE=False が無いかを確かめてください。一覧に出るのにここで見つからない\
-            ときは、kubectl が覚えている一覧が古いので、`~/.kube/cache` を消すと直ります。
+            AVAILABLE=False が無いかを確かめてください。KubeDeck の一覧は\
+            ターミナルとは別に持っているので（設定の「接続」に置き場所を出しています）、\
+            片方だけで起きることもあります。
             """
     }
 
@@ -1004,7 +1132,9 @@ actor Kubectl {
         namespace: String, pod: String, options: LogOptions, context: String
     ) throws -> (lines: AsyncStream<[String]>, handle: ProcessHandle) {
         let environment = try environment()
-        var arguments = ["--context", context, "logs", pod]
+        // ここは `run` を通らないので、キャッシュの置き場所を自分で渡す
+        // （置き場所が 2 つあると、片方だけ壊れたときに症状が食い違う）。
+        var arguments = ["--cache-dir=\(Self.cacheDirectory)", "--context", context, "logs", pod]
         if !namespace.isEmpty { arguments += ["-n", namespace] }
         if let container = options.container { arguments += ["-c", container] }
         arguments += ["--tail=\(options.tailLines)"]

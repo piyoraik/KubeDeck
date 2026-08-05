@@ -83,6 +83,67 @@ struct KubectlTests {
         #expect(Kubectl.unknownKinds(in: stderr, among: [.pod, .ingress]).isEmpty)
     }
 
+    /// 縮退した discovery キャッシュから自力で復帰するための引き金。
+    ///
+    /// 覚えている API の一覧が壊れると、実在する `pods` にもこの文言が出る
+    /// （コアグループの versions が null になり、v1 が解決できなくなる）。
+    /// 文言からは「本当に無い」のか「一覧が欠けている」のかが決まらないので、
+    /// **1 度だけ捨てて引き直して確かめる。** その引き金がこれ。
+    @Test("実在する種別でも「知らない」と言われたら、引き直しの対象にする")
+    func brokenDiscoveryIsRetried() {
+        // 縮退したキャッシュで実測した文言。
+        let stderr = #"error: the server doesn't have a resource type "pods""#
+        #expect(Kubectl.mentionsMissingResourceType(stderr))
+    }
+
+    /// **当てはまらない失敗で引き直さない。** キャッシュを捨てるたびに
+    /// kubectl は全 API グループを引き直すので、無関係な失敗で走らせない。
+    @Test("他の失敗では引き直さない")
+    func otherFailuresDoNotResetDiscovery() {
+        #expect(!Kubectl.mentionsMissingResourceType(forbidden))
+        #expect(!Kubectl.mentionsMissingResourceType(""))
+        #expect(!Kubectl.mentionsMissingResourceType(
+            "Unable to connect to the server: context deadline exceeded"))
+    }
+
+    /// 捨てる先を間違えると、消えていないのに引き直すことになり、
+    /// **同じ失敗をもう 1 度取りに行くだけ**になる（黙って直らない）。
+    @Test("覚えている API の一覧だけを捨てる")
+    func removesDiscoveryCacheOnly() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let discovery = root.appendingPathComponent("discovery/example.com_443",
+                                                    isDirectory: true)
+        let http = root.appendingPathComponent("http", isDirectory: true)
+        try FileManager.default.createDirectory(at: discovery, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: http, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: discovery.appendingPathComponent("servergroups.json"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(Kubectl.removeDiscoveryCache(in: root.path))
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("discovery").path))
+        // 巻き込まない。キャッシュの置き場所ごと消すわけではない。
+        #expect(FileManager.default.fileExists(atPath: http.path))
+    }
+
+    /// **消せなかったときに「捨てた」と言わない。** 呼び出し側はこれを見て
+    /// 引き直すかどうかを決める。
+    @Test("覚えていないときは捨てたことにしない")
+    func noDiscoveryCacheToRemove() {
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        #expect(!Kubectl.removeDiscoveryCache(in: missing.path))
+    }
+
+    /// **ターミナルの kubectl と共有しない。** 共有していると、どちらかが
+    /// 壊した一覧をもう一方も読む（実際にそれで全種別が消えた）。
+    @Test("キャッシュの置き場所は ~/.kube/cache ではない")
+    func cacheDirectoryIsPrivate() {
+        #expect(!Kubectl.cacheDirectory.hasSuffix("/.kube/cache"))
+        #expect(Kubectl.cacheDirectory.contains("/Caches/"))
+    }
+
     /// 失敗しても標準出力を捨てないための受け皿。
     @Test("CommandError は書き出されていた標準出力を持ち回る")
     func commandErrorCarriesPartialOutput() throws {
