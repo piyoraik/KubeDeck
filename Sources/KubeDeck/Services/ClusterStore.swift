@@ -654,7 +654,21 @@ final class ClusterStore {
                     let listed = try await self.kubectl.list(
                         kinds: [.pod, .node, .replicaSet, .job,
                                 .deployment, .statefulSet, .daemonSet, .cronJob,
-                                .service, .ingress, .persistentVolumeClaim],
+                                .service, .ingress, .persistentVolumeClaim,
+                                // PV は PVC の行き先。**PVC の名前だけでは
+                                // 足りない** — どこに置かれているのか
+                                // （容量・StorageClass）はこちらにしか無い。
+                                .persistentVolume,
+                                // NetworkPolicy は Service と同じくラベルで
+                                // Pod を選ぶ。入口の話なので同じ図に載る。
+                                .networkPolicy,
+                                // **RoleBinding は逆引きに要る。** Pod からは
+                                // ServiceAccount の名前しか辿れず、そこに何が
+                                // 付いているかは Binding 側にしか書いていない。
+                                // **ClusterRole / Role は入れない** — rules が
+                                // 重く（実測 264KB）、要るのは紐づいた数個だけ
+                                // なので、名前指定で引き直す（`roles(named:)`）。
+                                .roleBinding, .clusterRoleBinding],
                         context: context, namespace: namespace)
                     guard token == self.generation else { return }
                     let loaded = listed.objects
@@ -673,6 +687,9 @@ final class ClusterStore {
                     self.placementRelated = loaded.filter {
                         $0.kind == .service || $0.kind == .ingress
                             || $0.kind == .persistentVolumeClaim
+                            || $0.kind == .persistentVolume
+                            || $0.kind == .networkPolicy
+                            || $0.kind == .roleBinding || $0.kind == .clusterRoleBinding
                     }
                     // **図に欠けがあることを黙らない。** Service が読めていない
                     // だけなのに「入口が無い」と読めてしまう。
@@ -1022,7 +1039,7 @@ final class ClusterStore {
     /// まとめて数える種別。Node も含めるので、概要の別取得とは別に持つ。
     private static let countedKinds: [ResourceKind] = [
         .pod, .deployment, .replicaSet, .statefulSet, .daemonSet, .job, .cronJob,
-        .service, .ingress, .configMap, .secret, .persistentVolumeClaim,
+        .service, .ingress, .networkPolicy, .configMap, .secret, .persistentVolumeClaim,
         .persistentVolume, .node, .namespace,
     ]
 
@@ -1088,6 +1105,41 @@ final class ClusterStore {
         } catch {
             return .failure(error)
         }
+    }
+
+    /// Binding が指しているロールの中身。
+    ///
+    /// **自動更新に載せない。** ClusterRole は rules を持つぶん重く（実測
+    /// 264KB）、配置画面は 10 秒ごとに引き直す。起点が変わったときだけ、
+    /// **紐づいている数個を名前指定で**引く（イベントと同じ考え方）。
+    ///
+    /// **引けなかったことを「規則が無い」にしない。** RBAC を読めない
+    /// クラスタはふつうにあるので、失敗は失敗として返す。
+    func roleRules(for bindings: [AccessBinding]) async -> AccessRules {
+        var wanted: [String?: Set<String>] = [:]
+        for binding in bindings where !binding.roleName.isEmpty {
+            wanted[binding.roleNamespace, default: []].insert(binding.roleName)
+        }
+        guard !wanted.isEmpty else { return AccessRules(isLoaded: true) }
+
+        var result = AccessRules(isLoaded: true)
+        let context = currentContext
+        for (namespace, names) in wanted {
+            do {
+                let roles = try await kubectl.roles(
+                    named: Array(names), namespace: namespace, context: context)
+                for role in roles {
+                    let kind = namespace == nil ? "ClusterRole" : "Role"
+                    result.roles["\(kind)/\(namespace ?? "")/\(role.name)"] = role
+                }
+            } catch {
+                // **どちらが引けなかったかを言う。** 「読めません」だけだと、
+                // 出ている規則のほうまで疑うことになる。
+                let label = namespace.map { "\($0) の Role" } ?? "ClusterRole"
+                result.failures.append(label)
+            }
+        }
+        return result
     }
 
     /// このオブジェクトを管理している HPA。レプリカ数を変える前に見る。

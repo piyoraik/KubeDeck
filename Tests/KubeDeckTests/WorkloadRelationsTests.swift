@@ -104,4 +104,199 @@ struct WorkloadRelationsTests {
         let pod = Fixture.pod(volumes: #"[{"name":"tmp","emptyDir":{}}]"#)
         #expect(WorkloadRelations.claims(for: [pod], among: [Fixture.claim(name: "data-0")]).isEmpty)
     }
+
+    // MARK: - PVC → PV
+
+    /// **3 つを分ける。** バインド済み / 未バインド / PV を引けていない。
+    /// 未バインドは Pod が起動しない原因そのもので、「PV が無い」ではない。
+    @Test("PVC の行き先の PV を解く。未バインドと引けていないを分ける")
+    func storageLinks() {
+        let bound = Fixture.claim(name: "data-0", volumeName: "pvc-aaa")
+        let pending = Fixture.claim(name: "data-1")
+        let missingVolume = Fixture.claim(name: "data-2", volumeName: "pvc-ccc")
+        let volume = Fixture.volume(name: "pvc-aaa", capacity: "10Gi", storageClass: "standard")
+
+        let links = WorkloadRelations.storageLinks(
+            for: [bound, pending, missingVolume], among: [volume])
+
+        #expect(links[0].volumeName == "pvc-aaa")
+        #expect(links[0].volume?.name == "pvc-aaa")
+        #expect(links[0].volumeDetail == "PersistentVolume · 10Gi · standard")
+        // 未バインド。名前そのものが無い。
+        #expect(links[1].volumeName == nil)
+        #expect(links[1].volume == nil)
+        // 名前はあるのに実物が無い＝引けていない。空欄と同じにしない。
+        #expect(links[2].volumeName == "pvc-ccc")
+        #expect(links[2].volume == nil)
+        #expect(links[2].volumeDetail == nil)
+    }
+
+    // MARK: - Pod → NetworkPolicy
+
+    /// **Service と逆。** `podSelector: {}` は「すべての Pod」。
+    /// 取り違えると、いちばん効きの強い設定を「効いていない」ことにする。
+    @Test("空の podSelector は Namespace のすべての Pod に効く")
+    func emptyPolicySelectorMatchesEverything() {
+        let pod = Fixture.pod(name: "web-0", labels: ["app": "web"])
+        let all = Fixture.policy(name: "deny-all", selector: [:])
+        let other = Fixture.policy(name: "other-ns", namespace: "kube-system", selector: [:])
+
+        let found = WorkloadRelations.policies(for: [pod], among: [all, other])
+        #expect(found.map(\.name) == ["deny-all"])
+    }
+
+    @Test("ラベルの合う NetworkPolicy だけを拾う")
+    func policiesMatchLabels() {
+        let pod = Fixture.pod(name: "web-0", labels: ["app": "web"])
+        let hit = Fixture.policy(name: "web-policy", selector: ["app": "web"])
+        let miss = Fixture.policy(name: "db-policy", selector: ["app": "db"])
+
+        let found = WorkloadRelations.policies(for: [pod], among: [hit, miss])
+        #expect(found.map(\.name) == ["web-policy"])
+    }
+
+    // MARK: - Pod → ServiceAccount → Binding
+
+    /// **省略時は `default`。** 空欄にすると権限が無いように読める。
+    @Test("ServiceAccount 名は省略時に default")
+    func defaultServiceAccountName() {
+        #expect(WorkloadRelations.serviceAccountName(of: Fixture.pod()) == "default")
+        #expect(
+            WorkloadRelations.serviceAccountName(of: Fixture.pod(serviceAccount: "web-sa"))
+                == "web-sa")
+    }
+
+    @Test("その ServiceAccount に付いている Binding だけを逆引きする")
+    func accessSummaryFindsBindings() {
+        let pod = Fixture.pod(namespace: "app", serviceAccount: "web-sa")
+        let hit = Fixture.binding(
+            name: "web-reader", namespace: "app", role: (kind: "Role", name: "pod-reader"),
+            subjects: [(kind: "ServiceAccount", name: "web-sa", namespace: "app")])
+        let clusterHit = Fixture.binding(
+            name: "web-view", namespace: nil, role: (kind: "ClusterRole", name: "view"),
+            subjects: [(kind: "ServiceAccount", name: "web-sa", namespace: "app")])
+        // **Namespace が違えば別物。** 同じ名前の SA は Namespace ごとに居る。
+        let otherNamespace = Fixture.binding(
+            name: "other", namespace: "other", role: (kind: "Role", name: "pod-reader"),
+            subjects: [(kind: "ServiceAccount", name: "web-sa", namespace: "other")])
+        // **種別を落とさない。** 同じ名前の User は別物。
+        let user = Fixture.binding(
+            name: "human", namespace: "app", role: (kind: "Role", name: "pod-reader"),
+            subjects: [(kind: "User", name: "web-sa", namespace: nil)])
+
+        let summary = WorkloadRelations.accessSummary(
+            for: [pod], among: [hit, clusterHit, otherNamespace, user])
+
+        #expect(summary.accounts.map(\.name) == ["web-sa"])
+        #expect(summary.bindings.map(\.name) == ["web-reader", "web-view"])
+        #expect(summary.bindings[0].roleID == "Role/app/pod-reader")
+        // ClusterRole は Namespace を持たない。Role と同じ鍵にしない。
+        #expect(summary.bindings[1].roleID == "ClusterRole//view")
+        #expect(summary.bindings[1].isClusterWide)
+    }
+
+    /// **無いことを異常にしない。** ただし「何も付いていない」と断定もしない
+    /// （グループ経由の付与は見ていないので、画面側が断る）。
+    @Test("Binding が 1 つも無くても ServiceAccount は出す")
+    func accessSummaryKeepsAccountWithoutBindings() {
+        let summary = WorkloadRelations.accessSummary(for: [Fixture.pod()], among: [])
+        #expect(summary.accounts.map(\.name) == ["default"])
+        #expect(summary.accounts[0].bindings.isEmpty)
+    }
+
+    // MARK: - Pod → ConfigMap / Secret
+
+    /// **6 か所すべてを見る。** どれか 1 つでも落とすと、参照しているのに
+    /// 図に出ない設定ができる（見えない依存がいちばん困る）。
+    @Test("参照している ConfigMap / Secret を付き方ごとに拾う")
+    func configReferences() {
+        let pod = Fixture.pod(
+            containers: """
+                [{"name":"app",
+                  "envFrom":[{"configMapRef":{"name":"flags"}},{"secretRef":{"name":"db"}}],
+                  "env":[{"name":"K","valueFrom":{"secretKeyRef":{"name":"token"}}}]}]
+                """,
+            initContainers: """
+                [{"name":"init",
+                  "env":[{"name":"C","valueFrom":{"configMapKeyRef":{"name":"init-conf"}}}]}]
+                """,
+            volumes: """
+                [{"name":"conf","configMap":{"name":"app-config"}},
+                 {"name":"tls","secret":{"secretName":"web-tls"}},
+                 {"name":"mix","projected":{"sources":[{"configMap":{"name":"projected-conf"}},
+                                                       {"secret":{"name":"projected-sec"}}]}}]
+                """,
+            imagePullSecrets: ["regcred"])
+        let ingress = Fixture.ingress(
+            name: "public", backends: ["web"], tlsSecrets: ["ingress-tls"])
+
+        let found = WorkloadRelations.configReferences(for: [pod], ingresses: [ingress])
+        let named = Dictionary(uniqueKeysWithValues: found.map { ($0.name, $0) })
+
+        // ConfigMap が先、その中は名前順。
+        #expect(
+            found.map(\.name) == [
+                "app-config", "flags", "init-conf", "projected-conf",
+                "db", "ingress-tls", "projected-sec", "regcred", "token", "web-tls",
+            ])
+        #expect(named["app-config"]?.attachments == [.volume])
+        #expect(named["flags"]?.attachments == [.environment])
+        // 初期化コンテナも見る（設定を取りに行くのが init の仕事、はよくある）。
+        #expect(named["init-conf"]?.attachments == [.environment])
+        #expect(named["projected-sec"]?.source == .secret)
+        #expect(named["regcred"]?.attachments == [.imagePull])
+        #expect(named["ingress-tls"]?.attachments == [.ingressTLS])
+    }
+
+    /// **同じものを何度も出さない。** レプリカの数だけ並べると帯が埋まる。
+    @Test("複数の Pod が同じものを参照していても 1 つに束ねる")
+    func configReferencesAreDeduplicated() {
+        let volumes = #"[{"name":"conf","configMap":{"name":"app-config"}}]"#
+        let pods = [
+            Fixture.pod(name: "web-0", volumes: volumes),
+            Fixture.pod(name: "web-1", volumes: volumes),
+        ]
+
+        #expect(WorkloadRelations.configReferences(for: pods).map(\.name) == ["app-config"])
+    }
+
+    /// **付き方を 1 つに決めない。** マウントもされ環境変数にも入っている、は
+    /// ふつうにある。片方だけ書くと、見に行く場所を間違える。
+    @Test("同じものが 2 通りで付いていれば両方書く")
+    func configReferenceKeepsEveryAttachment() {
+        let pod = Fixture.pod(
+            containers: #"[{"name":"app","envFrom":[{"configMapRef":{"name":"app-config"}}]}]"#,
+            volumes: #"[{"name":"conf","configMap":{"name":"app-config"}}]"#)
+
+        let found = WorkloadRelations.configReferences(for: [pod])
+        #expect(found.count == 1)
+        #expect(found[0].attachments == [.volume, .environment])
+        #expect(found[0].detail == "ConfigMap · マウント・環境変数")
+    }
+
+    /// **全部に出るものは何も言わない。** `kube-root-ca.crt` はどの Pod にも
+    /// 自動で投影されるので、並べると本当の参照を帯の外へ押し出す。
+    /// ただし**自分でマウントしていれば意図した参照**なので、そちらは出す。
+    @Test("自動で投影される CA は出さない。自分でマウントしていれば出す")
+    func automaticRootCAIsHidden() {
+        let automatic = Fixture.pod(
+            volumes: """
+                [{"name":"kube-api-access-abcde",
+                  "projected":{"sources":[{"configMap":{"name":"kube-root-ca.crt"}},
+                                          {"serviceAccountToken":{"path":"token"}}]}}]
+                """)
+        #expect(WorkloadRelations.configReferences(for: [automatic]).isEmpty)
+
+        let explicit = Fixture.pod(
+            volumes: #"[{"name":"ca","configMap":{"name":"kube-root-ca.crt"}}]"#)
+        #expect(
+            WorkloadRelations.configReferences(for: [explicit]).map(\.name)
+                == ["kube-root-ca.crt"])
+    }
+
+    @Test("何も参照していない Pod では空を返す（無いことは異常ではない）")
+    func noConfigReferences() {
+        let pod = Fixture.pod(volumes: #"[{"name":"tmp","emptyDir":{}}]"#)
+        #expect(WorkloadRelations.configReferences(for: [pod]).isEmpty)
+    }
 }

@@ -51,6 +51,7 @@ enum SettingsDigest {
         case .roleBinding, .clusterRoleBinding: return bindingGroups(object)
         case .service: return serviceGroups(object)
         case .ingress: return ingressGroups(object)
+        case .networkPolicy: return networkPolicyGroups(object)
         case .configMap, .secret: return dataGroups(object)
         case .persistentVolumeClaim: return claimGroups(object)
         case .persistentVolume: return volumeGroups(object)
@@ -499,6 +500,90 @@ enum SettingsDigest {
         }
         if !rules.isEmpty { groups.append(SettingGroup(title: "振り分け", rows: rules)) }
         return groups
+    }
+
+    /// NetworkPolicy。
+    ///
+    /// **規則を 1 行にまとめない。** 「どこから来てよいか」は from の 1 つずつが
+    /// 別の許可で、混ぜると `namespaceSelector` の範囲と `ipBlock` の範囲が
+    /// 同じものに読める（RBAC の規則を 1 つずつ出すのと同じ理由）。
+    ///
+    /// **規則が 0 のときに空欄にしない。** `ingress: []` は「未設定」ではなく
+    /// **すべて拒否**で、この種別でいちばん効きの強い状態。
+    private static func networkPolicyGroups(_ policy: K8sObject) -> [SettingGroup] {
+        let spec = policy.spec
+        var groups = [
+            SettingGroup(
+                title: "対象",
+                rows: [
+                    SettingRow("この Pod に効く", ResourceTable.policyTargets(policy)),
+                    SettingRow("制限する向き", ResourceTable.policyDirections(policy)),
+                ])
+        ]
+
+        for direction in ["ingress", "egress"] {
+            guard let rules = spec?[direction]?.arrayValue else { continue }
+            let title = direction == "ingress" ? "入ってよい先" : "出てよい先"
+            guard !rules.isEmpty else {
+                groups.append(
+                    SettingGroup(
+                        title: title,
+                        rows: [
+                            SettingRow("規則", "1 つもありません（すべて拒否）", level: .warning)
+                        ]))
+                continue
+            }
+            var rows: [SettingRow] = []
+            for (index, rule) in rules.enumerated() {
+                let peers = (rule[direction == "ingress" ? "from" : "to"]?.arrayValue ?? [])
+                    .map(peerDescription)
+                let ports = (rule["ports"]?.arrayValue ?? []).map { port -> String in
+                    let number = port["port"]?.intValue.map(String.init)
+                        ?? port["port"]?.stringValue ?? ""
+                    let proto = port["protocol"]?.stringValue ?? "TCP"
+                    return number.isEmpty ? proto : "\(proto)/\(number)"
+                }
+                // **相手が空のときに空欄にしない。** `from` が無い規則は
+                // 「どこからでも」で、いちばん緩い。
+                rows.append(
+                    SettingRow(
+                        "規則 \(index + 1)",
+                        peers.isEmpty ? "どこからでも" : peers.joined(separator: ", ")))
+                if !ports.isEmpty {
+                    rows.append(SettingRow("　ポート", ports.joined(separator: ", ")))
+                }
+            }
+            groups.append(SettingGroup(title: title, rows: rows))
+        }
+        return groups
+    }
+
+    /// NetworkPolicy の `from` / `to` の 1 つ。
+    private static func peerDescription(_ peer: JSONValue) -> String {
+        if let cidr = peer.path("ipBlock.cidr")?.stringValue {
+            let except = (peer.path("ipBlock.except")?.arrayValue ?? [])
+                .compactMap(\.stringValue)
+            return except.isEmpty ? cidr : "\(cidr)（除く \(except.joined(separator: ", "))）"
+        }
+        var parts: [String] = []
+        // **空のセレクタの意味が入れ子で変わる。** `namespaceSelector: {}` は
+        // 「すべての Namespace」、`podSelector: {}` は「その中のすべての Pod」。
+        if let namespace = peer["namespaceSelector"] {
+            let labels = labelText(namespace)
+            parts.append(labels.isEmpty ? "すべての Namespace" : "Namespace \(labels)")
+        }
+        if let pod = peer["podSelector"] {
+            let labels = labelText(pod)
+            parts.append(labels.isEmpty ? "すべての Pod" : "Pod \(labels)")
+        }
+        return parts.isEmpty ? "どこからでも" : parts.joined(separator: " の ")
+    }
+
+    private static func labelText(_ selector: JSONValue) -> String {
+        (selector.path("matchLabels")?.objectValue ?? [:])
+            .compactMap { key, value in value.stringValue.map { "\(key)=\($0)" } }
+            .sorted()
+            .joined(separator: ",")
     }
 
     // MARK: - 設定と保存

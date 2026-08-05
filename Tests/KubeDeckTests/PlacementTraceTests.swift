@@ -188,6 +188,34 @@ struct PlacementTraceTests {
         #expect(PlacementTrace.nodeName(of: Fixture.pod(node: "node-a")) == "node-a")
     }
 
+    /// 図では同じノードの Pod を 1 つのまとまりにする。**多い順に並べ、
+    /// 未スケジュールは常に最後。** ノードの 1 つとして並びに紛れさせない。
+    @Test("Pod をノードごとにまとめる")
+    func podsGroupedByNode() {
+        let pods = [
+            Fixture.pod(name: "a", node: "node-b"),
+            Fixture.pod(name: "b", node: nil),
+            Fixture.pod(name: "c", node: "node-a"),
+            Fixture.pod(name: "d", node: "node-a"),
+        ]
+
+        let groups = PlacementTrace.podsByNode(pods)
+
+        #expect(groups.map(\.node) == ["node-a", "node-b", nil])
+        #expect(groups[0].pods.map(\.name) == ["c", "d"])
+        #expect(groups[2].pods.map(\.name) == ["b"])
+    }
+
+    @Test("同数のノードは名前順")
+    func nodeGroupsTieBreakByName() {
+        let groups = PlacementTrace.podsByNode([
+            Fixture.pod(name: "a", node: "node-b"),
+            Fixture.pod(name: "b", node: "node-a"),
+        ])
+
+        #expect(groups.map(\.node) == ["node-a", "node-b"])
+    }
+
     /// **Pod が 0 の世代も出す。** 入れ替わりの途中や、古い世代が残って
     /// いることが分かる。
     @Test("Pod が 0 の ReplicaSet も枝に残す")

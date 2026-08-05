@@ -27,8 +27,16 @@ enum Fixture {
         containerStatuses: String = "[]",
         initContainerStatuses: String = "[]",
         containers: String = "[]",
-        volumes: String = "[]"
+        initContainers: String = "[]",
+        volumes: String = "[]",
+        imagePullSecrets: [String] = [],
+        serviceAccount: String? = nil
     ) -> K8sObject {
+        let accountJSON = serviceAccount.map { #""serviceAccountName":"\#($0)","# } ?? ""
+        let pullNames = imagePullSecrets
+            .map { #"{"name":"\#($0)"}"# }
+            .joined(separator: ",")
+        let pullJSON = imagePullSecrets.isEmpty ? "" : #","imagePullSecrets":[\#(pullNames)]"#
         let ownerJSON = owner.map {
             """
             ,"ownerReferences":[{"kind":"\($0.kind)","name":"\($0.name)","controller":true}]
@@ -50,7 +58,9 @@ enum Fixture {
                 \(ownerJSON)
                 \(deletionJSON)
               },
-              "spec": { \(nodeJSON) "containers": \(containers), "volumes": \(volumes) },
+              "spec": { \(nodeJSON) \(accountJSON) "containers": \(containers),
+                        "initContainers": \(initContainers),
+                        "volumes": \(volumes)\(pullJSON) },
               "status": {
                 "phase": "\(phase)"\(reasonJSON),
                 "containerStatuses": \(containerStatuses),
@@ -114,32 +124,95 @@ enum Fixture {
     }
 
     static func ingress(
-        name: String, namespace: String = "default", backends: [String]
+        name: String, namespace: String = "default", backends: [String],
+        tlsSecrets: [String] = []
     ) -> K8sObject {
         let paths = backends
             .map { #"{"backend":{"service":{"name":"\#($0)"}}}"# }
             .joined(separator: ",")
+        let tlsJSON = tlsSecrets.isEmpty
+            ? ""
+            : #","tls":[\#(tlsSecrets.map { #"{"secretName":"\#($0)"}"# }.joined(separator: ","))]"#
         return object(
             """
             {
               "kind": "Ingress",
               "metadata": {"name": "\(name)", "namespace": "\(namespace)",
                            "uid": "\(namespace)-ing-\(name)"},
-              "spec": {"rules": [{"http": {"paths": [\(paths)]}}]}
+              "spec": {"rules": [{"http": {"paths": [\(paths)]}}]\(tlsJSON)}
             }
             """, assuming: .ingress)
     }
 
-    static func claim(name: String, namespace: String = "default") -> K8sObject {
-        object(
+    static func claim(
+        name: String, namespace: String = "default", volumeName: String? = nil
+    ) -> K8sObject {
+        let volumeJSON = volumeName.map { #""volumeName":"\#($0)""# } ?? ""
+        return object(
             """
             {
               "kind": "PersistentVolumeClaim",
               "metadata": {"name": "\(name)", "namespace": "\(namespace)",
                            "uid": "\(namespace)-pvc-\(name)"},
+              "spec": {\(volumeJSON)},
               "status": {"phase": "Bound"}
             }
             """, assuming: .persistentVolumeClaim)
+    }
+
+    static func volume(
+        name: String, capacity: String = "10Gi", storageClass: String = "standard"
+    ) -> K8sObject {
+        object(
+            """
+            {
+              "kind": "PersistentVolume",
+              "metadata": {"name": "\(name)", "uid": "pv-\(name)"},
+              "spec": {"storageClassName": "\(storageClass)"},
+              "status": {"capacity": {"storage": "\(capacity)"}}
+            }
+            """, assuming: .persistentVolume)
+    }
+
+    static func policy(
+        name: String, namespace: String = "default", selector: [String: String],
+        egress: Bool = false
+    ) -> K8sObject {
+        let egressJSON = egress ? #","egress":[],"policyTypes":["Ingress","Egress"]"# : ""
+        return object(
+            """
+            {
+              "kind": "NetworkPolicy",
+              "metadata": {"name": "\(name)", "namespace": "\(namespace)",
+                           "uid": "\(namespace)-np-\(name)"},
+              "spec": {"podSelector": {"matchLabels": \(dictionary(selector))}\(egressJSON)}
+            }
+            """, assuming: .networkPolicy)
+    }
+
+    /// RoleBinding / ClusterRoleBinding。`namespace` が nil なら後者。
+    static func binding(
+        name: String, namespace: String?, role: (kind: String, name: String),
+        subjects: [(kind: String, name: String, namespace: String?)]
+    ) -> K8sObject {
+        let kind = namespace == nil ? "ClusterRoleBinding" : "RoleBinding"
+        let namespaceJSON = namespace.map { #""namespace":"\#($0)","# } ?? ""
+        let subjectsJSON = subjects
+            .map { subject in
+                let ns = subject.namespace.map { #","namespace":"\#($0)""# } ?? ""
+                return #"{"kind":"\#(subject.kind)","name":"\#(subject.name)"\#(ns)}"#
+            }
+            .joined(separator: ",")
+        return object(
+            """
+            {
+              "kind": "\(kind)",
+              "metadata": {"name": "\(name)", \(namespaceJSON)
+                           "uid": "\(namespace ?? "-")-rb-\(name)"},
+              "roleRef": {"kind": "\(role.kind)", "name": "\(role.name)"},
+              "subjects": [\(subjectsJSON)]
+            }
+            """, assuming: namespace == nil ? .clusterRoleBinding : .roleBinding)
     }
 
     /// ReplicaSet / Job など、Pod と親ワークロードのあいだにあるもの。

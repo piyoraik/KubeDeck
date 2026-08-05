@@ -128,6 +128,14 @@ struct TraceGeneration: Identifiable, Sendable {
     }
 }
 
+/// 同じノードに載っている Pod のまとまり。`node` が nil なら未スケジュール。
+struct TraceNodeGroup: Identifiable, Sendable {
+    let node: String?
+    let pods: [K8sObject]
+
+    var id: String { node ?? "" }
+}
+
 /// ワークロード 1 つぶんの枝。入口からノードまでの 1 本。
 struct TraceBranch: Identifiable, Sendable {
     let workload: TraceAnchor
@@ -151,6 +159,14 @@ struct TraceGraph: Sendable {
     /// Ingress が指しているのに実在しない Service の名前。
     let missingServiceNames: [String]
     let claims: [K8sObject]
+    /// PVC と、その行き先の PV。
+    let storage: [StorageLink]
+    /// この一式が参照している ConfigMap / Secret。名前と付き方だけ。
+    let configs: [ConfigReference]
+    /// 効いている NetworkPolicy。
+    let policies: [K8sObject]
+    /// 動いている ServiceAccount と、そこに付いている Binding。
+    let access: AccessSummary
 
     var pods: [K8sObject] { branches.flatMap(\.pods) }
     var podCount: Int { branches.reduce(0) { $0 + $1.podCount } }
@@ -338,10 +354,17 @@ enum PlacementTrace {
             break
         }
 
+        let claims = WorkloadRelations.claims(for: pods, among: inventory.related)
         return TraceGraph(
             anchor: anchor, branches: branches, danglingServices: dangling,
             missingServiceNames: missing,
-            claims: WorkloadRelations.claims(for: pods, among: inventory.related))
+            claims: claims,
+            storage: WorkloadRelations.storageLinks(for: claims, among: inventory.related),
+            // Ingress の証明書も同じ帯に出すので、枝から集めて渡す。
+            configs: WorkloadRelations.configReferences(
+                for: pods, ingresses: branches.flatMap(\.ingresses)),
+            policies: WorkloadRelations.policies(for: pods, among: inventory.related),
+            access: WorkloadRelations.accessSummary(for: pods, among: inventory.related))
     }
 
     /// 起点が掴んでいる Pod。ここだけが起点ごとに違う。
@@ -515,6 +538,40 @@ enum PlacementTrace {
     static func nodeName(of pod: K8sObject) -> String? {
         guard let name = pod.spec?["nodeName"]?.stringValue, !name.isEmpty else { return nil }
         return name
+    }
+
+    /// 世代の中の Pod を、載っているノードごとにまとめる。
+    ///
+    /// **同じノードの器を Pod の数だけ描かない。** 以前は Pod 1 つにつき
+    /// 「Pod → 矢印 → ノード」の行を引いていたので、8 レプリカが 1 ノードに
+    /// 載っているだけで同じノード名が 8 回出て、1 行 500pt が 8 段に伸びた
+    /// （実測で図の高さ 470・右に 348pt の空き）。まとめれば横が使えて縦が縮む。
+    ///
+    /// 並びは Pod の多い順 →名前順。**「未スケジュール」は常に最後**
+    /// （ノードの 1 つとして並びに紛れさせない。配置画面と同じ扱い）。
+    static func podsByNode(_ pods: [K8sObject]) -> [TraceNodeGroup] {
+        var order: [String] = []
+        var byNode: [String: [K8sObject]] = [:]
+        var unscheduled: [K8sObject] = []
+
+        for pod in pods {
+            guard let node = nodeName(of: pod) else {
+                unscheduled.append(pod)
+                continue
+            }
+            if byNode[node] == nil { order.append(node) }
+            byNode[node, default: []].append(pod)
+        }
+
+        var groups = order.map { TraceNodeGroup(node: $0, pods: byNode[$0] ?? []) }
+        groups.sort {
+            $0.pods.count == $1.pods.count
+                ? ($0.node ?? "") < ($1.node ?? "") : $0.pods.count > $1.pods.count
+        }
+        if !unscheduled.isEmpty {
+            groups.append(TraceNodeGroup(node: nil, pods: unscheduled))
+        }
+        return groups
     }
 
     /// 支配している所有者。`controller: true` のものを採る。

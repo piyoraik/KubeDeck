@@ -341,6 +341,24 @@ enum ResourceTable {
                 },
             ]
 
+        case .networkPolicy:
+            return [
+                // **空のセレクタを空欄にしない。** NetworkPolicy の
+                // `podSelector: {}` は「まだ選んでいない」ではなく
+                // **「この Namespace のすべての Pod」**（Service とは逆）。
+                // 空欄にすると、いちばん効きの強い設定が何も書いていない
+                // ように見える。
+                ResourceColumn(title: "対象", width: .flexible(min: 180)) {
+                    ResourceCell(text: policyTargets($0), emphasis: .secondary)
+                },
+                ResourceColumn(title: "向き", width: .fixed(140)) {
+                    ResourceCell(text: policyDirections($0))
+                },
+                ResourceColumn(title: "規則", width: .fixed(90), trailing: true) {
+                    ResourceCell(text: policyRuleCounts($0), emphasis: .mono)
+                },
+            ]
+
         case .configMap:
             return [
                 ResourceColumn(title: "データ", width: .fixed(70), trailing: true) {
@@ -717,6 +735,60 @@ enum ResourceTable {
             return kind.isEmpty ? name : "\(kind)/\(name)"
         }
         return joined(names, limit: 3)
+    }
+
+    // MARK: - NetworkPolicy
+
+    /// 誰に効いているか。
+    ///
+    /// **空のセレクタを「一致しない」にしない。** Service の
+    /// `spec.selector` は空なら何も掴まないが、NetworkPolicy の
+    /// `spec.podSelector` が空なら**その Namespace のすべての Pod**。
+    /// 同じ「空」でも意味が正反対で、取り違えると**いちばん効きの強い
+    /// 設定を「何も効いていない」と表示する**。
+    static func policyTargets(_ policy: K8sObject) -> String {
+        let selector = policySelector(policy)
+        guard !selector.isEmpty else { return "すべての Pod" }
+        return joined(selector.map { "\($0.key)=\($0.value)" }.sorted(), limit: 3)
+    }
+
+    static func policySelector(_ policy: K8sObject) -> [String: String] {
+        (policy.spec?.path("podSelector.matchLabels")?.objectValue ?? [:])
+            .compactMapValues { $0.stringValue }
+    }
+
+    /// どちらの向きを制限しているか。
+    ///
+    /// **`policyTypes` が無いときに空欄にしない。** 省略されたときは
+    /// 「`ingress` を書いていれば Ingress、`egress` を書いていれば Egress」と
+    /// いう既定があり（省略時は必ず Ingress を含む）、空欄だと「何も
+    /// 制限していない」と読める。
+    static func policyDirections(_ policy: K8sObject) -> String {
+        let declared = (policy.spec?["policyTypes"]?.arrayValue ?? [])
+            .compactMap { $0.stringValue }
+        let types = declared.isEmpty ? impliedPolicyTypes(policy) : declared
+        return types.map { $0 == "Egress" ? "Egress（出）" : "Ingress（入）" }
+            .joined(separator: " · ")
+    }
+
+    private static func impliedPolicyTypes(_ policy: K8sObject) -> [String] {
+        var types = ["Ingress"]
+        if policy.spec?["egress"] != nil { types.append("Egress") }
+        return types
+    }
+
+    /// 入と出の規則の数。
+    ///
+    /// **0 を「制限なし」と読ませない。** `ingress: []`（規則ゼロ）は
+    /// **すべて拒否**で、規則が 1 つあるより強い。数だけでは向きが分からない
+    /// ので「向き」列と並べて読む。
+    static func policyRuleCounts(_ policy: K8sObject) -> String {
+        let ingress = policy.spec?["ingress"]?.arrayValue.count
+        let egress = policy.spec?["egress"]?.arrayValue.count
+        var parts: [String] = []
+        if let ingress { parts.append("入 \(ingress)") }
+        if let egress { parts.append("出 \(egress)") }
+        return parts.isEmpty ? "—" : parts.joined(separator: " / ")
     }
 
     // MARK: - HPA

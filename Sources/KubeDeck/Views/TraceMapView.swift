@@ -288,8 +288,12 @@ struct TraceMapView: View {
 /// 決まっているので、列に並べるだけでよい。線を自由に引く仕組みを持つと、
 /// 図のためだけにレイアウトの実装を抱えることになる。
 private struct TraceGraphView: View {
+    @Environment(ClusterStore.self) private var store
     let graph: TraceGraph
     let select: (TraceAnchor) -> Void
+    /// 引き直したロールの中身。**自動更新に載せない** — 起点が変わった
+    /// ときだけ引く（イベントタブと同じ考え方）。
+    @State private var rules = AccessRules()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -301,6 +305,9 @@ private struct TraceGraphView: View {
                 TraceBranchView(branch: branch, anchor: graph.anchor, select: select)
             }
             storage
+            configs
+            policies
+            access
             if graph.isEmpty && graph.danglingServices.isEmpty
                 && graph.missingServiceNames.isEmpty {
                 Text("この起点から辿れる Pod はありません。")
@@ -309,6 +316,17 @@ private struct TraceGraphView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // **鍵は「引く相手」だけにする。** 起点が同じなら引き直さない
+        // （`graph` そのものを鍵にすると、10 秒ごとの取得で Pod の中身が
+        // 変わるたびに ClusterRole を引き直すことになる）。
+        .task(id: graph.access.bindings.map(\.id).joined(separator: ",")) {
+            let bindings = graph.access.bindings
+            guard !bindings.isEmpty else {
+                rules = AccessRules(isLoaded: true)
+                return
+            }
+            rules = await store.roleRules(for: bindings)
+        }
     }
 
     /// **辿れなかったことを黙らない。** Ingress が指しているのに Service が
@@ -338,20 +356,219 @@ private struct TraceGraphView: View {
 
     /// 使っているストレージ。**Pod の右に置かない。** 流れの先ではなく
     /// 付属物なので、図の下に別の帯として置く。
+    ///
+    /// **PVC で止めない。** 容量も StorageClass も PV 側にしか無いので、
+    /// PVC だけ出すと「どこに置かれているのか」が分からない。
+    ///
+    /// **未バインドを「PV が無い」と書かない。** `spec.volumeName` が空なのは
+    /// 「まだバインドされていない」で、Pod が起動しない原因そのもの。
     @ViewBuilder
     private var storage: some View {
-        if !graph.claims.isEmpty {
-            HStack(alignment: .center, spacing: 10) {
-                Text("使っているストレージ")
+        if !graph.storage.isEmpty {
+            band("使っているストレージ") {
+                tiles(minimumWidth: 200, maximumWidth: 420) {
+                    ForEach(graph.storage) { link in
+                        HStack(spacing: 8) {
+                            TraceNodeLabel(
+                                name: link.claim.name,
+                                kindLabel: ResourceKind.persistentVolumeClaim.displayName,
+                                symbol: ResourceKind.persistentVolumeClaim.symbol,
+                                tint: .secondary, maxWidth: 160)
+                            DiagramArrow(length: 16)
+                            volume(link)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func volume(_ link: StorageLink) -> some View {
+        if let name = link.volumeName {
+            TraceNodeLabel(
+                name: name,
+                // 実物が引けていれば容量と StorageClass まで。引けていなければ
+                // 種別だけ書く（**「無い」と言わない**）。
+                kindLabel: link.volumeDetail ?? ResourceKind.persistentVolume.displayName,
+                symbol: ResourceKind.persistentVolume.symbol, tint: .secondary,
+                minWidth: 90, maxWidth: 200)
+        } else {
+            Text("まだバインドされていません")
+                .font(.caption2)
+                .foregroundStyle(Palette.textColor(for: .warning))
+                .frame(minWidth: 90, maxWidth: 200, alignment: .leading)
+        }
+    }
+
+    /// 効いている NetworkPolicy。
+    ///
+    /// **無いことを「制限なし」と断らない。** 1 つも無ければ通信は素通りだが、
+    /// それは**この画面が引けている範囲での話**で、CNI が入っていなければ
+    /// NetworkPolicy 自体が効かない（policy はあるのに効いていない、も起きる）。
+    /// ここでは効いている policy を並べるだけにする。
+    @ViewBuilder
+    private var policies: some View {
+        if !graph.policies.isEmpty {
+            band("効いている通信制限") {
+                tiles(minimumWidth: 170, maximumWidth: 300) {
+                    ForEach(graph.policies) { policy in
+                        TraceNodeLabel(
+                            name: policy.name,
+                            kindLabel: ResourceTable.policyDirections(policy),
+                            symbol: ResourceKind.networkPolicy.symbol, tint: .secondary,
+                            maxWidth: 240)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 参照している ConfigMap / Secret。ストレージと同じ持ち場（付属物）で、
+    /// **段には入れない** — 流れの先ではない。
+    ///
+    /// **Secret の中身は出さない。** 名前と付き方まで。
+    ///
+    /// **「ありません」と書かない。** 設定を 1 つも使わない Pod はふつうに
+    /// あり、無いことは異常ではない（空の器も置かない）。
+    @ViewBuilder
+    private var configs: some View {
+        if !graph.configs.isEmpty {
+            band("使っている設定") {
+                tiles(maximumWidth: 240) {
+                    ForEach(graph.configs) { reference in
+                        TraceNodeLabel(
+                            name: reference.name, kindLabel: reference.detail,
+                            symbol: reference.source.kind.symbol, tint: .secondary,
+                            maxWidth: 190)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 動いている権限。ServiceAccount → Binding → ロールの中身。
+    ///
+    /// **名前だけ並べない。** どの Role が強いのかが分からず、結局 1 つずつ
+    /// 開くことになる（「アクセス制御」の一覧と同じ判断）。rules は重いので
+    /// **紐づいたぶんだけ引き直す**（`ClusterStore.roleRules`）。
+    @ViewBuilder
+    private var access: some View {
+        if !graph.access.isEmpty {
+            band("動いている権限") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(graph.access.accounts) { account in
+                        accountRow(account)
+                    }
+                    if !rules.failures.isEmpty {
+                        // **「権限が無い」と書かない。** 読めなかっただけ。
+                        Label(
+                            "\(rules.failures.joined(separator: "・")) を読めませんでした。"
+                                + "付いている規則がこれで全部とは限りません。",
+                            systemImage: StatusLevel.warning.symbol)
+                            .font(.caption2)
+                            .foregroundStyle(Palette.textColor(for: .warning))
+                    }
+                }
+            }
+        }
+    }
+
+    private func accountRow(_ account: AccessAccount) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            TraceNodeLabel(
+                name: account.name, kindLabel: ResourceKind.serviceAccount.displayName,
+                symbol: ResourceKind.serviceAccount.symbol, tint: .secondary,
+                minWidth: 110, maxWidth: 170)
+            if account.bindings.isEmpty {
+                // **「権限がありません」と断定しない。** グループ経由の付与
+                // （`system:serviceaccounts:*`）は見ていない。
+                Text("直接付いている Binding はありません（グループ経由の付与は見ていません）")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                ForEach(graph.claims) { claim in
-                    TraceNodeLabel(
-                        name: claim.name, kindLabel: ResourceKind.persistentVolumeClaim.displayName,
-                        symbol: ResourceKind.persistentVolumeClaim.symbol, tint: .secondary)
+            } else {
+                DiagramArrow(length: 16)
+                tiles(minimumWidth: 200, maximumWidth: 340) {
+                    ForEach(account.bindings) { binding in
+                        bindingTile(binding)
+                    }
                 }
-                Spacer(minLength: 0)
             }
+        }
+    }
+
+    private func bindingTile(_ binding: AccessBinding) -> some View {
+        let role = rules.roles[binding.roleID]
+        let summary = role.map { ResourceTable.ruleSummary($0) }
+
+        return HStack(spacing: 7) {
+            ResourceGlyph(
+                symbol: (binding.isClusterWide ? ResourceKind.clusterRoleBinding
+                    : ResourceKind.roleBinding).symbol,
+                size: 26, tint: .secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(binding.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(binding.roleLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let summary, !summary.text.isEmpty {
+                    // **`*` はいちばん見つけたいもの。** ここだけ色を付ける
+                    // （一覧の「できること」列と同じ扱い）。
+                    Text(summary.text)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            summary.isWildcard
+                                ? Palette.textColor(for: .warning) : .secondary)
+                        .lineLimit(2)
+                } else if rules.isLoaded && role == nil {
+                    // 引けたのに実物が無い＝Binding が指す先が消えている。
+                    Text("指しているロールがありません")
+                        .font(.caption2)
+                        .foregroundStyle(Palette.textColor(for: .serious))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .help(
+            "\(binding.binding.kind?.displayName ?? "") \(binding.name) → \(binding.roleLabel)")
+    }
+
+    /// 付属物の帯。見出しの幅を揃えるのは、帯が何本も並ぶため
+    /// （ばらばらだと段に見えない）。
+    private func band<Content: View>(
+        _ title: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(minWidth: 104, alignment: .leading)
+                .padding(.top, 8)
+            content()
+            // **`Spacer` で押さない。** タイルの側も伸び縮みするので、
+            // どちらが余りを取るかが決まらず 1 列に潰れることがある。
+            // 左寄せは外側の frame で決める。
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// **横に並べきれないときは折り返す。** `HStack` のままだと数が増えた
+    /// ときに 1 つずつ潰れ、どれも名前が読めなくなる。
+    private func tiles<Content: View>(
+        minimumWidth: CGFloat = 140, maximumWidth: CGFloat = 240,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        WrappingTiles(
+            spacing: 8, lineSpacing: 6,
+            minimumWidth: minimumWidth, maximumWidth: maximumWidth
+        ) {
+            content()
         }
     }
 }
@@ -396,11 +613,12 @@ private struct TraceBranchView: View {
                                 generation: generation, anchor: anchor, select: select)
                         }
                     }
-                    // **潰すなら入口の側から。** 幅が足りないとき、SwiftUI は
-                    // 伸び縮みする欄を等分に削るので、いちばん右の Pod 名から
-                    // 先に読めなくなった（`web-...-58lkg`）。Pod とノードは
-                    // この図の答えそのものなので、先に幅を取らせる。
-                    .layoutPriority(1)
+                    // **ここに `layoutPriority(1)` を戻さない。** かつては
+                    // 「幅が足りないと Pod 名から先に潰れる」ので先に幅を
+                    // 取らせていた。いまは Pod がタイルになり、`WrappingTiles`
+                    // が名前ぶんの幅（下限 150pt）を最小として申告するので、
+                    // 潰れようがない。優先度を戻すと、こんどはタイルが
+                    // 「1 行に全部」を要求して**左の入口の列を押しのける**。
                 }
             }
         }
@@ -415,6 +633,10 @@ private struct TraceBranchView: View {
                     namespace: object.namespace, name: object.name)
                 TraceNodeLabel(
                     name: object.name, kindLabel: kind.displayName, symbol: kind.symbol,
+                    // **入口の列にも下限を残す。** 右の Pod の列は幅を
+                    // いくらでも使える（1 行に全部並べるのが最大）ので、
+                    // 下限が無いとこちらが先に潰れて名前が消える。
+                    minWidth: 92,
                     isAnchor: target.id == anchor.id, select: { select(target) })
             }
         }
@@ -430,7 +652,7 @@ private struct TraceBranchView: View {
             Text(target.displayName)
                 .font(.caption.weight(.medium))
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 120)
+                .frame(minWidth: 88, maxWidth: 120)
                 .lineLimit(2)
             Text(target.isStandalone ? "所有者なし" : target.kindLabel)
                 .font(.caption2)
@@ -487,76 +709,51 @@ private struct TraceGenerationView: View {
 
     private var pods: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(generation.pods) { pod in
-                TracePodRow(pod: pod, anchor: anchor, select: select)
+            ForEach(PlacementTrace.podsByNode(generation.pods)) { group in
+                TraceNodeGroupRow(group: group, anchor: anchor, select: select)
             }
         }
     }
 }
 
-/// Pod 1 つと、その載っているノード。
-private struct TracePodRow: View {
-    @Environment(ClusterStore.self) private var store
-    let pod: K8sObject
+/// 同じノードに載っている Pod と、その行き先のノード。
+///
+/// **ノードの器を Pod の数だけ描かない。** 以前は Pod 1 つにつき
+/// 「Pod → 矢印 → ノード」の行を引いており、8 レプリカが 1 ノードに載って
+/// いるだけで同じノード名が 8 回出た。1 行 500pt が 8 段に伸びるので、
+/// **横が 348pt 空いたまま縦にだけ伸びる**（実測）。まとめて横に流す。
+///
+/// **矢印の向きは変えない。** 図ぜんぶが「入口 → … → Pod → ノード」の
+/// 左から右なので、ここだけノードを左に置くと読む向きが折り返す。
+private struct TraceNodeGroupRow: View {
+    let group: TraceNodeGroup
     let anchor: TraceAnchor
     let select: (TraceAnchor) -> Void
 
-    private var isSelected: Bool { store.selectedObjectID == pod.id }
-
     var body: some View {
-        let status = StatusResolver.health(for: pod)
-
-        HStack(spacing: 8) {
-            Button {
-                store.selectedObjectID = pod.id
-            } label: {
-                HStack(spacing: 8) {
-                    ResourceGlyph(
-                        symbol: ResourceKind.pod.symbol, size: 30,
-                        badge: status.level)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(pod.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(status.text)
-                            .font(.caption2)
-                            .foregroundStyle(Palette.textColor(for: status.level))
-                    }
-                    // **`width` で決め打ちしない。** 縮められない最小幅になり、
-                    // 詳細の欄が窓より広がって、サイドバーとインスペクタの
-                    // 両端が切れる（この画面だけ起きていた）。上限にする。
-                    .frame(maxWidth: 210, alignment: .leading)
+        HStack(alignment: .center, spacing: 8) {
+            WrappingTiles(spacing: 8, lineSpacing: 6) {
+                ForEach(group.pods) { pod in
+                    TracePodTile(pod: pod, node: group.node)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(
-                            Color.accentColor.opacity(isSelected ? 0.8 : 0), lineWidth: 1.5))
             }
-            .buttonStyle(.plain)
-            // 名前は幅が足りないと真ん中を落とすので、全体はここで読めるようにする。
-            .help("\(pod.namespace ?? "-")/\(pod.name) · \(status.text) · 押すと右のパネルに詳細")
 
             DiagramArrow(length: 20)
-
-            // 行き先のノード。**Pod と同じ器にしない** — 種別が違う。
             node
         }
     }
 
+    /// 行き先のノード。**Pod と同じ器にしない** — 種別が違う。
+    /// **件数は文字でも出す** — タイルの数を目で数えさせない（配置画面と同じ）。
     @ViewBuilder
     private var node: some View {
-        if let name = PlacementTrace.nodeName(of: pod) {
+        let count = "\(group.pods.count) Pod"
+        if let name = group.node {
             let target = TraceAnchor(
                 anchorKind: .node, resourceKind: .node,
                 kindLabel: ResourceKind.node.apiKind, namespace: nil, name: name)
             TraceNodeLabel(
-                name: name, kindLabel: ResourceKind.node.displayName,
+                name: name, kindLabel: "\(ResourceKind.node.displayName) · \(count)",
                 symbol: ResourceKind.node.symbol, tint: .secondary, size: 26,
                 // **行き先の欄は幅の下限を残す。** 無いと、伸び縮みする列の
                 // 中でいちばん後ろのこの文字から先に潰れ、名前が消える。
@@ -564,10 +761,136 @@ private struct TracePodRow: View {
                 isAnchor: target.id == anchor.id, select: { select(target) })
         } else {
             TraceNodeLabel(
-                name: "未スケジュール", kindLabel: ResourceKind.node.displayName,
+                name: "未スケジュール", kindLabel: count,
                 symbol: "questionmark.square.dashed", tint: .secondary, size: 26,
                 minWidth: 70, maxWidth: 170)
         }
+    }
+}
+
+/// Pod 1 つぶんのタイル。
+private struct TracePodTile: View {
+    @Environment(ClusterStore.self) private var store
+    let pod: K8sObject
+    /// 載っているノード。まとまりの見出しに出ているので画面には出さないが、
+    /// 指したときの説明には要る（タイルだけを見ている人が居る）。
+    let node: String?
+
+    private var isSelected: Bool { store.selectedObjectID == pod.id }
+
+    var body: some View {
+        let status = StatusResolver.health(for: pod)
+
+        Button {
+            store.selectedObjectID = pod.id
+        } label: {
+            HStack(spacing: 8) {
+                ResourceGlyph(symbol: ResourceKind.pod.symbol, size: 30, badge: status.level)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(pod.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(status.text)
+                        .font(.caption2)
+                        .foregroundStyle(Palette.textColor(for: status.level))
+                }
+                // **幅を決め打ちしない。** 210pt に固定していたので、短い
+                // 名前でも枠を取り、長い名前は余っているのに中央を落として
+                // いた。幅は `WrappingTiles` が名前の長さから決めて段で揃える。
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor.opacity(isSelected ? 0.8 : 0), lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+        // 名前は幅が足りないと真ん中を落とすので、全体はここで読めるようにする。
+        .help(
+            "\(pod.namespace ?? "-")/\(pod.name) · \(status.text) · "
+                + "\(node ?? "未スケジュール") · 押すと右のパネルに詳細")
+    }
+}
+
+/// 同じ大きさのタイルを、与えられた幅で折り返して並べる。
+///
+/// **`LazyVGrid` を使わない。** あちらは提案された幅をそのまま取るので、
+/// Pod が 1 つでも囲みが欄いっぱいに伸び、中の空きがかえって目立つ。
+/// ここは「入るだけ横に並べ、余ったぶんは要らない」場所。
+///
+/// **提案された幅を有限だと思わない。** SwiftUI は「いちばん広いとき」を
+/// 訊くために `.infinity` を提案してくる。`Int(.infinity)` はトラップする
+/// （`SectionColumns` で実際に落ちた）。幅が無いときは `idealColumns` に落とす
+/// — ここで全部を 1 行に並べた大きさを返すと、`layoutPriority` で先に幅を
+/// 取るこの列が、左の入口の列を潰してしまう。
+private struct WrappingTiles: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 6
+    var idealColumns = 3
+    /// 名前が短くてもこれ以下にはしない（器と状態で埋まる）。
+    var minimumWidth: CGFloat = 150
+    /// 名前が長くてもこれ以上は広げない。あとは中央を落として読ませる。
+    var maximumWidth: CGFloat = 280
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let item = itemSize(subviews)
+        let columns = columnCount(for: proposal.width, item: item, count: subviews.count)
+        let rows = (subviews.count + columns - 1) / columns
+        let used = min(subviews.count, columns)
+        return CGSize(
+            width: CGFloat(used) * item.width + CGFloat(used - 1) * spacing,
+            height: CGFloat(rows) * item.height + CGFloat(rows - 1) * lineSpacing)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        guard !subviews.isEmpty else { return }
+        let item = itemSize(subviews)
+        let columns = columnCount(for: bounds.width, item: item, count: subviews.count)
+        for (index, subview) in subviews.enumerated() {
+            let row = index / columns
+            let column = index % columns
+            subview.place(
+                at: CGPoint(
+                    x: bounds.minX + CGFloat(column) * (item.width + spacing),
+                    y: bounds.minY + CGFloat(row) * (item.height + lineSpacing)),
+                proposal: ProposedViewSize(item))
+        }
+    }
+
+    /// **段の中で幅を揃える。** ばらばらの幅で流すと、行ごとに切れ目の
+    /// 位置が変わって数が読めなくなる。いちばん長い名前に合わせる。
+    private func itemSize(_ subviews: Subviews) -> CGSize {
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            width = max(width, size.width)
+            height = max(height, size.height)
+        }
+        return CGSize(width: min(max(width, minimumWidth), maximumWidth), height: height)
+    }
+
+    /// **最小・ふつう・最大を取り違えない。** SwiftUI の `HStack` は、幅 0 と
+    /// `.infinity` を提案して子の伸び縮みの幅を測る。ここで両方に同じ値
+    /// （「ふつう」の 3 列）を返していたため、**伸び縮みしない子だと判断されて
+    /// 幅を等分され**、8 個の Pod が 1 列に縦積みのままだった（実測で提案
+    /// 217.67pt・1 列 8 行）。最小は 1 列、最大は 1 行に全部、と返す。
+    private func columnCount(for width: CGFloat?, item: CGSize, count: Int) -> Int {
+        // 幅の指定が無い＝「ふつうの大きさ」を訊かれている。ここで全部を
+        // 1 行に並べた幅を返すと、左の入口の列を押しのける。
+        guard let width else { return max(1, min(count, idealColumns)) }
+        // `Int(.infinity)` はトラップする（`SectionColumns` で実際に落ちた）。
+        guard width.isFinite else { return count }
+        let fits = Int((width + spacing) / (item.width + spacing))
+        return max(1, min(count, fits))
     }
 }
 

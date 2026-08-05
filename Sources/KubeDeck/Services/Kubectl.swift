@@ -891,6 +891,33 @@ actor Kubectl {
         }
     }
 
+    /// 名前を指定して Role / ClusterRole を引く。
+    ///
+    /// **全件をまとめ取りに入れない。** ClusterRole は rules を持つぶん重く
+    /// （実測 79 件で 264KB、実運用のクラスタでは MB 級）、配置画面は 10 秒
+    /// ごとに引き直す。要るのは紐づいた数個だけなので、名前を指定して引く。
+    ///
+    /// **1 件ずつ引かない。** kubectl は名前を並べて渡せるので、Namespace ごとに
+    /// 1 本で済む（まとめて削除するときと同じ考え方）。
+    ///
+    /// **`--ignore-not-found` を付ける。** Binding が指しているロールが実在
+    /// しないことは実際にある（消したあとの Binding）。そこで失敗にすると、
+    /// 引けた他のロールまで出せなくなる。
+    func roles(
+        named names: [String], namespace: String?, context: String
+    ) async throws -> [K8sObject] {
+        let unique = Array(Set(names)).sorted()
+        guard !unique.isEmpty else { return [] }
+        let kind: ResourceKind = namespace == nil ? .clusterRole : .role
+        var arguments = ["get", kind.resourceName]
+        arguments += unique
+        arguments += ["-o", "json", "--request-timeout=\(requestTimeout)",
+                      "--ignore-not-found=true"]
+        if let namespace, !namespace.isEmpty { arguments += ["-n", namespace] }
+        let result = try await run(arguments, context: context)
+        return try K8sObject.list(from: result.stdout, assuming: kind)
+    }
+
     /// resource は呼び出し側が持っている種別名を渡す。オブジェクトから
     /// 引くと、CRD のように組み込みの enum に無い種別が扱えない。
     func yaml(

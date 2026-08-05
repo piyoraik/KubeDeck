@@ -39,6 +39,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
 
     case service
     case ingress
+    /// **Service と同じ場所に置く。** どちらもラベルで Pod を選ぶもので、
+    /// 「外から届くか」を決めているのはこの 2 つ。
+    case networkPolicy
 
     case configMap
     case secret
@@ -72,6 +75,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .horizontalPodAutoscaler: return "horizontalpodautoscalers.autoscaling"
         case .service: return "services"
         case .ingress: return "ingresses"
+        // API グループを付ける。`networkpolicies` は Calico など別グループにも
+        // 居るので、短い名前だと環境によって別の種別を引く。
+        case .networkPolicy: return "networkpolicies.networking.k8s.io"
         case .configMap: return "configmaps"
         case .secret: return "secrets"
         case .persistentVolumeClaim: return "persistentvolumeclaims"
@@ -101,6 +107,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .horizontalPodAutoscaler: return "HorizontalPodAutoscaler"
         case .service: return "Service"
         case .ingress: return "Ingress"
+        case .networkPolicy: return "NetworkPolicy"
         case .configMap: return "ConfigMap"
         case .secret: return "Secret"
         case .persistentVolumeClaim: return "PersistentVolumeClaim"
@@ -137,6 +144,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .horizontalPodAutoscaler: return "HorizontalPodAutoscaler"
         case .service: return "Service"
         case .ingress: return "Ingress"
+        case .networkPolicy: return "NetworkPolicy"
         case .configMap: return "ConfigMap"
         case .secret: return "Secret"
         case .persistentVolumeClaim: return "PersistentVolumeClaim"
@@ -157,7 +165,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .pod, .deployment, .replicaSet, .statefulSet, .daemonSet, .job, .cronJob,
              .horizontalPodAutoscaler:
             return .workloads
-        case .service, .ingress:
+        case .service, .ingress, .networkPolicy:
             return .network
         case .configMap, .secret, .persistentVolumeClaim:
             return .config
@@ -191,6 +199,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .horizontalPodAutoscaler: return "arrow.up.arrow.down.circle"
         case .service: return "network"
         case .ingress: return "arrow.down.right.and.arrow.up.left"
+        case .networkPolicy: return "shield.lefthalf.filled"
         case .configMap: return "doc.text"
         case .secret: return "key"
         case .persistentVolumeClaim: return "externaldrive"
