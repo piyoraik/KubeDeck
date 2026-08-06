@@ -9,6 +9,8 @@ struct SettingsView: View {
                 .tabItem { Label("ログ", systemImage: "text.alignleft") }
             MetricsSettings()
                 .tabItem { Label("メトリクス", systemImage: "chart.line.uptrend.xyaxis") }
+            ContextSettings()
+                .tabItem { Label("コンテキスト", systemImage: "flag") }
             ConnectionSettings()
                 .tabItem { Label("接続", systemImage: "network") }
             UpdateSettings()
@@ -379,6 +381,101 @@ private struct MetricsSettings: View {
 }
 
 // MARK: - 接続
+
+/// コンテキストごとの札。
+///
+/// **どのクラスタを触っているのかを、名前の文字列だけに頼らせない。** 削除も
+/// drain も書き戻しもできる道具になったので、prod と dev の見分けが
+/// ツールバーの小さな文字だけ、という状態は事故の入口そのもの。
+private struct ContextSettings: View {
+    @Environment(ClusterStore.self) private var store
+    @State private var preferences = Preferences.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Text("色を付けたコンテキストは、窓の上に帯が出ます。"
+                     + "読み取り専用にすると、変更する操作をいっさい出しません"
+                     + "（見るだけのクラスタを取り違えても壊せません）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if store.contexts.isEmpty {
+                // **「ありません」と言わない。** まだ引けていないだけかもしれない。
+                Section {
+                    Text("コンテキストの一覧を読み込めていません。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(store.contexts, id: \.self) { context in
+                Section {
+                    row(for: context)
+                } header: {
+                    HStack(spacing: 6) {
+                        Text(context)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if context == store.currentContext {
+                            Text("接続中")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func row(for context: String) -> some View {
+        let profile = preferences.profile(for: context)
+        return Group {
+            Picker("色", selection: binding(context, \.tint)) {
+                ForEach(ContextTint.allCases) { tint in
+                    if let color = Palette.color(for: tint) {
+                        Label {
+                            Text(tint.title)
+                        } icon: {
+                            Image(systemName: "circle.fill").foregroundStyle(color)
+                        }
+                        .tag(tint)
+                    } else {
+                        Text(tint.title).tag(tint)
+                    }
+                }
+            }
+            TextField(
+                "別名", text: binding(context, \.alias),
+                prompt: Text("空ならコンテキスト名"))
+            Toggle("読み取り専用", isOn: binding(context, \.isReadOnly))
+            if profile.isReadOnly {
+                Text("この設定はこのアプリの中だけの話です。"
+                     + "クラスタ側の権限は変わりません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// **値型の入れ子を直接触らない。** 中身だけ書き換えても辞書の `didSet` は
+    /// 走らず、保存し損ねる。読むのは写し、書くのは `setProfile` を通す。
+    private func binding<Value>(
+        _ context: String, _ keyPath: WritableKeyPath<ContextProfile, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { preferences.profile(for: context)[keyPath: keyPath] },
+            set: { newValue in
+                var profile = preferences.profile(for: context)
+                profile[keyPath: keyPath] = newValue
+                preferences.setProfile(profile, for: context)
+            })
+    }
+}
 
 private struct ConnectionSettings: View {
     @Environment(ClusterStore.self) private var store

@@ -11,6 +11,10 @@ struct RootView: View {
     @State private var dockInspectorWidth: CGFloat = 380
     /// エラーの元の文言を開いているか。既定は畳んでおく。
     @State private var showsErrorDetail = false
+    /// 確認待ちの操作と、開いているシート。**一覧・詳細パネル・メニューバーで 1 つ。**
+    /// 持ち主はアプリ（`KubeDeckApp`）—— コマンドはウインドウの外側にいるので、
+    /// ここで `@State` にするとメニューから手が届かない。
+    @Environment(ResourceActionHost.self) private var actions
 
     var body: some View {
         @Bindable var store = store
@@ -46,6 +50,19 @@ struct RootView: View {
                     .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
                 }
         }
+        // 操作を始める場所は 3 つ（一覧の右クリック・詳細パネルのボタン・
+        // メニューバー）だが、確認とシートを出すのはここ 1 か所だけ。
+        .resourceActionPresenter(actions)
+        // **隠れているあいだは自動更新を止める。** `scenePhase` では足りない
+        // —— 他のアプリを触っているだけで `.inactive` になるが、そのときも
+        // ロールアウトを横目で見ていることはふつうにある。止めたいのは
+        // 「しまった・完全に覆われた」ときだけなので、occlusion を見る。
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didChangeOcclusionStateNotification)
+        ) { _ in
+            store.isWindowVisible = NSApp.occlusionState.contains(.visible)
+        }
         .overlay(alignment: .bottom) { errorBar }
         // 知らせは帯より上に積む。両方が出るのは、成功の直後に自動更新が
         // 失敗したときぐらいだが、そのとき重なると読めない。
@@ -53,6 +70,75 @@ struct RootView: View {
         // **消える側に付けても効かない。** 出入りを animate させるには、
         // 残っているほう（この親）に置く必要がある。
         .animation(.easeOut(duration: 0.18), value: store.actionNotice)
+    }
+
+    /// 絞り込み欄へカーソルを移す。
+    ///
+    /// **ツールバーの項目から辿らない。** SwiftUI が載せた項目の `view` は
+    /// nil のことがある。窓の themeFrame（`contentView` の親）から下を素直に
+    /// 探すほうが、ツールバーに置いても本体に置いても見つかる。
+    ///
+    /// **見つからなくても何もしない。** 概要のように欄が無い画面でも呼ばれる。
+    private static func focusSearchField() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let root = window.contentView?.superview ?? window.contentView
+        else { return }
+
+        var stack = [root]
+        while let view = stack.popLast() {
+            if let field = view as? NSSearchField {
+                window.makeFirstResponder(field)
+                return
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+    }
+
+    /// どのクラスタを触っているかの帯。
+    ///
+    /// **色だけで言わない。** 名前を必ず書く（状態の 4 色と紛れないように、
+    /// 色は札の色として別に持つ）。読み取り専用もここに出す —— できないことを
+    /// 押してから知るのでは遅い。
+    ///
+    /// **印を付けていないコンテキストでは出さない。** 常に帯があると、
+    /// 目立たせたいところで目立たなくなる。
+    @ViewBuilder
+    private var contextBanner: some View {
+        let profile = store.contextProfile
+        if let color = Palette.color(for: profile.tint) {
+            HStack(spacing: 8) {
+                Image(systemName: profile.isReadOnly ? "lock.fill" : "circle.fill")
+                    .font(.system(size: profile.isReadOnly ? 10 : 7))
+                Text(store.contextDisplayName)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if profile.isReadOnly {
+                    Text("読み取り専用")
+                        .font(.caption)
+                        .opacity(0.9)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(color)
+        } else if profile.isReadOnly {
+            // 色を付けていなくても、読めるだけであることは言う。
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill").font(.system(size: 10))
+                Text("\(store.contextDisplayName) は読み取り専用")
+                    .font(.caption)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(Palette.subtleFill)
+        }
     }
 
     // MARK: - 本体
@@ -76,6 +162,15 @@ struct RootView: View {
     private var detailWithSearch: some View {
         ZStack {
             detailWithDock
+                // **どのクラスタを触っているのかを、常に画面に出す。** 削除も
+                // drain もできる道具になったので、prod と dev の見分けが
+                // ツールバーの小さな文字だけ、という状態のままにしない。
+                //
+                // **窓ぜんぶに差し込まない。** `NavigationSplitView` の外側に
+                // 付けると、帯がツールバーの下に潜り込んだうえ**サイドバーの
+                // 先頭の行（概要）を隠した**（実測）。詳細側だけに掛ければ、
+                // 左の列にも上のツールバーにも触らない。
+                .safeAreaInset(edge: .top, spacing: 0) { contextBanner }
             Color.clear
                 .allowsHitTesting(false)
                 .searchable(
@@ -83,6 +178,12 @@ struct RootView: View {
                     placement: .toolbar,
                     prompt: searchPrompt)
                 .disabled(store.selection == .overview)
+                // ⌘F で欄へ移る。**`searchFocused(_:)` は使えない** ——
+                // macOS 15 以降の API で、ここは 14 以降を対象にしている。
+                // 欄そのものを探して first responder にする。
+                .onChange(of: store.searchFocusRequests) { _, _ in
+                    Self.focusSearchField()
+                }
         }
     }
 
@@ -94,18 +195,41 @@ struct RootView: View {
     /// （`-[NSView _layoutSubtreeWithOldSize:]` → `_crashOnException:`）。
     /// 高さは自分で持ち、仕切りは自前のドラッグにする。
     private var detailWithDock: some View {
-        detail
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if store.logRequest != nil || showsBottomInspector {
-                    VStack(spacing: 0) {
-                        PanelResizeHandle(
-                            axis: .height, value: $dockHeight, range: 120...900,
-                            label: "下の帯の高さを変える")
-                        dockBody
+        // **上限を決め打ちにしない。** 窓より高い帯を掴めてしまうと、上の一覧が
+        // 潰れきったあとも掴んだ値だけが伸び続け、戻すときに動かない区間ができる。
+        //
+        // **ただし、測る場所を帯の内側に置かない。** `safeAreaInset` を付けた側で
+        // `GeometryReader` に訊くと、返るのは安全領域を除いた高さ——つまり
+        // **帯のぶんだけ縮んだ値**（実測: 外 960 / 内 680 / 帯 280）。これを上限の
+        // 元にすると、帯を広げるたびに上限が下がって掴んだ値を押し戻す、を毎
+        // フレーム繰り返して**掴んだところでグラグラする**。外側の
+        // `GeometryReader` は帯を動かしても変わらない。
+        GeometryReader { proxy in
+            let cap = Self.dockHeightCap(in: proxy.size.height)
+            detail
+                // `GeometryReader` は子を左上に寄せるので、伸びない中身
+                // （`ContentUnavailableView` など）が隅に張り付く。広がる枠に
+                // 入れて、包む前と同じく真ん中に置く。
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if store.logRequest != nil || showsBottomInspector {
+                        VStack(spacing: 0) {
+                            PanelResizeHandle(
+                                axis: .height, value: $dockHeight, range: 120...cap,
+                                label: "下の帯の高さを変える")
+                            dockBody
+                        }
+                        .frame(height: min(dockHeight, cap))
                     }
-                    .frame(height: dockHeight)
                 }
-            }
+        }
+    }
+
+    /// 帯を広げてよい上限。上の一覧が数行は残るところで止める。
+    /// まだ測れていないあいだ（0）は決め打ちに落とす。
+    private static func dockHeightCap(in containerHeight: CGFloat) -> CGFloat {
+        guard containerHeight > 0 else { return 900 }
+        return max(200, containerHeight - 160)
     }
 
     private var showsBottomInspector: Bool {
@@ -127,6 +251,10 @@ struct RootView: View {
     private var dockBody: some View {
         GeometryReader { proxy in
             let sharing = store.logRequest != nil && showsBottomInspector
+            // **見た目だけ止めない。** 掴める上限もここで決める。表示のときだけ
+            // 詰めると、掴んだ値は画面の外へ伸び続け、戻すとき伸ばしたぶんだけ
+            // 動かない区間ができる（掴んでいるのに反応しない、という壊れ方）。
+            let widthCap = max(240, proxy.size.width * 0.6)
             HStack(spacing: 0) {
                 if let request = store.logRequest {
                     LogPanel(request: request)
@@ -135,22 +263,17 @@ struct RootView: View {
                 if showsBottomInspector {
                     if sharing {
                         PanelResizeHandle(
-                            axis: .width, value: $dockInspectorWidth, range: 240...760,
+                            axis: .width, value: $dockInspectorWidth, range: 240...widthCap,
                             label: "詳細パネルの幅を変える")
                     }
                     DockedInspector(
                         moveToTrailing: { preferences.inspectorPlacement = .trailing },
                         close: { showsInspector = false })
-                        .frame(width: sharing ? inspectorWidth(in: proxy.size.width) : nil)
+                        .frame(width: sharing ? min(dockInspectorWidth, widthCap) : nil)
                         .frame(maxWidth: sharing ? nil : .infinity, maxHeight: .infinity)
                 }
             }
         }
-    }
-
-    /// 掴んだ幅を、いま使える幅に収める。ログ側が消えるところまで詰めさせない。
-    private func inspectorWidth(in available: CGFloat) -> CGFloat {
-        min(dockInspectorWidth, max(240, available * 0.6))
     }
 
     @ViewBuilder
@@ -477,6 +600,12 @@ private struct PanelResizeHandle: View {
     /// ドラッグ開始時の値。translation は開始点からの差分なので、
     /// 毎回の変化量として足すと動きが加速してしまう。
     @State private var start: CGFloat?
+    /// カーソルを積んだかどうか。**push と pop の数を必ず合わせる。**
+    @State private var pushedCursor = false
+    @State private var hovering = false
+    /// ドラッグ中か。`@GestureState` なので、取り消されても必ず false に戻る
+    /// （`onEnded` は取り消しでは呼ばれないので、`@State` では戻らない）。
+    @GestureState private var dragging = false
 
     private static let thickness: CGFloat = 7
 
@@ -494,23 +623,56 @@ private struct PanelResizeHandle: View {
             width: axis == .width ? Self.thickness : nil,
             height: axis == .height ? Self.thickness : nil)
         .onHover { inside in
-            if inside {
-                (axis == .height ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
-            } else {
-                NSCursor.pop()
-            }
+            hovering = inside
+            syncCursor()
         }
         .gesture(
-            DragGesture(minimumDistance: 1)
+            // **`.global` で測る。** 既定の `.local` はこの仕切り自身の座標系で、
+            // 仕切りは値を変えたぶんだけ動く。上へ 10pt 引けば帯が 10pt 高くなり、
+            // 仕切りも 10pt 上がるので、カーソルは自分の座標系では動いていない
+            // ことになる（translation が 0 に戻る）。値が base に引き戻され、
+            // すると仕切りが下がってまた差が出る、を繰り返して**掴んだところで
+            // 震える**。窓の座標系で測れば、仕切りが動いても差分は動かない。
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .updating($dragging) { _, state, _ in state = true }
                 .onChanged { drag in
-                    let base = start ?? value
+                    // 起点は「いま画面に出ている大きさ」に合わせる。窓を狭めたあとは
+                    // 表示だけが上限で止まっているので、覚えている値から動かすと
+                    // 画面の外から動き始め、最初のひと押しが効かない。
+                    // **覚えている値のほうは詰めない** — 起動直後に一過性の小さな
+                    // 大きさが来ることがあり（実測で 1 度だけ 168pt）、そこで詰めると
+                    // 誰も触っていないのに帯が縮んだままになる。
+                    let base = min(max(start ?? value, range.lowerBound), range.upperBound)
                     if start == nil { start = base }
                     // どちらも「引いた向きと逆に伸びる」縁に付くので符号は負。
                     let delta = axis == .height ? -drag.translation.height : -drag.translation.width
                     value = min(range.upperBound, max(range.lowerBound, base + delta))
                 }
                 .onEnded { _ in start = nil })
+        // 取り消しでは `onEnded` が来ないので、起点はこちらでも捨てる。
+        // 残すと、次に掴んだときに前回の値を基点にして飛ぶ。
+        .onChange(of: dragging) { _, isDragging in
+            if !isDragging { start = nil }
+            syncCursor(dragging: isDragging)
+        }
+        // 掴んだまま欄の外へ出ても、カーソルは仕切りのものを保つ。
+        // 消えるときは必ず戻す（戻さないと、押した形のまま画面ぜんぶに残る）。
+        .onDisappear {
+            hovering = false
+            syncCursor(dragging: false)
+        }
         .accessibilityLabel(Text(label))
+    }
+
+    private func syncCursor(dragging isDragging: Bool? = nil) {
+        let active = hovering || (isDragging ?? dragging)
+        guard active != pushedCursor else { return }
+        if active {
+            (axis == .height ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
+        } else {
+            NSCursor.pop()
+        }
+        pushedCursor = active
     }
 }
 

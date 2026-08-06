@@ -56,6 +56,24 @@ enum Palette {
         }
     }
 
+    /// コンテキストに付ける札の色。
+    ///
+    /// **状態の 4 色を流用しない。** あちらはクラスタが返してきた事実で、
+    /// こちらは人が付けた札。同じ赤でも意味が違うので、値も別に持つ
+    /// （帯は必ずコンテキスト名の文字と一緒に出す。色だけに意味を持たせない）。
+    static func color(for tint: ContextTint) -> Color? {
+        switch tint {
+        case .none: return nil
+        case .red: return Color(hex: 0xC0_39_39)
+        case .orange: return Color(hex: 0xD1_7A_1F)
+        case .yellow: return Color(hex: 0xC9_A2_0C)
+        case .green: return Color(hex: 0x2F_8F_46)
+        case .blue: return Color(hex: 0x2E_6F_D6)
+        case .purple: return Color(hex: 0x7B_4B_C4)
+        case .gray: return Color(hex: 0x6E_6E_73)
+        }
+    }
+
     /// 時系列の線に使う色。**状態の 4 色を流用しない。**
     /// 流用すると、ただの CPU の線が「異常」の意味を帯びてしまう。
     /// 系列 1（青）と系列 2（橙）を CPU / メモリに割り当てる。

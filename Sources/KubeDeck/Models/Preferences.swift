@@ -51,6 +51,7 @@ final class Preferences {
         static let refreshInterval = "refreshInterval"
         static let requestTimeoutSeconds = "requestTimeoutSeconds"
         static let kubectlPathOverride = "kubectlPathOverride"
+        static let contextProfiles = "contextProfiles"
 
         static let checksForUpdates = "checksForUpdates"
         static let downloadsUpdatesAutomatically = "downloadsUpdatesAutomatically"
@@ -252,6 +253,37 @@ final class Preferences {
         }
     }
 
+    // MARK: - コンテキストごとの覚え書き
+
+    /// コンテキスト名 → 色・別名・読み取り専用。
+    ///
+    /// **辞書ごと入れ替える。** 中身だけ書き換えても `didSet` は走らない
+    /// （値型の入れ子を直接触ると保存し損ねる）ので、更新は必ず
+    /// `setProfile(_:for:)` を通す。
+    var contextProfiles: ContextProfiles {
+        didSet {
+            store.set(
+                (try? JSONEncoder().encode(contextProfiles)) ?? Data(),
+                forKey: Key.contextProfiles)
+        }
+    }
+
+    func profile(for context: String) -> ContextProfile {
+        contextProfiles[context] ?? ContextProfile()
+    }
+
+    func setProfile(_ profile: ContextProfile, for context: String) {
+        var profiles = contextProfiles
+        // **既定のままのものを覚えない。** 覚えると、コンテキストを触るたびに
+        // 中身の無い項目が増えていく。
+        if profile.isEmpty {
+            profiles.removeValue(forKey: context)
+        } else {
+            profiles[context] = profile
+        }
+        contextProfiles = profiles
+    }
+
     // MARK: - 更新
 
     /// 新しい版が出ていないか自分で確認しにいくか。
@@ -333,6 +365,8 @@ final class Preferences {
         refreshInterval = store.object(forKey: Key.refreshInterval) as? TimeInterval ?? 10
         requestTimeoutSeconds = store.object(forKey: Key.requestTimeoutSeconds) as? Int ?? 20
         kubectlPathOverride = store.string(forKey: Key.kubectlPathOverride) ?? ""
+        contextProfiles = store.data(forKey: Key.contextProfiles)
+            .flatMap { try? JSONDecoder().decode(ContextProfiles.self, from: $0) } ?? [:]
 
         checksForUpdates = store.object(forKey: Key.checksForUpdates) as? Bool ?? true
         downloadsUpdatesAutomatically =
@@ -390,6 +424,7 @@ final class Preferences {
         refreshInterval = 10
         requestTimeoutSeconds = 20
         kubectlPathOverride = ""
+        contextProfiles = [:]
         checksForUpdates = true
         downloadsUpdatesAutomatically = false
         updateCheckIntervalHours = 24
