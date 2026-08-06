@@ -475,7 +475,244 @@ enum ResourceTable {
                     ResourceCell(text: "\($0.raw["count"]?.intValue ?? 1)", emphasis: .mono)
                 },
             ]
+
+        case .podDisruptionBudget:
+            return [
+                ResourceColumn(title: "最小/最大", width: .fixed(110)) {
+                    ResourceCell(text: budgetTarget($0), emphasis: .mono)
+                },
+                ResourceColumn(title: "対象", width: .flexible(min: 160)) {
+                    ResourceCell(text: policySelectorText($0), emphasis: .secondary)
+                },
+                // **これが 0 だと drain が止まる。** この一覧を足した理由そのもの
+                // なので、色を付けて先に見えるようにする。
+                ResourceColumn(title: "退避できる数", width: .fixed(110), trailing: true) {
+                    let allowed = $0.status?["disruptionsAllowed"]?.intValue
+                    return ResourceCell(
+                        text: allowed.map(String.init) ?? "—",
+                        emphasis: .mono,
+                        level: allowed == 0 ? .warning : nil)
+                },
+                ResourceColumn(title: "健全", width: .fixed(90), trailing: true) {
+                    let current = $0.status?["currentHealthy"]?.intValue ?? 0
+                    let desired = $0.status?["desiredHealthy"]?.intValue ?? 0
+                    return ResourceCell(
+                        text: "\(current)/\(desired)", emphasis: .mono,
+                        level: current < desired ? .serious : nil)
+                },
+            ]
+
+        case .endpointSlice:
+            return [
+                ResourceColumn(title: "Service", width: .flexible(min: 140)) {
+                    ResourceCell(
+                        text: $0.labels["kubernetes.io/service-name"] ?? "",
+                        emphasis: .secondary)
+                },
+                ResourceColumn(title: "種類", width: .fixed(80)) {
+                    ResourceCell(text: $0.raw["addressType"]?.stringValue ?? "")
+                },
+                // **0 を空欄にしない。** 「繋がっていない」ことがこの一覧の値打ち。
+                ResourceColumn(title: "宛先", width: .fixed(80), trailing: true) {
+                    let endpoints = $0.raw["endpoints"]?.arrayValue ?? []
+                    return ResourceCell(
+                        text: "\(endpoints.count)", emphasis: .mono,
+                        level: endpoints.isEmpty ? .warning : nil)
+                },
+                ResourceColumn(title: "準備できている", width: .fixed(120), trailing: true) {
+                    let ready = ($0.raw["endpoints"]?.arrayValue ?? []).filter {
+                        $0.path("conditions.ready")?.boolValue != false
+                    }
+                    return ResourceCell(text: "\(ready.count)", emphasis: .mono)
+                },
+            ]
+
+        case .resourceQuota:
+            return [
+                // **使用量と上限を並べる。** 片方だけでは、あとどれだけ作れるのか
+                // 分からない（それがこの一覧を見に来る理由）。
+                ResourceColumn(title: "使用 / 上限", width: .flexible(min: 260)) {
+                    ResourceCell(text: quotaSummary($0), emphasis: .mono)
+                },
+            ]
+
+        case .limitRange:
+            return [
+                ResourceColumn(title: "既定と範囲", width: .flexible(min: 300)) {
+                    ResourceCell(text: limitRangeSummary($0), emphasis: .mono)
+                },
+            ]
+
+        case .storageClass:
+            return [
+                // **既定かどうかを最初に出す。** PVC が Pending になる理由の
+                // 大半がこれ（既定が無い / 2 つある）。
+                ResourceColumn(title: "既定", width: .fixed(60)) {
+                    let isDefault = $0.annotations[
+                        "storageclass.kubernetes.io/is-default-class"] == "true"
+                    return ResourceCell(text: isDefault ? "既定" : "", level: isDefault ? .good : nil)
+                },
+                ResourceColumn(title: "プロビジョナ", width: .flexible(min: 200)) {
+                    ResourceCell(text: $0.raw["provisioner"]?.stringValue ?? "", emphasis: .secondary)
+                },
+                ResourceColumn(title: "回収", width: .fixed(100)) {
+                    ResourceCell(text: $0.raw["reclaimPolicy"]?.stringValue ?? "Delete")
+                },
+                ResourceColumn(title: "束縛", width: .fixed(140)) {
+                    ResourceCell(text: $0.raw["volumeBindingMode"]?.stringValue ?? "Immediate")
+                },
+                ResourceColumn(title: "拡張", width: .fixed(70)) {
+                    ResourceCell(
+                        text: $0.raw["allowVolumeExpansion"]?.boolValue == true ? "可" : "不可",
+                        emphasis: .secondary)
+                },
+            ]
+
+        case .priorityClass:
+            return [
+                ResourceColumn(title: "値", width: .fixed(110), trailing: true) {
+                    ResourceCell(text: "\($0.raw["value"]?.intValue ?? 0)", emphasis: .mono)
+                },
+                ResourceColumn(title: "既定", width: .fixed(60)) {
+                    let isDefault = $0.raw["globalDefault"]?.boolValue == true
+                    return ResourceCell(text: isDefault ? "既定" : "", level: isDefault ? .good : nil)
+                },
+                // **追い出す側かどうかを出す。** 同じ優先度でも、ここが
+                // `Never` なら他を蹴らない。
+                ResourceColumn(title: "横取り", width: .fixed(140)) {
+                    ResourceCell(
+                        text: $0.raw["preemptionPolicy"]?.stringValue ?? "PreemptLowerPriority",
+                        emphasis: .secondary)
+                },
+            ]
+
+        case .validatingWebhookConfiguration, .mutatingWebhookConfiguration:
+            return [
+                ResourceColumn(title: "webhook", width: .fixed(90), trailing: true) {
+                    ResourceCell(
+                        text: "\(($0.raw["webhooks"]?.arrayValue ?? []).count)", emphasis: .mono)
+                },
+                // **失敗したときにどうなるかを出す。** `Fail` なら、この webhook が
+                // 落ちているあいだ**対象の作成がすべて止まる**。
+                ResourceColumn(title: "失敗時", width: .fixed(100)) {
+                    let policies = Set(($0.raw["webhooks"]?.arrayValue ?? []).compactMap {
+                        $0["failurePolicy"]?.stringValue
+                    })
+                    let text = policies.sorted().joined(separator: ", ")
+                    return ResourceCell(
+                        text: text.isEmpty ? "Fail" : text,
+                        level: text.contains("Fail") || text.isEmpty ? .warning : nil)
+                },
+                ResourceColumn(title: "対象", width: .flexible(min: 200)) {
+                    ResourceCell(text: webhookTargets($0), emphasis: .secondary)
+                },
+            ]
+
+        case .apiService:
+            return [
+                // **これが False のグループは、種別ごと一覧から消える。**
+                // `discoveryHint` が見に行けと言っている当の値。
+                ResourceColumn(title: "利用可能", width: .fixed(100)) {
+                    let condition = ($0.status?["conditions"]?.arrayValue ?? []).first {
+                        $0["type"]?.stringValue == "Available"
+                    }
+                    let status = condition?["status"]?.stringValue ?? ""
+                    return ResourceCell(
+                        text: status.isEmpty ? "—" : status,
+                        level: status == "True" ? .good : (status.isEmpty ? nil : .critical))
+                },
+                ResourceColumn(title: "実体", width: .flexible(min: 200)) {
+                    guard let service = $0.spec?["service"] else {
+                        return ResourceCell(text: "ローカル（集約なし）", emphasis: .secondary)
+                    }
+                    let namespace = service["namespace"]?.stringValue ?? ""
+                    let name = service["name"]?.stringValue ?? ""
+                    return ResourceCell(text: "\(namespace)/\(name)", emphasis: .secondary)
+                },
+                ResourceColumn(title: "理由", width: .flexible(min: 160)) {
+                    let condition = ($0.status?["conditions"]?.arrayValue ?? []).first {
+                        $0["type"]?.stringValue == "Available"
+                    }
+                    return ResourceCell(
+                        text: condition?["reason"]?.stringValue ?? "", emphasis: .secondary)
+                },
+            ]
         }
+    }
+
+    // MARK: - 新しい種別のセル
+
+    /// PDB の最小/最大。**どちらか一方しか設定できない**ので、書いてあるほうを出す。
+    static func budgetTarget(_ budget: K8sObject) -> String {
+        if let min = budget.spec?["minAvailable"] {
+            return "min \(min.displayText)"
+        }
+        if let max = budget.spec?["maxUnavailable"] {
+            return "max \(max.displayText)"
+        }
+        return "—"
+    }
+
+    /// `spec.selector.matchLabels` を読む。**空を「すべて」と書かない** ——
+    /// PDB の空セレクタは NetworkPolicy と違って「すべての Pod」だが、
+    /// 省略（nil）なら何も選ばない。ここは実際の値をそのまま出す。
+    static func policySelectorText(_ object: K8sObject) -> String {
+        guard let selector = object.spec?["selector"] else { return "—" }
+        let labels = selector["matchLabels"]?.stringDictionary ?? [:]
+        if labels.isEmpty {
+            return selector.objectValue.isEmpty ? "すべての Pod" : "式で指定"
+        }
+        return labels.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    /// ResourceQuota の「使ったぶん / 上限」。
+    /// **上限だけを出さない。** あとどれだけ作れるのかが分からない。
+    static func quotaSummary(_ quota: K8sObject) -> String {
+        let hard = quota.status?["hard"]?.objectValue ?? quota.spec?["hard"]?.objectValue ?? [:]
+        let used = quota.status?["used"]?.objectValue ?? [:]
+        guard !hard.isEmpty else { return "—" }
+        return hard.keys.sorted().prefix(4).map { key in
+            "\(key) \(used[key]?.displayText ?? "0")/\(hard[key]?.displayText ?? "")"
+        }.joined(separator: "  ")
+            + (hard.count > 4 ? "  他 \(hard.count - 4)" : "")
+    }
+
+    /// LimitRange の中身。**種類（Container / Pod / PVC）まで書く** ——
+    /// 同じ数字でも掛かる相手が違う。
+    static func limitRangeSummary(_ range: K8sObject) -> String {
+        let limits = range.spec?["limits"]?.arrayValue ?? []
+        guard !limits.isEmpty else { return "—" }
+        return limits.prefix(3).map { limit in
+            let type = limit["type"]?.stringValue ?? "?"
+            let parts = [
+                ("既定", limit["default"]),
+                ("既定要求", limit["defaultRequest"]),
+                ("最小", limit["min"]),
+                ("最大", limit["max"]),
+            ].compactMap { label, value -> String? in
+                guard let value, !value.objectValue.isEmpty else { return nil }
+                let inner = value.objectValue.keys.sorted()
+                    .map { "\($0)=\(value[$0]?.displayText ?? "")" }
+                    .joined(separator: ",")
+                return "\(label) \(inner)"
+            }
+            return "\(type): " + (parts.isEmpty ? "—" : parts.joined(separator: " / "))
+        }.joined(separator: "  ")
+    }
+
+    /// webhook が捕まえる対象。
+    static func webhookTargets(_ configuration: K8sObject) -> String {
+        let rules = (configuration.raw["webhooks"]?.arrayValue ?? []).flatMap {
+            $0["rules"]?.arrayValue ?? []
+        }
+        let resources = rules.flatMap { $0["resources"]?.arrayValue ?? [] }
+            .compactMap { $0.stringValue }
+        guard !resources.isEmpty else { return "—" }
+        let unique = Array(Set(resources)).sorted()
+        return unique.prefix(4).joined(separator: ", ")
+            + (unique.count > 4 ? " 他 \(unique.count - 4)" : "")
     }
 
     // MARK: - 使用量の列

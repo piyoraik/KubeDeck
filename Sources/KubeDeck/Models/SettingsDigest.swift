@@ -57,7 +57,11 @@ enum SettingsDigest {
         case .persistentVolume: return volumeGroups(object)
         case .node: return nodeGroups(object)
         case .namespace: return namespaceGroups(object)
+        // **選べる項目が決まっていないものは、木に落とす。** 種別を足すたびに
+        // 空の設定タブが増えるより、`SpecOutline` で spec がそのまま見えるほうが
+        // まだ役に立つ（CRD と同じ扱い）。
         case .event, .none: return []
+        default: return []
         }
     }
 
