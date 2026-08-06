@@ -46,12 +46,18 @@ struct InspectorView: View {
             // **どれの話をしているかを言う。** 複数選んでいると一覧は何行も
             // 光っているのに、ここは 1 つぶんしか出ない。断りが無いと、
             // 選択と詳細が食い違っているように見える。
+            //
+            // **操作が何件に効くのかも書く。** 下のボタンは一覧の右クリックと
+            // 同じく選択している全部に効くので、「詳細はこの 1 件」だけだと
+            // 見えている 1 件にだけ効くと読める。
             if store.selectedObjectIDs.count > 1 {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
                         .font(.caption)
-                    Text("\(store.selectedObjectIDs.count) 件を選択中。詳細はこの 1 件です。")
+                    Text("\(store.selectedObjectIDs.count) 件を選択中。詳細はこの 1 件で、"
+                         + "操作は \(store.selectedObjectIDs.count) 件すべてに効きます。")
                         .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(.secondary)
@@ -114,20 +120,27 @@ struct InspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                // 開ける種別かの判定は `PodLogRequest` が持つ。ここと一覧の
-                // メニューで別々に書くと、片方からしか開けない種別ができる。
-                if PodLogRequest(object: object) != nil {
-                    Button {
-                        store.showLogs(for: object)
-                    } label: {
-                        Label("ログ", systemImage: "text.alignleft")
-                    }
-                    .controlSize(.small)
-                }
             }
+
+            // **操作をメニューの中だけに置かない。** 右クリックは「そこに何か
+            // ある」ことが画面に出ていないので、drain も cordon もレプリカ数も
+            // 知っている人にしか使えない操作になっていた。ここは対象の名前が
+            // すぐ上に出ている場所なので、何に効くのかを読んだまま押せる。
+            //
+            // **出す中身を自分で決めない。** 種別ごとの出し分けは
+            // `ResourceActionSet` が持ち、一覧の右クリックと同じものが並ぶ
+            // （ログもここに含まれる。ボタンを 2 か所に置かない）。
+            ResourceActionBar(objects: actionTargets(for: object), target: store.actionTarget)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
+    }
+
+    /// 操作の対象。**見えている選択と揃える。** 複数選んでいるときは一覧の
+    /// 右クリックと同じくその全部で、1 つ向けの操作（ログなど）は消える。
+    private func actionTargets(for object: K8sObject) -> [K8sObject] {
+        let selected = store.selectedObjects
+        return selected.count > 1 ? selected : [object]
     }
 }
 
@@ -736,6 +749,7 @@ private struct EventsPane: View {
 
 private struct YAMLPane: View {
     @Environment(ClusterStore.self) private var store
+    @Environment(ResourceActionHost.self) private var actions
     let object: K8sObject
 
     @State private var text: String?
@@ -769,6 +783,10 @@ private struct YAMLPane: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(text, forType: .string)
                         }
+                        // **ここにも置く。** 原文を読んでいて直したくなる場所が
+                        // ここなので、上のボタンの列まで目を戻させない。開くのは
+                        // 同じシート（`ResourceActionSet` の `edit-yaml` と 1 つ）。
+                        Button("編集…") { actions.editTarget = object }
                     }
                     .controlSize(.small)
                     .padding(10)
