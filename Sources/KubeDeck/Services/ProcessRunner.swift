@@ -66,18 +66,24 @@ enum ProcessRunner {
     private static let queue = DispatchQueue(
         label: "com.piyoraik.KubeDeck.process", attributes: .concurrent)
 
+    /// `input` を渡すと標準入力に流す（`kubectl replace -f -` 用）。
+    ///
+    /// **一時ファイルを経由しない。** 送るのは編集した YAML そのもので、
+    /// Secret ならその中身が入っている。ディスクに置くと、消し忘れれば残るし、
+    /// 消しても消えたことを確かめる手立てが無い。
     static func run(
         executable: String,
         arguments: [String],
         environment: [String: String],
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        input: Data? = nil
     ) async throws -> CommandResult {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     let result = try runSynchronously(
                         executable: executable, arguments: arguments,
-                        environment: environment, timeout: timeout)
+                        environment: environment, timeout: timeout, input: input)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -85,6 +91,14 @@ enum ProcessRunner {
             }
         }
     }
+
+    /// **標準入力に書くなら SIGPIPE を無視する。** 相手が読み切る前に終わると
+    /// （引数が悪くて kubectl がすぐ落ちたときなど）書き込み側に SIGPIPE が
+    /// 飛び、既定の動作は**プロセスの終了**——つまりアプリごと落ちる。無視して
+    /// おけば `write` が EPIPE を投げるだけになり、こちらで扱える。
+    private static let ignoreBrokenPipe: Void = {
+        signal(SIGPIPE, SIG_IGN)
+    }()
 
     /// 呼び出したスレッドを止めて待つ。`LoginShell` が同期の文脈から使う。
     /// **待ち上限を必ず渡すこと。** 相手はユーザの設定ファイルを読むシェルで、
@@ -108,8 +122,11 @@ enum ProcessRunner {
         executable: String,
         arguments: [String],
         environment: [String: String],
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        input: Data? = nil
     ) throws -> CommandResult {
+        _ = ignoreBrokenPipe
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -117,9 +134,10 @@ enum ProcessRunner {
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        let inputPipe = input.map { _ in Pipe() }
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        process.standardInput = FileHandle.nullDevice
+        process.standardInput = inputPipe ?? FileHandle.nullDevice
 
         try process.run()
 
@@ -133,6 +151,16 @@ enum ProcessRunner {
         }
         queue.async(group: group) {
             outputBox.data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+        }
+        if let input, let inputPipe {
+            // **書き込みも別の実行単位にする。** パイプのバッファ（64KB 程度）
+            // より大きい入力を呼び出し側のまま書くと、相手が読み始める前に
+            // 埋まってこちらが止まる。**閉じるまでが一組** — 閉じないと
+            // kubectl は標準入力の終わりを待ち続ける。
+            queue.async(group: group) {
+                try? inputPipe.fileHandleForWriting.write(contentsOf: input)
+                try? inputPipe.fileHandleForWriting.close()
+            }
         }
 
         var timedOut = false
