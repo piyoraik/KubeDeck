@@ -27,10 +27,16 @@ struct RootView: View {
                 .navigationTitle(title)
                 .navigationSubtitle(subtitle)
                 .toolbar { toolbar }
-                // 詳細パネルの出し入れを選択に連動させない。連動させると、
-                // 左で種別を選んだ瞬間にパネルが現れ、AppKit がその列を作るために
-                // ウインドウごと広げる（選ぶたびに窓の幅が変わる）。出す / 畳むは
-                // ツールバーのボタンだけが決める。
+                // 詳細パネルの表示を選択の**有無**に連動させない。連動させると、
+                // 左で種別を選んだ瞬間や自動更新の選び直しでもパネルが出入りし、
+                // AppKit がその列を作るためにウインドウごと広げる（選ぶたびに
+                // 窓の幅が変わる）。畳むのはツールバーのボタンだけが決める。
+                //
+                // **出す方向は、人が押したときだけ効かせる。** 畳んだまま行を
+                // 選ぶと詳細が見られない、という行き止まりになるので、
+                // `inspectorRevealRequests`（人が行やタイルを押した回数）を
+                // 見て出す。片方向なので ✕ が効かなくなることはない
+                // （次に押すまで畳んだまま）。邪魔なら設定で切れる。
                 //
                 // **下に置いているときも `.inspector` は外さない。** ここは
                 // `NSSplitView` そのもので、付け外しはビュー階層から split view が
@@ -49,6 +55,13 @@ struct RootView: View {
                     }
                     .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
                 }
+        }
+        // **人が選んだときだけ出す。** 数を見るので、同じものを選び直しても
+        // 押した回数として届く（`selectedObjectID` の変化を見ると、同じ行を
+        // 押し直したときに何も起きない）。**閉じる側には連動させない。**
+        .onChange(of: store.inspectorRevealRequests) { _, _ in
+            guard preferences.opensInspectorOnSelection else { return }
+            showsInspector = true
         }
         // 操作を始める場所は 3 つ（一覧の右クリック・詳細パネルのボタン・
         // メニューバー）だが、確認とシートを出すのはここ 1 か所だけ。

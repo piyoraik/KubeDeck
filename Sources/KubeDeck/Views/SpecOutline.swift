@@ -11,7 +11,11 @@ struct SpecOutline: View {
     let object: K8sObject
 
     var body: some View {
-        ScrollView {
+        // **1 描画で 2 度組み立てない。** 本文と空の判定がそれぞれ
+        // `sections` を読んでいた（読むたびに木を辿り直す計算プロパティ）。
+        let sections = self.sections
+
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(sections, id: \.key) { section in
                     OutlineNode(key: section.key, value: section.value, depth: 0)

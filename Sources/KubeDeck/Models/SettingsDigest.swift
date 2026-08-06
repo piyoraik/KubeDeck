@@ -785,9 +785,19 @@ enum SettingsDigest {
             ("nfs", "NFS"), ("csi", "CSI"),
         ]
         for (key, label) in known where volume[key] != nil {
-            let name = volume[key]?["name"]?.stringValue
-                ?? volume[key]?["claimName"]?.stringValue
-                ?? volume[key]?["path"]?.stringValue
+            // **名前を持つキーは種類ごとに違う。** `configMap` は `name` だが、
+            // `secret` は **`secretName`**、PVC は `claimName`、hostPath は `path`。
+            // `secretName` を落としていたので、Secret のボリュームだけ名前が
+            // 出ず「Secret」としか書けていなかった。
+            //
+            // **`WorkloadRelations.configReferences` と揃えること。** あちらは
+            // 正しく `secret.secretName` を見ており、同じ解決を 2 か所に持って
+            // 片方だけ間違えていた（いちばん避けたい形の食い違い）。
+            let source = volume[key]
+            let name = source?["name"]?.stringValue
+                ?? source?["secretName"]?.stringValue
+                ?? source?["claimName"]?.stringValue
+                ?? source?["path"]?.stringValue
             return name.map { "\(label)（\($0)）" } ?? label
         }
         return nil

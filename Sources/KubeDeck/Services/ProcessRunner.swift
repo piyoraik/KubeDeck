@@ -71,6 +71,14 @@ enum ProcessRunner {
     /// **一時ファイルを経由しない。** 送るのは編集した YAML そのもので、
     /// Secret ならその中身が入っている。ディスクに置くと、消し忘れれば残るし、
     /// 消しても消えたことを確かめる手立てが無い。
+    ///
+    /// **キャンセルされたら子プロセスも殺す。** `Task` を取り消しても
+    /// `Process` は勝手には止まらない。以前はここに手当てが無かったので、
+    /// コンテキストや種別を続けて切り替えると `loadTask?.cancel()` のあとも
+    /// 前の kubectl が最後まで走り、**1 本あたりスレッドを 3 本（待ち 1 +
+    /// 読み 2）掴んだまま積み上がっていた**（概要は 4 本同時に投げる）。
+    /// 結果は世代番号で捨てられるので、走らせ続ける意味がそもそも無い。
+    /// ログの追従が `ProcessHandle` で止められるのと同じ仕組みを、取得系にも通す。
     static func run(
         executable: String,
         arguments: [String],
@@ -78,17 +86,25 @@ enum ProcessRunner {
         timeout: TimeInterval? = nil,
         input: Data? = nil
     ) async throws -> CommandResult {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    let result = try runSynchronously(
-                        executable: executable, arguments: arguments,
-                        environment: environment, timeout: timeout, input: input)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        let handle = ProcessHandle()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        let result = try runSynchronously(
+                            executable: executable, arguments: arguments,
+                            environment: environment, timeout: timeout, input: input,
+                            handle: handle)
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            // 起動前に来ても取りこぼさない（`ProcessHandle.attach` が
+            // 「もう終わっている」ことを覚えていて、その場で殺す）。
+            handle.terminate()
         }
     }
 
@@ -118,12 +134,15 @@ enum ProcessRunner {
         var data = Data()
     }
 
+    /// - Parameter handle: 外から止められるようにするための取っ手。
+    ///   渡すと、起動した `Process` をここに預ける（`run` がキャンセル時に使う）。
     private static func runSynchronously(
         executable: String,
         arguments: [String],
         environment: [String: String],
         timeout: TimeInterval? = nil,
-        input: Data? = nil
+        input: Data? = nil,
+        handle: ProcessHandle? = nil
     ) throws -> CommandResult {
         _ = ignoreBrokenPipe
 
@@ -140,6 +159,9 @@ enum ProcessRunner {
         process.standardInput = inputPipe ?? FileHandle.nullDevice
 
         try process.run()
+        // **起動したらすぐ預ける。** ここより前にキャンセルが来ていた場合、
+        // `attach` がその場で殺す（取りこぼしを作らない）。
+        handle?.attach(process)
 
         // stdout と stderr は同時に読む。片方だけ読んでいると、もう片方の
         // パイプバッファが埋まった時点で kubectl が書き込みで止まる。

@@ -228,7 +228,8 @@ struct ClusterUsageCard: View {
         var parts: [String] = []
         if store.activeMetricsSource.isAvailable { parts.append(store.activeMetricsSource.label) }
         if store.prometheus != nil, !store.clusterHistory.cpu.isEmpty {
-            parts.append("推移 30 分")
+            // **「30 分」と直に書かない。** 範囲は設定で変えられる。
+            parts.append("推移 \(Preferences.shared.historyWindowLabel)")
         } else if store.activeMetricsSource.isAvailable {
             // **見せ方が変わる理由を黙らない。** 履歴が取れるクラスタでは
             // 折れ線、取れないクラスタでは割合の棒になる（同じことを描く図を

@@ -782,7 +782,9 @@ private struct TracePodTile: View {
         let status = StatusResolver.health(for: pod)
 
         Button {
-            store.selectedObjectID = pod.id
+            // 配置のタイルと同じ入口を通す（`selectedObjectID` を直に
+            // 書くと、操作の対象になる集合が空のまま取り残される）。
+            store.selectOnly(pod)
         } label: {
             HStack(spacing: 8) {
                 ResourceGlyph(symbol: ResourceKind.pod.symbol, size: 30, badge: status.level)

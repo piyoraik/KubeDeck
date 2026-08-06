@@ -591,7 +591,10 @@ private struct PodTile: View {
         let status = StatusResolver.health(for: pod)
 
         Button {
-            store.selectedObjectID = pod.id
+            // **`selectedObjectID` を直に書かない。** それだけだと
+            // `selectedObjectIDs`（操作の対象になる集合）が空のままで、
+            // 見えている選択と内部の選択がずれる。一覧の行と同じ入口を通す。
+            store.selectOnly(pod)
         } label: {
             tileBody(status)
             .frame(maxWidth: .infinity, alignment: .leading)

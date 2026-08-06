@@ -698,7 +698,10 @@ struct PendingAction: Identifiable {
             // まとめて消すときは 1 つでも Namespace が混ざっていたら打たせる。
             requiredPhrase: objects.contains { $0.kind == .namespace }
                 ? "\(objects.count) 件を削除" : nil,
-            action: { await $0.deleteSelected() })
+            // **捕まえたものをそのまま渡す。** 以前は `deleteSelected()` を
+            // 呼んでおり、上の文面に名前を並べた対象と、押した時点の選択が
+            // 食い違いうる状態だった（確認と実行は同じものを指すこと）。
+            action: { await $0.delete(objects) })
     }
 
     static func restart(_ object: K8sObject, kindName: String) -> PendingAction {
@@ -1098,6 +1101,14 @@ struct ScaleSheet: View {
     }
     @State private var autoscaler: Autoscaler = .checking
 
+    /// 上げ下げできる幅。
+    ///
+    /// **上限を決め打ちにしない。** 200 に固定していたので、それを超える
+    /// レプリカ数のワークロード（300 で動いているものなど）を開くと、
+    /// `Stepper` が範囲の外の値を扱うことになる。丸められたまま「適用」を
+    /// 押せば**意図しない縮小**になるので、いまの値より下の上限を出さない。
+    private var range: ClosedRange<Int> { 0...max(200, replicas) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("レプリカ数を変える")
@@ -1109,7 +1120,7 @@ struct ScaleSheet: View {
                 .truncationMode(.middle)
 
             HStack(spacing: 12) {
-                Stepper(value: $replicas, in: 0...200) {
+                Stepper(value: $replicas, in: range) {
                     Text("レプリカ数")
                 }
                 TextField("", value: $replicas, format: .number)

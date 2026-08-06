@@ -40,9 +40,24 @@ struct K8sObject: Identifiable, Sendable, Hashable {
         self.annotations = metadata["annotations"]?.stringDictionary ?? [:]
     }
 
+    /// **小数秒付きも読む。**
+    ///
+    /// `creationTimestamp` は `metav1.Time`（秒まで）だが、イベントの
+    /// `eventTime` は `metav1.MicroTime` で**必ず小数秒が付く**
+    /// （`2026-08-06T04:12:33.123456Z`）。`ISO8601DateFormatter` は
+    /// `.withFractionalSeconds` の有無で読める形が**排他**になるので、
+    /// 1 つでは両方を扱えない（実測。小数秒無しは付きの formatter で nil、
+    /// 小数秒付きは無しの formatter で nil）。
+    ///
+    /// 片方しか持っていなかったせいで `ResourceTable.lastSeen` の `eventTime` の
+    /// 段が常に nil を返し、**「`lastTimestamp` を持たないイベントの時刻を拾う」
+    /// という当の対処が 1 度も効いていなかった**（`creationTimestamp` に落ちて
+    /// いたので気付きにくい。並び順と「経過」列が最終発生ではなく作成時刻を指す）。
+    ///
+    /// 小数秒無しを先に試すのは、そちらが圧倒的に多いため。
     static func date(_ value: JSONValue?) -> Date? {
         guard let text = value?.stringValue else { return nil }
-        return isoFormatter.date(from: text)
+        return isoFormatter.date(from: text) ?? isoFractionalFormatter.date(from: text)
     }
 
     // 生成が安くないので使い回す。ISO8601DateFormatter は解析を並行に
@@ -50,6 +65,13 @@ struct K8sObject: Identifiable, Sendable, Hashable {
     private nonisolated(unsafe) static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    /// `metav1.MicroTime`（`eventTime` など）用。
+    private nonisolated(unsafe) static let isoFractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
 

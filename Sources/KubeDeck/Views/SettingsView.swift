@@ -95,10 +95,13 @@ private struct GeneralSettings: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                Toggle(
+                    "畳んでいるとき、行を選んだら出す",
+                    isOn: $preferences.opensInspectorOnSelection)
             } header: {
                 Text("詳細パネル")
             } footer: {
-                Text("選んだ行の詳細・設定・イベント・YAML を出す欄です。列の多い一覧を見るときは下、縦に長い一覧を見るときは右のほうが読めます。下に置いたときはログと同じ帯に横並びで入り（上下に積むとどちらも数行しか残らないため）、仕切りを掴めば高さと幅を変えられます。出す／畳むはツールバーの「詳細」で、置き場所もその ▾ から選べます。")
+                Text("選んだ行の詳細・設定・イベント・YAML を出す欄です。列の多い一覧を見るときは下、縦に長い一覧を見るときは右のほうが読めます。下に置いたときはログと同じ帯に横並びで入り（上下に積むとどちらも数行しか残らないため）、仕切りを掴めば高さと幅を変えられます。出す／畳むはツールバーの「詳細」で、置き場所もその ▾ から選べます。行を選んだときに出るのは畳んでいるときだけで、勝手に畳むことはありません（列を広く見たいときは切ってください）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -143,7 +146,12 @@ private struct GeneralSettings: View {
             Button("戻す", role: .destructive) { preferences.resetAll() }
             Button("やめる", role: .cancel) {}
         } message: {
-            Text("接続先のコンテキストや Namespace の選択は残ります。")
+            // **残るものを正確に書く。** 以前は `contextProfiles` も消して
+            // いたのに「コンテキストは残ります」と書いており、読み取り専用の
+            // 指定が黙って外れていた。いまは消さないので、そう書ける。
+            Text("接続先のコンテキストや Namespace の選択は残ります。"
+                 + "コンテキストごとの色・別名・読み取り専用の指定も残ります"
+                 + "（消すときは「コンテキスト」タブから）。")
         }
     }
 }
@@ -252,8 +260,10 @@ private struct MetricsSettings: View {
 
             Section {
                 Picker("範囲", selection: $preferences.historyWindowMinutes) {
+                    // 書式は 1 か所（`Preferences.windowLabel`）。概要のカードと
+                    // 詳細パネルの見出しも同じものを読む。
                     ForEach([15, 30, 60, 180], id: \.self) { minutes in
-                        Text(minutes < 60 ? "\(minutes) 分" : "\(minutes / 60) 時間").tag(minutes)
+                        Text(Preferences.windowLabel(minutes: minutes)).tag(minutes)
                     }
                 }
                 Picker("取り直す間隔", selection: $preferences.historyRefreshSeconds) {
@@ -390,6 +400,7 @@ private struct MetricsSettings: View {
 private struct ContextSettings: View {
     @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
+    @State private var confirmsClear = false
 
     var body: some View {
         Form {
@@ -427,8 +438,35 @@ private struct ContextSettings: View {
                     }
                 }
             }
+
+            // **消す口はここにしか置かない。** 「すべて既定値に戻す」に
+            // 混ぜていたので、一般タブのボタンで読み取り専用が黙って外れていた。
+            Section {
+                Button("コンテキストの札をすべて消す", role: .destructive) {
+                    confirmsClear = true
+                }
+                .disabled(preferences.contextProfiles.isEmpty)
+            } footer: {
+                Text("色・別名・読み取り専用の指定をまとめて消します。"
+                     + "他の設定は「一般」タブの「すべて既定値に戻す」で戻せますが、"
+                     + "そちらではこの札は消えません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+        .confirmationDialog(
+            "コンテキストの札をすべて消しますか？",
+            isPresented: $confirmsClear
+        ) {
+            Button("消す", role: .destructive) { preferences.clearContextProfiles() }
+            Button("やめる", role: .cancel) {}
+        } message: {
+            // **何が外れるのかを名指しする。** 読み取り専用はこのアプリで
+            // 唯一「壊せなくする」仕組みなので、消える前に言う。
+            Text("読み取り専用の指定も外れます。"
+                 + "以後、それらのクラスタでも削除や drain が押せるようになります。")
+        }
     }
 
     private func row(for context: String) -> some View {

@@ -176,7 +176,8 @@ private struct SummaryPane: View {
 
                 if let endpoint = store.prometheus,
                    object.kind == .pod || object.kind == .node {
-                    InfoSection(title: "推移（30 分）") {
+                    // **範囲を決め打ちで書かない。** 設定で 15〜180 分から選べる。
+                    InfoSection(title: "推移（\(Preferences.shared.historyWindowLabel)）") {
                         MetricsHistoryRow(
                             title: "CPU", series: store.selectedHistory.cpu,
                             tint: Palette.seriesCPU,
@@ -318,16 +319,6 @@ private struct SummaryPane: View {
             ratio: Quantity.ratio(used, of: request),
             note: "上限 未設定（ノードの空きまで使えます）",
             noteLevel: .warning)
-    }
-
-    private var denominator: ResourceUsage {
-        switch object.kind {
-        case .node: return object.nodeAllocatable
-        // limits より requests を分母にする。limits は未設定のことが多く、
-        // 設定されていても「上限まで使ってよい」意味ではないため。
-        case .pod: return object.containerResourceTotal("requests")
-        default: return ResourceUsage()
-        }
     }
 
     private var containerUsage: [String: ResourceUsage]? {
@@ -612,9 +603,18 @@ private struct EventsPane: View {
         .task { await load() }
     }
 
+    /// **読めているものを、あとの失敗で消さない。** 以前は `failure` を先に
+    /// 見ていたので、引き直しに失敗した瞬間にそれまで読めていた行ごと画面から
+    /// 消えた（「前の結果を消さない」と書いてあるのに、表示側で消していた）。
+    /// 行はそのまま出し、引き直せなかったことは上の帯で断る。
     @ViewBuilder
     private var content: some View {
-        if let failure {
+        if let events, !events.isEmpty {
+            VStack(spacing: 0) {
+                if let failure { staleNotice(failure) }
+                list(events)
+            }
+        } else if let failure {
             // **「ありません」と言わない。** 引けなかっただけで、
             // 無いことは確かめていない。
             ContentUnavailableView {
@@ -622,16 +622,31 @@ private struct EventsPane: View {
             } description: {
                 Text(failure).textSelection(.enabled)
             }
-        } else if let events {
-            if events.isEmpty {
-                emptyState
-            } else {
-                list(events)
-            }
+        } else if events != nil {
+            emptyState
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// 出ている行が古いことの断り。**消さずに添える。**
+    private func staleNotice(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label("引き直せませんでした。下は前回読めたものです。",
+                  systemImage: StatusLevel.warning.symbol)
+                .font(.caption)
+                .foregroundStyle(Palette.textColor(for: .warning))
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Palette.color(for: .warning).opacity(0.10))
     }
 
     /// **黙って「ありません」で終えない。** イベントには寿命があり（既定で
@@ -893,7 +908,12 @@ private struct ListSummaryPane: View {
     let target: ResourceTarget
 
     var body: some View {
-        ScrollView {
+        // **1 描画で 2 度数えない。** `tally` は計算プロパティで、以前は
+        // `buckets` と `reasons` がそれぞれ読んでいたため、全件を 2 回
+        // 舐めていた（`filteredObjects` や `currentColumns` で避けたのと同じ話）。
+        let tally = self.tally
+
+        return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
 

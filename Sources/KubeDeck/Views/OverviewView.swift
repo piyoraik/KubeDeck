@@ -97,7 +97,8 @@ struct OverviewView: View {
     /// 使用量カードと同じ作りにする。見出しをカードの外に置くと、
     /// 同じ画面に「枠の中に題がある箱」と「外にある箱」が混ざって落ち着かない。
     private var events: some View {
-        let recent = Array(store.overview.recentEvents.prefix(8))
+        let loaded = store.overview.recentEvents
+        let recent = Array((loaded ?? []).prefix(8))
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
@@ -115,13 +116,24 @@ struct OverviewView: View {
 
             Divider()
 
-            if recent.isEmpty {
-                Text("イベントはありません。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
+            if loaded == nil {
+                // **「ありません」と言わない。** 引けなかっただけで、
+                // 何か起きたかどうかは確かめていない（詳細パネルの
+                // `EventsPane` と同じ言い分け）。
+                emptyNote(
+                    "イベントを取得できませんでした。",
+                    detail: "この Namespace のイベントを読む権限が無いか、"
+                        + "クラスタから応答がありませんでした。"
+                        + "何も起きていないという意味ではありません。",
+                    level: .warning)
+            } else if recent.isEmpty {
+                // **0 件も黙って終えない。** イベントには寿命があり
+                // （既定で 1 時間）、古い出来事は本当に消える。
+                emptyNote(
+                    "イベントはありません。",
+                    detail: "イベントはしばらく（クラスタの既定で 1 時間）で消えます。"
+                        + "それより前の出来事はクラスタに残っていません。",
+                    level: nil)
             } else {
                 ForEach(Array(recent.enumerated()), id: \.element.id) { index, event in
                     if index > 0 { Divider().padding(.leading, 16) }
@@ -135,6 +147,25 @@ struct OverviewView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(Palette.cardStroke, lineWidth: 1))
         .shadow(color: Palette.cardShadow, radius: 6, y: 2)
+    }
+
+    /// 行が無いときの断り。**「取れていない」と「0 件」で書き分ける。**
+    private func emptyNote(
+        _ text: String, detail: String, level: StatusLevel?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(text, systemImage: level?.symbol ?? "bell.slash")
+                .font(.callout)
+                .foregroundStyle(
+                    level.map { Palette.textColor(for: $0) } ?? Color.secondary)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
     }
 
     private func eventRow(_ event: K8sObject) -> some View {

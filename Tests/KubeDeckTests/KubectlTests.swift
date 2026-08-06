@@ -30,6 +30,49 @@ struct KubectlTests {
         #expect(Set(denied) == [.secret, .deployment, .ingress])
     }
 
+    /// **要求する名前にグループが付いている種別こそ落としやすい。**
+    ///
+    /// `deniedKinds` は stderr 側だけグループを落として、要求側は
+    /// `networkpolicies.networking.k8s.io` のままフルで突き合わせていた。
+    /// そのため `.networkPolicy` や `.roleBinding` は拒まれても拒否の一覧に
+    /// 入らず、**サイドバーに「0 件」と出ていた**（「拒まれた」を「無い」に
+    /// する、このアプリでいちばん避けたい間違い）。
+    ///
+    /// 上のテストが `secrets` / `deployments` / `ingresses`（要求側もグループ
+    /// 無し）だけを使っていたので、この穴を通り抜けていた。
+    @Test("要求側にグループが付いている種別も拾う")
+    func deniedKindsWithGroupedResourceName() {
+        let stderr = """
+            Error from server (Forbidden): networkpolicies.networking.k8s.io is forbidden: \
+            User "u" cannot list resource "networkpolicies" in API group "networking.k8s.io"
+            Error from server (Forbidden): rolebindings.rbac.authorization.k8s.io is forbidden: \
+            User "u" cannot list resource "rolebindings" in API group "rbac.authorization.k8s.io"
+            """
+        let denied = Kubectl.deniedKinds(
+            in: stderr,
+            among: [.pod, .networkPolicy, .roleBinding, .clusterRoleBinding, .role])
+
+        // ClusterRoleBinding と Role は別の複数形なので巻き込まない。
+        #expect(Set(denied) == [.networkPolicy, .roleBinding])
+    }
+
+    /// サイドバーが数える種別で、実際に踏んだ組み合わせ。
+    @Test("拒まれた NetworkPolicy を 0 件として数えない")
+    func deniedNetworkPolicyIsNotCountedAsZero() {
+        let stderr = """
+            Error from server (Forbidden): networkpolicies.networking.k8s.io is forbidden: \
+            User "u" cannot list resource "networkpolicies" in API group "networking.k8s.io"
+            """
+        let listed = Kubectl.PartialList(
+            objects: [],
+            denied: Kubectl.deniedKinds(in: stderr, among: [.pod, .networkPolicy]),
+            unknown: [])
+
+        // `uncounted` に入っていれば、呼び出し側は `counts` を nil のままにする
+        // （「まだ分からない」を保つ）。
+        #expect(listed.uncounted.contains(.networkPolicy))
+    }
+
     /// **要求していない種別を拾わない。** 拒まれた一覧は「この呼び出しで
     /// 数えられなかったもの」なので、要求していないものが混ざると
     /// 断り書きが嘘になる。

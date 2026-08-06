@@ -140,6 +140,120 @@ struct SafetyTests {
         #expect(Palette.color(for: ContextTint.red) != nil)
         #expect(Palette.color(for: ContextTint.red) != Palette.color(for: StatusLevel.critical))
     }
+
+    /// **読み取り専用を、他の設定の巻き添えで外さない。**
+    ///
+    /// `resetAll()` に `contextProfiles = [:]` が入っていたので、一般タブの
+    /// 「すべて既定値に戻す」で**読み取り専用の指定が黙って消えていた**
+    /// （確認の文面は「接続先のコンテキスト…は残ります」で、消えることに
+    /// 触れていなかった）。あれは見た目の設定ではなく、このアプリで唯一
+    /// 「壊せなくする」仕組み。
+    @Test("「すべて既定値に戻す」でコンテキストの札は消えない")
+    func resetAllKeepsContextProfiles() {
+        let preferences = Preferences.shared
+        let savedProfiles = preferences.contextProfiles
+        let savedDensity = preferences.rowDensity
+        defer {
+            preferences.contextProfiles = savedProfiles
+            preferences.rowDensity = savedDensity
+        }
+
+        preferences.contextProfiles = ["prod": ContextProfile(tint: .red, isReadOnly: true)]
+        preferences.rowDensity = .compact
+        preferences.resetAll()
+
+        // 他の設定は戻る。
+        #expect(preferences.rowDensity == .standard)
+        // 札は残る。とくに読み取り専用。
+        #expect(preferences.profile(for: "prod").isReadOnly)
+        #expect(preferences.profile(for: "prod").tint == .red)
+    }
+
+    /// 消す口は別に用意してある（設定の「コンテキスト」タブ）。
+    @Test("札だけを明示的に消せる")
+    func clearContextProfiles() {
+        let preferences = Preferences.shared
+        let saved = preferences.contextProfiles
+        defer { preferences.contextProfiles = saved }
+
+        preferences.contextProfiles = ["prod": ContextProfile(isReadOnly: true)]
+        preferences.clearContextProfiles()
+
+        #expect(preferences.contextProfiles.isEmpty)
+        #expect(!preferences.profile(for: "prod").isReadOnly)
+    }
+
+    // MARK: - 確認に出したものと、実際に消えるもの
+
+    /// **確認の文面と実行の対象を食い違わせない。**
+    ///
+    /// 以前 `deleteMany` は捕まえた配列を使わず `store.deleteSelected()` を
+    /// 呼んでおり、**名前を並べた対象と、押した時点の選択が別物になりうる**
+    /// 状態だった（右クリックで選択が動く経路がある）。
+    @Test("まとめて削除の確認には、対象の名前が並ぶ")
+    func bulkDeleteNamesTheTargets() {
+        let objects = [Fixture.pod(name: "web-a"), Fixture.pod(name: "web-b")]
+        let action = PendingAction.deleteMany(objects, kindName: "Pod")
+
+        #expect(action.message.contains("web-a"))
+        #expect(action.message.contains("web-b"))
+        #expect(action.title.contains("2 件"))
+    }
+}
+
+/// 状態の内訳の言い分け。
+///
+/// **リングの色と見出しの文字を食い違わせない。**
+@Suite("状態の内訳")
+struct StatusTallySummaryTests {
+
+    /// 以前は critical と serious しか数えていなかったので、ロールアウト中
+    /// （`.warning`）で橙のセグメントが出ているのに「すべて正常」と書いていた。
+    @Test("処理中のものを「正常」に数えない")
+    func inProgressIsNotHealthy() {
+        // Ready 1/3 の Deployment は `.warning`（困ってはいないが途中）。
+        let rolling = Fixture.object("""
+            {"kind":"Deployment","metadata":{"name":"web","namespace":"d","uid":"1"},
+             "spec":{"replicas":3},"status":{"readyReplicas":1}}
+            """)
+        let tally = StatusTally.make(from: [rolling])
+
+        #expect(tally.unhealthy == 0)
+        #expect(tally.inProgress == 1)
+    }
+
+    @Test("困っているものと途中のものを分けて数える")
+    func separatesTroubleFromProgress() {
+        let down = Fixture.object("""
+            {"kind":"Deployment","metadata":{"name":"a","namespace":"d","uid":"1"},
+             "spec":{"replicas":2},"status":{"readyReplicas":0}}
+            """)
+        let rolling = Fixture.object("""
+            {"kind":"Deployment","metadata":{"name":"b","namespace":"d","uid":"2"},
+             "spec":{"replicas":2},"status":{"readyReplicas":1}}
+            """)
+        let fine = Fixture.object("""
+            {"kind":"Deployment","metadata":{"name":"c","namespace":"d","uid":"3"},
+             "spec":{"replicas":2},"status":{"readyReplicas":2}}
+            """)
+        let tally = StatusTally.make(from: [down, rolling, fine])
+
+        #expect(tally.unhealthy == 1)
+        #expect(tally.inProgress == 1)
+        #expect(tally.healthy == 1)
+    }
+
+    @Test("どちらも無ければ正常")
+    func allHealthy() {
+        let fine = Fixture.object("""
+            {"kind":"Deployment","metadata":{"name":"c","namespace":"d","uid":"3"},
+             "spec":{"replicas":2},"status":{"readyReplicas":2}}
+            """)
+        let tally = StatusTally.make(from: [fine])
+
+        #expect(tally.unhealthy == 0)
+        #expect(tally.inProgress == 0)
+    }
 }
 
 /// ターミナルに渡す使い捨てのファイル。

@@ -23,6 +23,7 @@ final class Preferences {
         static let showsSidebarCounts = "showsSidebarCounts"
         static let rowDensity = "rowDensity"
         static let inspectorPlacement = "inspectorPlacement"
+        static let opensInspectorOnSelection = "opensInspectorOnSelection"
         static let hiddenKinds = "hiddenKinds"
         static let showsCustomResources = "showsCustomResources"
         static let hidesEmptyKinds = "hidesEmptyKinds"
@@ -82,6 +83,15 @@ final class Preferences {
     /// 上下に積むと 2 本の仕切りができ、どちらも本文が数行しか残らない。
     var inspectorPlacement: InspectorPlacement = .trailing {
         didSet { store.set(inspectorPlacement.rawValue, forKey: Key.inspectorPlacement) }
+    }
+
+    /// 畳んでいるとき、行やタイルを押したら詳細パネルを出すか。
+    ///
+    /// **出す方向にしか効かない。** 畳むのはツールバーのボタンだけで、
+    /// 選択が無くなっても勝手には閉じない（`RootView`）。列を広く見たくて
+    /// 畳んでいる人には、押すたびに出てくるのは邪魔なので切れるようにしてある。
+    var opensInspectorOnSelection: Bool {
+        didSet { store.set(opensInspectorOnSelection, forKey: Key.opensInspectorOnSelection) }
     }
 
     /// サイドバーに出さない種別。
@@ -183,6 +193,17 @@ final class Preferences {
         didSet { store.set(historyWindowMinutes, forKey: Key.historyWindowMinutes) }
     }
 
+    /// 範囲を人が読む形にしたもの（`30 分` / `3 時間`）。
+    ///
+    /// **画面に「30 分」と直に書かない。** 範囲は設定で 15〜180 分から選べるのに、
+    /// 概要のカードと詳細パネルの見出しが 30 分固定になっており、変えても
+    /// ラベルだけ嘘のままだった。書式を 1 か所に持って、設定画面の選択肢とも揃える。
+    var historyWindowLabel: String { Self.windowLabel(minutes: historyWindowMinutes) }
+
+    static func windowLabel(minutes: Int) -> String {
+        minutes < 60 ? "\(minutes) 分" : "\(minutes / 60) 時間"
+    }
+
     /// 推移を取り直す間隔（秒）。範囲クエリは 1 回につき kubectl を 1 本起こすので、
     /// 一覧の更新間隔とは別に持つ。
     var historyRefreshSeconds: Int {
@@ -272,6 +293,15 @@ final class Preferences {
         contextProfiles[context] ?? ContextProfile()
     }
 
+    /// コンテキストの札をすべて消す。
+    ///
+    /// **`resetAll()` から切り離してある。** 読み取り専用が外れるのは
+    /// 取り返しの付く話ではないので、それだけを名指しで消せる口を別に置く
+    /// （押す場所も「コンテキスト」タブに限る）。
+    func clearContextProfiles() {
+        contextProfiles = [:]
+    }
+
     func setProfile(_ profile: ContextProfile, for context: String) {
         var profiles = contextProfiles
         // **既定のままのものを覚えない。** 覚えると、コンテキストを触るたびに
@@ -325,6 +355,8 @@ final class Preferences {
         inspectorPlacement =
             InspectorPlacement(rawValue: store.string(forKey: Key.inspectorPlacement) ?? "")
             ?? .trailing
+        opensInspectorOnSelection =
+            store.object(forKey: Key.opensInspectorOnSelection) as? Bool ?? true
         hiddenKinds = Set(store.stringArray(forKey: Key.hiddenKinds) ?? [])
         showsCustomResources = store.object(forKey: Key.showsCustomResources) as? Bool ?? true
         hidesEmptyKinds = store.object(forKey: Key.hidesEmptyKinds) as? Bool ?? false
@@ -395,11 +427,19 @@ final class Preferences {
     }
 
     /// すべて既定値に戻す。
+    ///
+    /// **`contextProfiles` は消さない。** ここに含めていたので、一般タブの
+    /// ボタン 1 つで**読み取り専用の指定が黙って外れていた**（確認の文面も
+    /// 「接続先のコンテキスト…は残ります」で、消えることに触れていなかった）。
+    /// あれは「見た目や既定値の設定」ではなく**そのクラスタに付けた札**で、
+    /// このアプリで唯一「壊せなくする」仕組み。巻き添えにしてよいものではない。
+    /// 消したいときは設定の「コンテキスト」から明示的に消す（`clearContextProfiles`）。
     func resetAll() {
         startupScreen = .lastViewed
         showsSidebarCounts = true
         rowDensity = .standard
         inspectorPlacement = .trailing
+        opensInspectorOnSelection = true
         hiddenKinds = []
         showsCustomResources = true
         hidesEmptyKinds = false
@@ -424,7 +464,6 @@ final class Preferences {
         refreshInterval = 10
         requestTimeoutSeconds = 20
         kubectlPathOverride = ""
-        contextProfiles = [:]
         checksForUpdates = true
         downloadsUpdatesAutomatically = false
         updateCheckIntervalHours = 24

@@ -179,10 +179,14 @@ struct ResourceListView: View {
         .contextMenu {
             // **選んでいないものを右クリックしたら、まずそれを選ぶ。**
             // 選択と操作対象が食い違うと、見えている選択とは別のものが消える。
+            //
+            // **ただし詳細パネルは出さない**（`reveal: false`）。これは
+            // 「まず選ぶ」ための選択で、詳細を見に来たわけではない。出すと
+            // メニューが開いている最中にウインドウが広がる。
             menu(for: object)
                 .onAppear {
                     if !store.selectedObjectIDs.contains(object.id) {
-                        store.selectOnly(object)
+                        store.selectOnly(object, reveal: false)
                     }
                 }
         }
@@ -242,17 +246,22 @@ struct ResourceListView: View {
     /// **操作の中身をここに書かない。** 同じものを詳細パネルのボタンでも出すので、
     /// 種別ごとの出し分けは `ResourceActionSet` の 1 か所が持つ。ここに残すのは
     /// 一覧の中の移動（「詳細を見る」）だけ。
+    ///
+    /// **対象を `selectedObjects` から直に読まない。** メニューの中身は下の
+    /// `.onAppear`（選び直し）より**先に**評価されるので、3 件選んだ状態で
+    /// 未選択の行を右クリックすると「3 件を削除」のメニューが出ていた。
+    /// `contextMenuTargets` は選択の書き換えを待たずに対象を決めるので、
+    /// 出る文面と実際に効く相手が必ず一致する。
     @ViewBuilder
     private func menu(for object: K8sObject) -> some View {
-        let selected = store.selectedObjects
+        let targets = store.contextMenuTargets(for: object)
         // **複数選んでいるときは、1 つ向けの操作を出さない。** 「ログを見る」が
         // どれのログなのか決まらないし、選択と操作対象が食い違う。
-        if selected.count <= 1 {
+        if targets.count <= 1 {
             Button("詳細を見る") { store.selectOnly(object) }
             Divider()
         }
-        ResourceActionMenu(
-            objects: selected.count > 1 ? selected : [object], target: target)
+        ResourceActionMenu(objects: targets, target: target)
     }
 
     // MARK: - 空

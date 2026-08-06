@@ -42,6 +42,17 @@ struct StatusTally: Sendable, Hashable {
             .reduce(0) { $0 + $1.count }
     }
 
+    /// 落ち着くのを待っているものの件数（ロールアウト中、`Pending`、
+    /// `Running (未 Ready)` など）。
+    ///
+    /// **`unhealthy` に混ぜない。** あちらは「困っている」で、こちらは
+    /// 「途中」。ただし**「すべて正常」とも言わない** — リングには橙の
+    /// セグメントが出ているのに見出しが「すべて正常」だと、しるしと文字が
+    /// 食い違う（概要の見出しで同じ間違いを踏んでいる）。
+    var inProgress: Int {
+        buckets.first { $0.level == .warning }?.count ?? 0
+    }
+
     static func make(from objects: [K8sObject]) -> StatusTally {
         var perLevel: [StatusLevel: Int] = [:]
         var perReason: [String: (StatusLevel, Int)] = [:]
@@ -73,12 +84,30 @@ struct StatusTally: Sendable, Hashable {
 }
 
 struct OverviewSnapshot: Sendable {
+    /// 概要として**集計まで済んでいるか**。リングと使用量が出せるかの判定。
+    ///
+    /// **件数の有無で代用しない。** `counts` は一覧を見ているあいだにも
+    /// サイドバーのために埋まる（`refreshSidebarCounts`）ので、そちらを印に
+    /// すると「サイドバーの数字がある」を「概要を読んだ」と取り違える。
+    /// 一覧から概要へ移ったとき、まだ何も数えていないのに 0 の並んだリングが
+    /// 出ていたのはこれ（読み込み中の表示が出なかった）。
+    ///
+    /// 印を `ClusterStore` 側に別の変数として持たない。**snapshot を捨てれば
+    /// 一緒に落ちる**ようにしておかないと、コンテキストを切り替えたときのように
+    /// 片方だけ消す経路が残る（実際そうなっていた）。
+    var isTallied = false
     var serverVersion: String = ""
     var counts: [ResourceKind: Int] = [:]
     var pods = StatusTally()
     var workloads = StatusTally()
     var nodes = StatusTally()
-    var recentEvents: [K8sObject] = []
+    /// 直近のイベント。**nil は「引けなかった」。**
+    ///
+    /// 空配列（本当に 1 件も無い）と分ける。以前は失敗を `[]` に潰していたので、
+    /// イベントを読む権限が無いクラスタで概要が「イベントはありません。」と
+    /// 断定していた（詳細パネルの `EventsPane` は 3 つを分けているのに、
+    /// 概要だけが混ぜていた）。ここも「無い」と「取れていない」を混ぜない話。
+    var recentEvents: [K8sObject]?
     /// 全ノードの割り当て可能量の合計。使用率の分母。
     var allocatable = ResourceUsage()
     /// 権限が無くて読めなかった種別。
@@ -93,4 +122,15 @@ struct OverviewSnapshot: Sendable {
     var unknownKinds: [ResourceKind] = []
 
     func count(_ kind: ResourceKind) -> Int { counts[kind] ?? 0 }
+
+    /// 集計だけを捨てる。**件数は残す** — あちらの持ち場はサイドバーで、
+    /// 概要を読み直しているあいだに数字が消える理由が無い。
+    mutating func discardTallies() {
+        isTallied = false
+        pods = StatusTally()
+        workloads = StatusTally()
+        nodes = StatusTally()
+        recentEvents = nil
+        allocatable = ResourceUsage()
+    }
 }

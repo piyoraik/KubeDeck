@@ -26,13 +26,16 @@ struct SectionColumns: Layout {
     /// **無限の幅で数を割らない。** SwiftUI は「いちばん広いとき / 狭いとき」を
     /// 訊くために `.infinity` を提案してくる（`ScrollView` の中で実際に来る）。
     /// `Int(.infinity)` は Swift では**トラップして落ちる**ので、有限でないときは
-    /// 1 段ぶんの幅で答える。**`replacingUnspecifiedDimensions()` は nil しか
-    /// 埋めない** — 無限はそのまま通る。
+    /// 1 段ぶんの幅で答える。
+    ///
+    /// **`replacingUnspecifiedDimensions()` で埋めない。** あれが nil を埋める
+    /// 既定値は `minimumColumnWidth` ではなく **10**。有限なのでそのまま通り、
+    /// 幅 10pt で全節を測ることになっていた（無限のほうだけ守れていた）。
+    /// nil も無限も「幅が決まっていない」なので、同じく 1 段ぶんで答える。
     func sizeThatFits(
         proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
     ) -> CGSize {
-        let proposed = proposal.replacingUnspecifiedDimensions().width
-        let width = proposed.isFinite ? proposed : minimumColumnWidth
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minimumColumnWidth
         let solved = solve(width: width, subviews: subviews)
         return CGSize(width: width, height: solved.height)
     }

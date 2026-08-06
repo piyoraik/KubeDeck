@@ -65,12 +65,20 @@ struct StatusRing: View {
                     .joined(separator: "、")))
     }
 
+    /// **リングの色と文字を食い違わせない。** 以前は critical と serious しか
+    /// 数えていなかったので、ロールアウト中（`.warning`）で橙のセグメントが
+    /// 出ているのに「すべて正常」と書いていた。「困っている」と「途中」を
+    /// 分けたうえで、どちらも無いときだけ正常と言う。
     @ViewBuilder
     private var summary: some View {
         if tally.unhealthy > 0 {
             Label("\(tally.unhealthy) 件に問題", systemImage: StatusLevel.critical.symbol)
                 .font(.caption)
                 .foregroundStyle(Palette.textColor(for: .critical))
+        } else if tally.inProgress > 0 {
+            Label("\(tally.inProgress) 件が処理中", systemImage: StatusLevel.warning.symbol)
+                .font(.caption)
+                .foregroundStyle(Palette.textColor(for: .warning))
         } else {
             Label("すべて正常", systemImage: StatusLevel.good.symbol)
                 .font(.caption)

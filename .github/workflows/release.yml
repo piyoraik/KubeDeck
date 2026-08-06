@@ -58,6 +58,27 @@ jobs:
       - name: xcodegen を入れる
         run: brew install xcodegen
 
+      # **焼く前に確かめる。** タグを打った時点で配布物になるので、
+      # 「壊れたまま タグを打たないための番」（build.yml）と同じ関門を
+      # ここにも置く。push イベントでは build.yml が走らないことがある。
+      - name: 確かめる
+        run: |
+          xcodegen generate
+          mkdir -p build
+          set +e
+          xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData-test \
+            > build/xcodebuild-test.log 2>&1
+          STATUS=$?
+          set -e
+          grep -E "^✘|Expectation failed|error:" build/xcodebuild-test.log | head -40 || true
+          if [[ $STATUS -ne 0 ]]; then
+            tail -60 build/xcodebuild-test.log
+            exit $STATUS
+          fi
+          grep -E "Test run with" build/xcodebuild-test.log || true
+
       - name: 焼く
         env:
           # 秘密鍵。手元の login キーチェーンから
@@ -77,7 +98,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: build/xcodebuild-*.log
+          path: build/xcodebuild*.log
           if-no-files-found: ignore
 
       - name: リリースを作る

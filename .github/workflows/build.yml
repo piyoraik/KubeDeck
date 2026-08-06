@@ -21,9 +21,33 @@ jobs:
       - name: xcodegen を入れる
         run: brew install xcodegen
 
-      - name: 建てる
+      # **テストをゲートに繋ぐ。** 以前はここが建てるだけで、テストは
+      # 1 度も走っていなかった。`Tests/KubeDeckTests` が押さえているのは
+      # 「壊れても気付きにくいところ」（kubectl の stderr の書式、単位の換算、
+      # 状態の判定、読み取り専用の穴）で、走らせなければ意味を成さない。
+      # **建てるより先に置く。** 論理の回帰は Release ビルドを待たずに落とす。
+      - name: 確かめる
         run: |
           xcodegen generate
+          mkdir -p build
+          # **出力を head に通さない。** パイプを早く閉じると xcodebuild が
+          # 居残り、次のビルドが XCBuildData の database is locked で落ちる。
+          set +e
+          xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            > build/xcodebuild-test.log 2>&1
+          STATUS=$?
+          set -e
+          grep -E "^✘|Expectation failed|error:" build/xcodebuild-test.log | head -40 || true
+          if [[ $STATUS -ne 0 ]]; then
+            tail -60 build/xcodebuild-test.log
+            exit $STATUS
+          fi
+          grep -E "Test run with" build/xcodebuild-test.log || true
+
+      - name: 建てる
+        run: |
           mkdir -p build
           # **出力を head に通さない。** パイプを早く閉じると xcodebuild が居残る。
           set +e
@@ -49,4 +73,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: build/xcodebuild.log
+          path: build/xcodebuild*.log

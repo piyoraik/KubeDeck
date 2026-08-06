@@ -747,6 +747,23 @@ actor Kubectl {
         }
     }
 
+    /// 種別名から API グループを落とした複数形。
+    ///
+    /// **突き合わせる前に、両側を同じ形にする。** kubectl は文言によって
+    /// グループを付けたり付けなかったりするが、こちらが要求する名前は
+    /// `roles.rbac.authorization.k8s.io` のようにグループ付きで固定してある
+    /// （短い名前は別グループと衝突するため）。**片側だけ切ると、グループ付きの
+    /// 種別が 1 つも一致しなくなる。** 実際 `deniedKinds` がそうなっており、
+    /// NetworkPolicy や RoleBinding が権限で拒まれても拒否の一覧に入らず、
+    /// **サイドバーに「0 件」と出ていた**（「拒まれた」を「無い」にする、
+    /// このアプリでいちばん避けたい間違い）。
+    ///
+    /// 突き合わせるのは**要求した種別の中だけ**なので、グループを落としても
+    /// 別の種別を巻き込まない（`ResourceKind` の複数形はすべて相異なる）。
+    private static func plural(of resourceName: String) -> String {
+        resourceName.split(separator: ".").first.map(String.init) ?? resourceName
+    }
+
     /// stderr から、権限で拒まれた種別を拾う。
     ///
     /// kubectl は `<resource> is forbidden: ...` という形で resource 名（複数形）を
@@ -767,9 +784,10 @@ actor Kubectl {
         var denied = Set<String>()
         for match in stderr.matches(of: /(\S+?) is forbidden/) {
             // `pods.metrics.k8s.io` のようにグループが付くことがある。
-            denied.insert(String(match.1).split(separator: ".").first.map(String.init) ?? "")
+            denied.insert(plural(of: String(match.1)))
         }
-        return kinds.filter { denied.contains($0.resourceName) }
+        // **要求した側もグループを落としてから比べる**（`plural` の説明を参照）。
+        return kinds.filter { denied.contains(plural(of: $0.resourceName)) }
     }
 
     /// stderr から、サーバが知らないと言われた種別を拾う。
@@ -793,9 +811,7 @@ actor Kubectl {
         }
         // **要求した種別に当たったものだけ。** 当てはまらない失敗を
         // 「サーバが知らない」ことにしない。
-        return kinds.filter { kind in
-            missing.contains(kind.resourceName.split(separator: ".").first.map(String.init) ?? "")
-        }
+        return kinds.filter { missing.contains(plural(of: $0.resourceName)) }
     }
 
     /// クラスタに入っている CRD の種別。

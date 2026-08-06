@@ -101,11 +101,10 @@ final class ClusterStore {
         placementControllers = []
         placementWorkloads = []
         placementRelated = []
-        // **`loadedOverviewCounts` も捨てる。** ここが残っていると
-        // `hasOverviewData` が真のままで、概要は 0 の並んだカードを出す
-        // （「まだ数えていない」が「0 件」に化ける）。
+        // **概要の集計も捨てる。** 残っていると `hasOverviewData` が真のままで、
+        // 概要は前の Namespace の数字を出したまま読み直すことになる
+        // （「古い」ではなく「別物」）。
         overview = OverviewSnapshot()
-        loadedOverviewCounts = [:]
         deniedKinds = []
         unknownKinds = []
         clearSelection()
@@ -126,6 +125,13 @@ final class ClusterStore {
             // 別の種別を開いたのに前の Pod のログが下に残ると、
             // どれを見ているのか分からなくなる。
             logRequest = nil
+            // **概要を開き直すときも、一覧と同じく前の中身を捨てる。**
+            // 一覧は `objects` を捨てるので読み込み中の表示になるのに、概要だけは
+            // 前に開いたときの集計が残り、読み直しているあいだ**古い数字を
+            // 「いまの状態」として**出していた（更新中だと画面に出ていない）。
+            // **件数は捨てない** — サイドバーの持ち場で、こちらの読み直しとは
+            // 関係が無い（`discardTallies`）。
+            if case .overview = selection { overview.discardTallies() }
             guard !isBootstrapping else { return }
             reload()
         }
@@ -287,9 +293,6 @@ final class ClusterStore {
         didSet { Preferences.shared.refreshInterval = refreshInterval }
     }
 
-    /// 概要を読めた印。件数を「未取得」と「0 件」で区別するために持つ。
-    private var loadedOverviewCounts: [ResourceKind: Int] = [:]
-
     /// 起動時の復元中は、プロパティの didSet から連鎖する再読み込みを止める。
     /// 止めないと `currentContext` の didSet が `selectedNamespace` を nil に
     /// 落とし、その didSet が保存値を上書きするので、前回の Namespace が
@@ -428,10 +431,30 @@ final class ClusterStore {
         filteredObjects.filter { selectedObjectIDs.contains($0.id) }
     }
 
-    func selectOnly(_ object: K8sObject) {
+    /// 畳んでいる詳細パネルを出してほしい、という合図。
+    ///
+    /// **`selectedObjectID != nil` から導かない。** 導くと、種別を移った直後の
+    /// 選び直しや自動更新でもパネルが出入りすることになり、`.inspector` は
+    /// 現れるたびにウインドウを広げるので、選ぶたびに窓の幅が変わる。ここは
+    /// 「人が行やタイルを押した」ことだけを数えて渡し、**出す方向にしか
+    /// 効かせない**（畳むのは今までどおりツールバーのボタンだけが決める）。
+    private(set) var inspectorRevealRequests = 0
+
+    /// 人が選んだ。**プログラムの選び直しからは呼ばない。**
+    private func requestInspectorReveal() {
+        guard selectedObjectID != nil else { return }
+        inspectorRevealRequests += 1
+    }
+
+    /// - Parameter reveal: 畳んでいる詳細パネルを出すか。既定は出す。
+    ///   **例外は右クリックの選び直しだけ** —— あれは「まず選ぶ」ための
+    ///   選択で、詳細を見に来たわけではない（メニューが開いている最中に
+    ///   ウインドウが広がることになる）。
+    func selectOnly(_ object: K8sObject, reveal: Bool = true) {
         selectedObjectIDs = [object.id]
         selectionAnchorID = object.id
         selectedObjectID = object.id
+        if reveal { requestInspectorReveal() }
     }
 
     /// ⌘ クリック。入っていれば外し、無ければ足す。
@@ -450,6 +473,8 @@ final class ClusterStore {
             selectedObjectID = object.id
         }
         selectionAnchorID = selectedObjectID
+        // 主役を外して空になったときは出さない（映すものが無い）。
+        requestInspectorReveal()
     }
 
     /// shift クリック。起点からそこまでをまとめて選ぶ。
@@ -466,6 +491,7 @@ final class ClusterStore {
         selectedObjectIDs = Set(rows[range].map(\.id))
         // 起点は動かさない。動かすと次の shift クリックで範囲がずれる。
         selectedObjectID = object.id
+        requestInspectorReveal()
     }
 
     func clearSelection() {
@@ -539,8 +565,9 @@ final class ClusterStore {
         return index
     }
 
-    /// 概要を一度でも読めたか。読めていない件数を 0 と偽らないための判定。
-    var hasOverviewData: Bool { !loadedOverviewCounts.isEmpty }
+    /// 概要をいまのクラスタ・Namespace で読めているか。
+    /// 読めていない件数を 0 と偽らないための判定。
+    var hasOverviewData: Bool { overview.isTallied }
 
     /// クラスタ全体の重み。舵輪の色になる。
     /// 概要で数えた Pod / ワークロード / ノードのうち、いちばん重いものを採る。
@@ -601,6 +628,14 @@ final class ClusterStore {
         isBootstrapping = true
         defer { isBootstrapping = false }
 
+        // **最初の `reload()` を待たずに読み込み中にする。** ここから下は
+        // コンテキストの一覧・CRD・Namespace 一覧と、遅いクラスタなら数秒かかる
+        // 問い合わせが続く。そのあいだ `isLoading` が偽のままだと、画面は
+        // 「まだ何も引いていない」を**取得の結果として**出す —— 概要は
+        // 対象なしのリングと「イベントを取得できませんでした」、一覧は「0 件」。
+        // 実測（Connect Gateway 越しの GKE）で、起動から数秒はこの姿だった。
+        isLoading = true
+
         do {
             let listed = try await kubectl.contexts()
             contexts = listed.all
@@ -646,6 +681,9 @@ final class ClusterStore {
             await refreshClusterInfo(includingFacts: false).value
         } catch {
             setupErrorMessage = error.localizedDescription
+            // 起こす先が無いので `reload()` は走らない。ここで下ろさないと
+            // 副題が「読み込み中…」のまま留まる。
+            isLoading = false
         }
         startTicker()
     }
@@ -684,7 +722,13 @@ final class ClusterStore {
     // MARK: - 読み込み
 
     func reload(showsSpinner: Bool = true) {
-        guard !currentContext.isEmpty else { return }
+        // 起こす先が無いなら読み込み中でもない。**黙って return しない** ——
+        // `bootstrap()` が先に立てた印がそのまま残り、いつまでも
+        // 「読み込み中…」の画面になる（コンテキストが 1 つも無いとき）。
+        guard !currentContext.isEmpty else {
+            isLoading = false
+            return
+        }
         generation += 1
         let token = generation
         let context = currentContext
@@ -703,7 +747,6 @@ final class ClusterStore {
                         kubectl: self.kubectl, context: context, namespace: namespace)
                     guard token == self.generation else { return }
                     self.overview = snapshot
-                    self.loadedOverviewCounts = snapshot.counts
                     self.serverVersion = snapshot.serverVersion
                 case .placement:
                     // Pod・ノード・所有者を 1 回の kubectl でまとめて取る。
@@ -811,11 +854,18 @@ final class ClusterStore {
         // **0 台と書かない** — 数えられなかっただけなので、件数ごと落とす。
         let readNodes = try? await nodes
         let nodeObjects = readNodes ?? []
-        // イベントとバージョンは取れなくても概要は出せるので、失敗を握りつぶす。
-        let eventObjects = (try? await events) ?? []
+        // イベントとバージョンは取れなくても概要は出せるので、画面全体は
+        // 失敗にしない。**ただしイベントは `[]` に潰さない** — 引けなかったのに
+        // 「イベントはありません。」と書くのは、確かめていないことの断定になる
+        // （nil のまま渡し、画面が言い分ける）。
+        let eventObjects = try? await events
         let serverVersion = (try? await version) ?? "不明"
 
         var snapshot = OverviewSnapshot()
+        // ここまで来たものだけが「概要を読めた」。**サイドバーの件数を数える
+        // 経路（`refreshSidebarCounts`）で立てない** — あれは件数だけで、
+        // リングも使用量の分母も持っていない。
+        snapshot.isTallied = true
         snapshot.serverVersion = serverVersion
 
         var counts: [ResourceKind: Int] = [:]
@@ -915,7 +965,8 @@ final class ClusterStore {
 
         // Prometheus の探索は Service を全部見て順に叩くので時間がかかる。
         // 保存してある場所があればそれを先に確かめ、駄目なときだけ探し直す。
-        if let saved = Defaults.prometheus,
+        // **覚えるのはコンテキストごと**（別のクラスタの場所を持ち越さない）。
+        if let saved = Defaults.prometheus(for: context),
            await PrometheusClient.shared.probe(saved, context: context) {
             guard token == contextGeneration else { return }
             prometheus = saved
@@ -924,14 +975,14 @@ final class ClusterStore {
                 context: context, namespace: selectedNamespace)
             guard token == contextGeneration else { return }
             prometheus = found
-            Defaults.prometheus = found
+            Defaults.setPrometheus(found, for: context)
         }
         await refreshMetrics()
     }
 
     /// 設定画面から取得元を探し直す。
     func rediscoverMetricsSources() async {
-        Defaults.prometheus = nil
+        Defaults.setPrometheus(nil, for: currentContext)
         prometheus = nil
         metricsServerAvailable = nil
         await detectMetricsSources()
@@ -944,7 +995,7 @@ final class ClusterStore {
             return false
         }
         prometheus = endpoint
-        Defaults.prometheus = endpoint
+        Defaults.setPrometheus(endpoint, for: currentContext)
         await refreshMetrics()
         return true
     }
@@ -1088,10 +1139,12 @@ final class ClusterStore {
             guard let kind = object.kind else { continue }
             counts[kind, default: 0] += 1
         }
+        // **`isTallied` は立てない。** ここで分かるのは件数だけで、リングの
+        // 内訳も使用量の分母（allocatable）も無い。立てると、一覧から概要へ
+        // 移ったときに読み込み中ではなく 0 の並んだリングが出る。
         overview.counts = counts
         overview.deniedKinds = listed.denied
         overview.unknownKinds = listed.unknown
-        loadedOverviewCounts = counts
     }
 
     /// まとめて数える種別。Node も含めるので、概要の別取得とは別に持つ。
@@ -1271,8 +1324,18 @@ final class ClusterStore {
 
     /// 選んでいるものをまとめて消す。
     func deleteSelected() async {
+        await delete(selectedObjects)
+    }
+
+    /// 渡されたものをまとめて消す。
+    ///
+    /// **確認に出したものを、そのまま消す。** 以前は確認の側が
+    /// `deleteSelected()` を呼んでおり、**文面に名前を並べた対象と、押した
+    /// 時点の `selectedObjects` が食い違いうる**状態だった（右クリックで選択が
+    /// 動く経路がある）。捕まえた配列をそのまま持ち回れば、確認に出した
+    /// ものと消えるものが必ず一致する。
+    func delete(_ objects: [K8sObject]) async {
         guard let resource = currentResourceName else { return }
-        let objects = selectedObjects
         guard !objects.isEmpty else { return }
         if objects.count == 1 {
             await delete(objects[0])
@@ -1282,6 +1345,19 @@ final class ClusterStore {
             try await self.kubectl.delete(
                 resource: resource, objects: objects, context: self.currentContext)
         }
+    }
+
+    /// 右クリックの操作対象。
+    ///
+    /// **選択の書き換えを待たずに決める。** 一覧は `.onAppear` で選び直して
+    /// いるが、メニューの中身はそれより**先に**評価される。以前は
+    /// `selectedObjects` を直に読んでいたので、3 件選んだ状態で未選択の行を
+    /// 右クリックすると「3 件を削除」のメニューが出た。ここで純粋に決めれば、
+    /// いつ選択が動いても対象はぶれない（選び直しは見た目を合わせるだけになる）。
+    func contextMenuTargets(for object: K8sObject) -> [K8sObject] {
+        let selected = selectedObjects
+        return selected.count > 1 && selectedObjectIDs.contains(object.id)
+            ? selected : [object]
     }
 
     func scale(_ object: K8sObject, to replicas: Int) async {
@@ -1603,14 +1679,37 @@ private enum Defaults {
     }
 
     /// 見つけた Prometheus。探索が重いので覚えておく。
-    static var prometheus: PrometheusEndpoint? {
-        get {
-            guard let data = store.data(forKey: "prometheusEndpoint") else { return nil }
-            return try? JSONDecoder().decode(PrometheusEndpoint.self, from: data)
-        }
-        set {
-            store.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "prometheusEndpoint")
-        }
+    ///
+    /// **コンテキストごとに持つ。** 1 つのキーに 1 つだけ入れていたので、
+    /// A → B と切り替えるたびに B の結果（見つからなければ nil）で上書きされ、
+    /// A に戻るとまた全 Service を順に叩く探索からやり直しになっていた。
+    /// 覚えている意味が半分無くなっていた形。
+    ///
+    /// 保存キーを変えてあるので、古い 1 つぶんの値は読まれずに残る。**移行しない**
+    /// —— これはただのキャッシュで、次の探索で入り直る（`probe` で必ず確かめる
+    /// ので、古い値を信じて誤った先に繋ぐこともない）。
+    static func prometheus(for context: String) -> PrometheusEndpoint? {
+        prometheusByContext[context]
     }
 
+    static func setPrometheus(_ endpoint: PrometheusEndpoint?, for context: String) {
+        guard !context.isEmpty else { return }
+        var all = prometheusByContext
+        // 見つからなかったことを覚えない（次に開いたときは探し直す）。
+        if let endpoint { all[context] = endpoint } else { all.removeValue(forKey: context) }
+        prometheusByContext = all
+    }
+
+    private static var prometheusByContext: [String: PrometheusEndpoint] {
+        get {
+            guard let data = store.data(forKey: "prometheusEndpoints") else { return [:] }
+            return (try? JSONDecoder().decode(
+                [String: PrometheusEndpoint].self, from: data)) ?? [:]
+        }
+        set {
+            store.set(
+                (try? JSONEncoder().encode(newValue)) ?? Data(),
+                forKey: "prometheusEndpoints")
+        }
+    }
 }
