@@ -81,8 +81,34 @@ final class ClusterStore {
             guard selectedNamespace != oldValue else { return }
             Defaults.namespace = selectedNamespace
             guard !isBootstrapping else { return }
+            // **前の Namespace の中身を出したまま読み直さない。** 行も件数も
+            // 別の Namespace のものなので、これは「古い」ではなく「別物」。
+            // 残すと切り替えたのに前の一覧が出たままになり、いつ入れ替わったのか
+            // 分からない（新しいほうが件数が少なければ、消えるまでは多く見える）。
+            // 捨てておけば `isLoading` と合わさって読み込み中の表示になる。
+            discardLoadedResources()
             reload()
         }
+    }
+
+    /// 画面に出ている取得済みの中身を捨て、読み込み中の表示に戻す。
+    ///
+    /// **選択も一緒に捨てる** — 一覧から消えたものを選んだままにすると、
+    /// 見えていないものが「まとめて削除」の対象になる（種別を移るときと同じ話）。
+    private func discardLoadedResources() {
+        objects = []
+        placementNodes = []
+        placementControllers = []
+        placementWorkloads = []
+        placementRelated = []
+        // **`loadedOverviewCounts` も捨てる。** ここが残っていると
+        // `hasOverviewData` が真のままで、概要は 0 の並んだカードを出す
+        // （「まだ数えていない」が「0 件」に化ける）。
+        overview = OverviewSnapshot()
+        loadedOverviewCounts = [:]
+        deniedKinds = []
+        unknownKinds = []
+        clearSelection()
     }
 
     var selection: Selection = .overview {
@@ -295,6 +321,18 @@ final class ClusterStore {
     /// 組み込み種別のときだけ返す。種別ごとの特別扱いの判定に使う。
     var currentKind: ResourceKind? { currentTarget?.builtIn }
 
+    /// 操作と絞り込みの相手。
+    ///
+    /// **配置画面を蚊帳の外にしない。** あそこは一覧ではないので
+    /// `currentTarget` は nil だが、並べて選べるのは Pod なので、`objects` に
+    /// 入っているものの種別は決まっている。ここが nil のままだと、選んだ Pod の
+    /// ログも削除も YAML も**配置画面からだけ黙って効かない**（`ResourceActionSet`
+    /// は種別名が決まらないときは操作を出さないので、押せないほうに倒れる）。
+    /// 絞り込みが以前からこの既定で動いているので、同じ判断に揃える。
+    var actionTarget: ResourceTarget? {
+        currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
+    }
+
     /// Namespace 列を出すのは「すべて」を見ているときだけ。
     var showsNamespaceColumn: Bool { selectedNamespace == nil }
 
@@ -308,8 +346,7 @@ final class ClusterStore {
 
     private func updateFilteredObjects() {
         // 配置画面も Pod を並べているので、一覧と同じ絞り込みに載せる。
-        let target = currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
-        guard let target else {
+        guard let target = actionTarget else {
             filteredObjects = []
             return
         }
@@ -568,6 +605,9 @@ final class ClusterStore {
             let listed = try await kubectl.contexts()
             contexts = listed.all
             setupErrorMessage = nil
+            // ターミナルに渡すときに要る。ここで 1 度引けば、以後は覚えている
+            // （場所を変えたら `applyToKubectl` が解決結果ごと捨てる）。
+            await refreshKubectlPath()
 
             // 前回のコンテキストを復元する。消えていたら kubeconfig の現在値に落とす。
             let restored = Defaults.context
@@ -610,6 +650,24 @@ final class ClusterStore {
         startTicker()
     }
 
+    /// 窓が見えているか。**見えていないあいだは自動更新を止める。**
+    ///
+    /// 止めないと、しまってあるノート PC でも 10 秒ごとに kubectl が
+    /// 何本も立ち上がり続ける（一覧・メトリクス・履歴で 4〜8 本）。電池と
+    /// API サーバの両方を無駄に食う。
+    ///
+    /// **「非アクティブ」で止めない。** 他のアプリを触っているあいだも、
+    /// ロールアウトを横目で見ていることはふつうにある。止めるのは
+    /// **隠れている**とき（しまった・完全に覆われた）だけ。
+    var isWindowVisible = true {
+        didSet {
+            guard isWindowVisible, !oldValue else { return }
+            // **戻ってきたら 1 回引く。** 止めているあいだに進んだぶんを
+            // 次の周期まで古いまま出すと、見えている数字が事実とずれる。
+            if autoRefresh, !isLoading { reload(showsSpinner: false) }
+        }
+    }
+
     private func startTicker() {
         tickerTask?.cancel()
         tickerTask = Task { [weak self] in
@@ -617,7 +675,7 @@ final class ClusterStore {
                 let interval = self?.refreshInterval ?? 10
                 try? await Task.sleep(for: .seconds(interval))
                 guard let self, !Task.isCancelled else { return }
-                guard self.autoRefresh, !self.isLoading else { continue }
+                guard self.autoRefresh, self.isWindowVisible, !self.isLoading else { continue }
                 self.reload(showsSpinner: false)
             }
         }
@@ -1078,7 +1136,56 @@ final class ClusterStore {
 
     /// 操作に使う種別名。オブジェクトからではなく、いま開いている一覧から取る。
     /// CRD は組み込みの enum に無く、オブジェクト側からは引けない。
-    private var currentResourceName: String? { currentTarget?.resourceName }
+    private var currentResourceName: String? { actionTarget?.resourceName }
+
+    // MARK: - どのクラスタを触っているか
+
+    /// いまのコンテキストの覚え書き（色・別名・読み取り専用）。
+    var contextProfile: ContextProfile { Preferences.shared.profile(for: currentContext) }
+
+    /// 画面に出す名前。別名を付けていればそちら。
+    ///
+    /// **kubeconfig の名前をそのまま信じない。**
+    /// `gke_my-project_asia-northeast1_prod` のような名前は帯に収まらず、
+    /// 読み分けにも使えない。
+    var contextDisplayName: String {
+        let alias = contextProfile.alias.trimmingCharacters(in: .whitespaces)
+        return alias.isEmpty ? currentContext : alias
+    }
+
+    var isReadOnly: Bool { contextProfile.isReadOnly }
+
+    /// 絞り込み欄へ移りたい、という合図。
+    ///
+    /// **メニューから画面の `@FocusState` を触れない**（コマンドはウインドウの
+    /// 外側にいる）ので、数を 1 つ増やして知らせる。数にするのは、同じ要求が
+    /// 続いたときにも変化として届くようにするため。
+    private(set) var searchFocusRequests = 0
+
+    func requestSearchFocus() { searchFocusRequests += 1 }
+
+    /// アプリが使っている kubectl の実体。**ターミナルに渡すときも同じものを指す。**
+    /// ここだけ別の実体になると、アプリでは通るのにターミナルでは通らない
+    /// （あるいはその逆）が起きて、切り分けができなくなる。
+    private(set) var kubectlPath: String?
+
+    func refreshKubectlPath() async {
+        kubectlPath = await kubectl.resolvedExecutablePath()
+    }
+
+    /// 変更を行う経路の入口で必ず通す関門。
+    ///
+    /// **画面で隠すだけにしない。** 読み取り専用のときは操作のボタンごと
+    /// 出さないが、メニューの取りこぼしや、開いたままのシートから届く道が
+    /// 残りうる。**実際に kubectl を起こす手前で止める**のがいちばん確実。
+    private func refuseIfReadOnly(_ what: String) -> Bool {
+        guard isReadOnly else { return false }
+        actionNotice = nil
+        noticeTask?.cancel()
+        errorMessage = "\(contextDisplayName) は読み取り専用に設定されています。"
+            + "\(what)は行いませんでした。変更するには設定の「コンテキスト」で解除してください。"
+        return true
+    }
 
     func yaml(for object: K8sObject) async -> Result<String, Error> {
         guard let resource = currentResourceName else {
@@ -1190,6 +1297,145 @@ final class ClusterStore {
         }
     }
 
+    // MARK: - 資源の割り当てを変える
+
+    /// 上限を決める前に、いま実際にどれだけ使っているかを引く。
+    ///
+    /// **「取れていない」と「metrics-server が無い」を混ぜない。** 取得元が
+    /// 無いときは nil を返し、画面は使用量の欄ごと出さない（列の扱いと同じ）。
+    func containerUsage(for object: K8sObject) async -> [String: [ResourceUsage]]? {
+        guard activeMetricsSource != .none,
+              let namespace = object.namespace,
+              let selector = object.raw.path("spec.selector.matchLabels")?.stringDictionary,
+              !selector.isEmpty
+        else { return nil }
+        // **引けなかったことを「取得元が無い」にしない。** nil は「そもそも
+        // 見に行く先が無い」で画面は欄ごと出さないが、引きに行って駄目だった
+        // ときは空を返し、画面は `—` を出す（値が 0 なのではない）。
+        return (try? await kubectl.containerUsage(
+            selector: selector, namespace: namespace, context: currentContext)) ?? [:]
+    }
+
+    /// 資源の割り当てだけを書き換える。dry-run で先に聞ける。
+    func patchResources(
+        _ object: K8sObject, patch: String, dryRun: Bool
+    ) async -> Result<String, Error> {
+        guard let resource = actionTarget?.resourceName else {
+            return .failure(KubectlError.unsupportedRollout(object.kind?.displayName ?? ""))
+        }
+        if !dryRun, refuseIfReadOnly("資源の割り当ての変更") {
+            return .failure(ReadOnlyError(context: contextDisplayName))
+        }
+        do {
+            let message = try await kubectl.patch(
+                object, resource: resource, patch: patch,
+                dryRun: dryRun, context: currentContext)
+            if !dryRun {
+                errorMessage = nil
+                showNotice("\(object.name) の資源の割り当てを変えました")
+                try? await Task.sleep(for: .milliseconds(400))
+                reload(showsSpinner: false)
+            }
+            return .success(message)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    // MARK: - 編集した YAML を書き戻す
+
+    /// 書き戻したら何が起きるかを、実際には書かずに聞く（drain / undo と同じ）。
+    ///
+    /// **こちらで検証しない。** 綴り間違い（`unknown field "spec.replicasss"`）も、
+    /// 変えられないフィールド（`may not change once set`）も、他人の更新との
+    /// ぶつかり（`Conflict`）も、`--dry-run=server` が admission webhook まで
+    /// 通したうえで答える。自前で条件を書けば、その分だけ本番とずれる。
+    func validateYAML(_ yaml: String) async -> Result<String, Error> {
+        do {
+            return .success(
+                try await kubectl.replace(yaml: yaml, dryRun: true, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// **失敗を握りつぶさない。** シートは開いたままにしたいので、
+    /// `perform` と違って結果を返す（閉じるかどうかは呼び出し側が決める）。
+    func applyYAML(_ yaml: String, to object: K8sObject) async -> Result<Void, Error> {
+        if refuseIfReadOnly("書き戻し") { return .failure(ReadOnlyError(context: contextDisplayName)) }
+        do {
+            try await kubectl.replace(yaml: yaml, dryRun: false, context: currentContext)
+            errorMessage = nil
+            showNotice("\(object.name) の YAML を書き戻しました")
+            try? await Task.sleep(for: .milliseconds(400))
+            reload(showsSpinner: false)
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    // MARK: - 前の状態に戻す
+
+    /// 世代の一覧。**自動更新に載せない** — シートを開いたときだけ引く
+    /// （イベントや RBAC の規則と同じ考え方）。
+    func rolloutHistory(for object: K8sObject) async -> Result<[Kubectl.RolloutRevision], Error> {
+        do {
+            return .success(try await kubectl.rolloutHistory(object, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// その世代の中身。戻る先に何が入っているかを見るためのもの。
+    func revisionDetail(
+        for object: K8sObject, revision: Int
+    ) async -> Result<String, Error> {
+        do {
+            return .success(
+                try await kubectl.rolloutRevisionDetail(
+                    object, revision: revision, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// 戻したら何が起きるかを、実際には動かさずに聞く（drain と同じ扱い）。
+    ///
+    /// **こちらで判断しない。** 「いま動いているものと同じ世代だから何も
+    /// 起きない」も「止めているあいだは戻せない」も kubectl が知っていて、
+    /// そのまま文面で返ってくる。自前で条件を書くと、kubectl の判断とずれる。
+    func rollbackPreview(
+        _ object: K8sObject, toRevision revision: Int?
+    ) async -> Result<String, Error> {
+        do {
+            return .success(
+                try await kubectl.rolloutUndo(
+                    object, toRevision: revision, dryRun: true, context: currentContext))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    func rollback(_ object: K8sObject, toRevision revision: Int?) async {
+        let target = revision.map { "第 \($0) 世代" } ?? "1 つ前の世代"
+        // 入れ替わるのはこれから。「戻しました」は言い過ぎ。
+        await perform("\(object.name) を \(target) に戻す要求をしました") {
+            try await self.kubectl.rolloutUndo(
+                object, toRevision: revision, dryRun: false, context: self.currentContext)
+        }
+    }
+
+    func setRolloutPaused(_ object: K8sObject, paused: Bool) async {
+        let notice = paused
+            ? "\(object.name) の更新を止めました"
+            : "\(object.name) の更新を再開しました"
+        await perform(notice) {
+            try await self.kubectl.rolloutPause(
+                object, paused: paused, context: self.currentContext)
+        }
+    }
+
     func setCordon(_ node: K8sObject, unschedulable: Bool) async {
         let notice = unschedulable
             ? "\(node.name) への新しい Pod の配置を止めました"
@@ -1235,8 +1481,10 @@ final class ClusterStore {
     /// **やったことより多く言わない。** 要求を投げただけのものは「要求しました」。
     /// ここで「削除しました」と書くと、残っている行のほうが間違いに見える。
     private func perform(
-        _ notice: String, _ action: @escaping () async throws -> Void
+        _ notice: String, _ action: @escaping () async throws -> Void,
+        describedAs what: String = "この操作"
     ) async {
+        guard !refuseIfReadOnly(what) else { return }
         do {
             try await action()
             errorMessage = nil

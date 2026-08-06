@@ -209,4 +209,59 @@ struct KubectlTests {
         #expect(objects.count == 1)
         #expect(objects[0].kind == .pod)
     }
+
+    // MARK: - rollout history
+
+    /// 実測した書式（`kubectl rollout history deployment/demo`）。
+    /// **見出しの位置で切らない** — CHANGE-CAUSE は人が書く文なので空白が入る。
+    @Test("世代と理由を読む。空白を含む理由も落とさない")
+    func rolloutHistory() {
+        let text = """
+            deployment.apps/demo 
+            REVISION  CHANGE-CAUSE
+            1         <none>
+            2         pause 3.10 に上げた
+            """
+        let revisions = Kubectl.parseRolloutHistory(text)
+        #expect(revisions.map(\.revision) == [1, 2])
+        // **`<none>` を理由にしない。** 「書かれていない」ことが分かるように nil。
+        #expect(revisions[0].changeCause == nil)
+        #expect(revisions[1].changeCause == "pause 3.10 に上げた")
+    }
+
+    @Test("見出しや空行を世代として読まない")
+    func rolloutHistoryIgnoresNoise() {
+        #expect(Kubectl.parseRolloutHistory("").isEmpty)
+        #expect(Kubectl.parseRolloutHistory("deployment.apps/demo\nREVISION  CHANGE-CAUSE\n").isEmpty)
+    }
+
+    // MARK: - 書き戻しの失敗の見分け
+
+    /// **他人の更新とのぶつかりを、他の失敗と混ぜない。** 綴り間違いは直せば
+    /// 通るが、こちらは中身が古いだけで、直す先が違う（読み直す）。
+    /// 実測した書式に依存しているので固めておく。
+    @Test("Conflict は書き直しではなく読み直しの合図")
+    func conflictDetection() {
+        let conflict = """
+            Error from server (Conflict): error when replacing "STDIN": \
+            Operation cannot be fulfilled on deployments.apps "demo": \
+            the object has been modified; please apply your changes to the latest version and try again
+            """
+        #expect(Kubectl.isConflict(conflict))
+    }
+
+    @Test("綴り間違いや immutable は Conflict にしない")
+    func otherFailuresAreNotConflicts() {
+        let typo = """
+            Error from server (BadRequest): error when replacing "STDIN": \
+            Deployment in version "v1" cannot be handled as a Deployment: \
+            strict decoding error: unknown field "spec.replicasss"
+            """
+        let immutable = """
+            The Service "svc-demo" is invalid: spec.clusterIPs[0]: \
+            Invalid value: ["10.43.99.99"]: may not change once set
+            """
+        #expect(!Kubectl.isConflict(typo))
+        #expect(!Kubectl.isConflict(immutable))
+    }
 }

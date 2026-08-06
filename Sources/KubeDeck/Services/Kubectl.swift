@@ -21,6 +21,22 @@ enum KubectlSetupError: LocalizedError {
     }
 }
 
+/// kubectl を呼ぶ前に分かる、こちら側の間違い。
+///
+/// **黙って何もしないで返さない。** 効かない種別に `rollout` を投げる経路は
+/// 画面側で塞いであるが、塞ぎ忘れたときに `return` で握りつぶすと
+/// 「押しても何も起きない」だけになり、どこが悪いのか画面からは分からない。
+enum KubectlError: LocalizedError {
+    case unsupportedRollout(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedRollout(let kind):
+            return "\(kind) には rollout が効きません。"
+        }
+    }
+}
+
 /// kubectl の呼び出し口。
 ///
 /// API サーバを直接叩かず kubectl を経由するのは、認証のためだけ。
@@ -249,17 +265,21 @@ actor Kubectl {
     /// そもそも覚えていない（＝キャッシュのせいではない）ということなので、
     /// もう 1 度同じことをしても結果は変わらない。
     @discardableResult
-    func run(_ arguments: [String], context: String?) async throws -> CommandResult {
+    func run(
+        _ arguments: [String], context: String?, input: Data? = nil
+    ) async throws -> CommandResult {
         do {
-            return try await execute(arguments, context: context)
+            return try await execute(arguments, context: context, input: input)
         } catch let error as CommandError
             where Self.mentionsMissingResourceType(error.rawStderr) {
             guard resetDiscoveryCache() else { throw error }
-            return try await execute(arguments, context: context)
+            return try await execute(arguments, context: context, input: input)
         }
     }
 
-    private func execute(_ arguments: [String], context: String?) async throws -> CommandResult {
+    private func execute(
+        _ arguments: [String], context: String?, input: Data? = nil
+    ) async throws -> CommandResult {
         let environment = try environment()
         var fullArguments = arguments
         // **必ず付ける。** 付けないと `~/.kube/cache` をターミナルと共有する。
@@ -282,7 +302,8 @@ actor Kubectl {
             executable: environment.executable,
             arguments: fullArguments,
             environment: environment.variables,
-            timeout: TimeInterval(timeoutSeconds * 2 + 15))
+            timeout: TimeInterval(timeoutSeconds * 2 + 15),
+            input: input)
 
         guard !result.timedOut else {
             throw CommandError(
@@ -400,10 +421,48 @@ actor Kubectl {
     /// **元の文言を捨てない。** 言い換えだけにすると、当てはまらなかったときに
     /// 何が起きたのか確かめる手段が無くなる。
     private static func explain(_ stderr: String) -> String {
-        guard let hint = authenticationHint(for: stderr) ?? discoveryHint(for: stderr) else {
+        guard let hint = authenticationHint(for: stderr)
+            ?? discoveryHint(for: stderr)
+            ?? permissionHint(for: stderr)
+        else {
             return stderr
         }
         return hint + "\n\n" + condense(stderr)
+    }
+
+    /// 権限で拒まれたときの言い換え。
+    ///
+    /// **認証の失敗と混ぜない。** 誰であるかは通っていて、その人にその操作が
+    /// 許されていないだけ。`gcloud auth login` を何度やっても直らない。
+    ///
+    /// **押す前に調べる、という作りにしていない。** `kubectl auth can-i --list` は
+    /// **JSON を出せず**（実測）、表には `*.*` `[*]` のようなワイルドカードが並ぶ。
+    /// 突き合わせるには RBAC の評価器を書くことになり、ラベルセレクタや JSONPath を
+    /// 実装しなかったのと同じ理由でここでは持たない。**代わりに、拒まれたときに
+    /// 何をどうすれば通るのかが分かる文面を返す。**
+    private static func permissionHint(for stderr: String) -> String? {
+        guard stderr.contains("(Forbidden)") || stderr.contains("is forbidden") else {
+            return nil
+        }
+        // 実測の書式:
+        // Error from server (Forbidden): pods is forbidden: User "x" cannot list
+        //   resource "pods" in API group "" in the namespace "y"
+        let verb = stderr.firstMatch(of: #/cannot (\w+) resource "([^"]+)"/#)
+        let subject = stderr.firstMatch(of: #/User "([^"]+)"/#)?.1
+            ?? stderr.firstMatch(of: #/ServiceAccount "([^"]+)"/#)?.1
+
+        var lines = ["権限が足りません。認証は通っていて、その操作が許されていないだけです。"]
+        if let verb {
+            lines.append("拒まれたのは `\(verb.1)` （対象は `\(verb.2)`）です。")
+        }
+        if let subject {
+            lines.append("いまの資格情報は `\(subject)` です。")
+        }
+        lines.append(
+            "確かめるには `kubectl auth can-i <動詞> <種別> -n <Namespace>`、"
+                + "許すには対象の Role / ClusterRole に規則を足して Binding で結びます"
+                + "（アプリの「アクセス制御」から中身を見られます）。")
+        return lines.joined(separator: "\n")
     }
 
     /// 「サーバがその種別を知らない」の言い換え。
@@ -571,10 +630,18 @@ actor Kubectl {
 
     // MARK: - 取得
 
+    /// **一度に全部を要求しない。** `-o json` でも kubectl は `--chunk-size` で
+    /// 分けて取り、こちらには 1 つにまとめて返す（実測）。数千 Pod のクラスタで
+    /// API サーバに一撃で数十 MB を作らせるのを避けられる。
+    /// **アプリ側の読み込み量は変わらない** —— そこは種別と Namespace を
+    /// 絞ってもらう話で、この指定で直るのは取りに行き方だけ。
+    static let chunkSize = 500
+
     func list(
         _ kind: ResourceKind, context: String, namespace: String?
     ) async throws -> [K8sObject] {
         var arguments = ["get", kind.resourceName, "-o", "json",
+                         "--chunk-size=\(Self.chunkSize)",
                          "--request-timeout=\(requestTimeout)"]
         arguments += scope(for: kind, namespace: namespace)
         let result = try await run(arguments, context: context)
@@ -625,6 +692,7 @@ actor Kubectl {
         guard !kinds.isEmpty else { return PartialList(unknown: unknown) }
         let names = kinds.map(\.resourceName).joined(separator: ",")
         var arguments = ["get", names, "-o", "json",
+                         "--chunk-size=\(Self.chunkSize)",
                          "--request-timeout=\(requestTimeout)",
                          // **これは NotFound にしか効かない。** 権限にも、
                          // 知らない種別にも効かないので、どちらも別に始末する。
@@ -1093,12 +1161,188 @@ actor Kubectl {
     }
 
     func rolloutRestart(_ object: K8sObject, context: String) async throws {
-        guard let kind = object.kind, kind.isRestartable else { return }
-        var arguments = ["rollout", "restart", "\(kind.resourceName)/\(object.name)"]
+        try await rollout(["restart"], on: object, context: context)
+    }
+
+    /// 更新を止める / 再開する。
+    ///
+    /// **Deployment だけ。** 実測で StatefulSet と DaemonSet は
+    /// `pausing is not supported` を返す（`supportsRolloutPause`）。
+    func rolloutPause(_ object: K8sObject, paused: Bool, context: String) async throws {
+        try await rollout([paused ? "pause" : "resume"], on: object, context: context)
+    }
+
+    // MARK: - 前の状態に戻す
+
+    /// `kubectl rollout history` の 1 行。
+    struct RolloutRevision: Identifiable, Hashable, Sendable {
+        let revision: Int
+        /// `kubernetes.io/change-cause` の中身。**`<none>` を空文字にしない** —
+        /// 「書かれていない」ことが分かるように nil にする。
+        let changeCause: String?
+
+        var id: Int { revision }
+    }
+
+    /// 世代の一覧。新しい順ではなく **kubectl が出した順（古い順）** のまま返す。
+    func rolloutHistory(_ object: K8sObject, context: String) async throws -> [RolloutRevision] {
+        let result = try await rollout(["history"], on: object, context: context)
+        return Self.parseRolloutHistory(result.stdoutText)
+    }
+
+    /// その世代の Pod テンプレート（`--revision=N`）。
+    ///
+    /// **自分で組み立てない。** 戻る先に何が入っているか（とくにイメージ）は
+    /// kubectl が持っている ReplicaSet から出せるが、同じ整形を自前で書けば
+    /// kubectl の答えとずれる余地を作るだけ。drain の dry-run と同じ扱いで、
+    /// **返ってきた文面をそのまま見せる。**
+    func rolloutRevisionDetail(
+        _ object: K8sObject, revision: Int, context: String
+    ) async throws -> String {
+        let result = try await rollout(
+            ["history", "--revision=\(revision)"], on: object, context: context)
+        return result.stdoutText
+    }
+
+    /// 前の状態に戻す。`revision` が nil なら 1 つ前（kubectl の既定）。
+    ///
+    /// `dryRun` で聞くと、**押す前に止まる理由が分かる**。実測:
+    /// - `deployment.apps/demo rolled back (server dry run)`
+    /// - `deployment.apps/demo skipped rollback (current template already matches revision 2)`
+    /// - `error: you cannot rollback a paused deployment; resume it first ...`
+    /// - `error: unable to find specified revision 9 in history`
+    @discardableResult
+    func rolloutUndo(
+        _ object: K8sObject, toRevision revision: Int?, dryRun: Bool, context: String
+    ) async throws -> String {
+        var arguments = ["undo"]
+        if let revision { arguments.append("--to-revision=\(revision)") }
+        if dryRun { arguments.append("--dry-run=server") }
+        return try await rollout(arguments, on: object, context: context).stdoutText
+    }
+
+    /// `rollout` 系の共通部分。**種別と Namespace の付け方を 1 か所にする。**
+    @discardableResult
+    private func rollout(
+        _ arguments: [String], on object: K8sObject, context: String
+    ) async throws -> CommandResult {
+        guard let kind = object.kind, kind.supportsRollout else {
+            throw KubectlError.unsupportedRollout(object.kind?.displayName ?? "この種別")
+        }
+        var full = ["rollout"] + arguments + ["\(kind.resourceName)/\(object.name)"]
+        if let namespace = object.namespace {
+            full += ["-n", namespace]
+        }
+        full.append("--request-timeout=\(requestTimeout)")
+        return try await run(full, context: context)
+    }
+
+    /// 実測した書式（private にしないのは、依存をテストで固めるため）:
+    /// ```
+    /// deployment.apps/demo
+    /// REVISION  CHANGE-CAUSE
+    /// 1         <none>
+    /// 2         pause 3.10 に上げた
+    /// ```
+    /// **見出しの位置で切らない。** CHANGE-CAUSE には空白が入る（人が書く文）ので、
+    /// 最初の空白までを世代番号、残りを理由として読む。番号として読めない行は
+    /// 見出しや空行なので落とす。
+    static func parseRolloutHistory(_ text: String) -> [RolloutRevision] {
+        text.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard let first = parts.first, let revision = Int(first) else { return nil }
+            let cause = parts.count > 1
+                ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+            return RolloutRevision(
+                revision: revision,
+                changeCause: (cause.isEmpty || cause == "<none>") ? nil : cause)
+        }
+    }
+
+    // MARK: - 編集した YAML を書き戻す
+
+    /// **`apply` ではなく `replace`。**
+    ///
+    /// `apply` は `last-applied-configuration` との 3 方向マージなので、
+    /// **画面から消した項目が消えないこと**がある（その注釈に無い項目は
+    /// 「消した」と判断されない）。編集の入口としては「見えている YAML が
+    /// そのまま新しい姿になる」ほうが読み違えようがない。
+    ///
+    /// `replace` は `resourceVersion` ごと送るので、**開いたあとに誰かが
+    /// 変えていれば弾かれる**（実測: `Error from server (Conflict): ... the object
+    /// has been modified`）。逆に `resourceVersion` を落とすと無条件に上書きする
+    /// ので、**落とさない。**
+    ///
+    /// **種別も Namespace も引数で渡さない。** YAML 自身が持っているものを
+    /// kubectl に読ませる。渡すと食い違ったときに弾かれるだけで、CRD にも
+    /// そのまま効かなくなる。
+    ///
+    /// **一時ファイルに書かない**（標準入力に流す）。Secret を編集したときに
+    /// 中身がディスクへ残る。
+    @discardableResult
+    func replace(yaml: String, dryRun: Bool, context: String) async throws -> String {
+        var arguments = ["replace", "-f", "-", "--request-timeout=\(requestTimeout)"]
+        if dryRun { arguments.append("--dry-run=server") }
+        let result = try await run(
+            arguments, context: context, input: Data(yaml.utf8))
+        return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// strategic merge patch を当てる。
+    ///
+    /// **`set resources` のような専用のサブコマンドを使わない。** 実測で
+    /// `set resources` は値を**外せない**（`--limits=cpu=0` は「0 という上限」を
+    /// 書き込む）。patch なら `null` でキーが消え、コンテナは名前で合う。
+    ///
+    /// 種別は `--type` を指定しない既定（組み込みは strategic）に任せる。
+    @discardableResult
+    func patch(
+        _ object: K8sObject, resource: String, patch: String, dryRun: Bool, context: String
+    ) async throws -> String {
+        var arguments = ["patch", resource, object.name, "-p", patch,
+                         "--request-timeout=\(requestTimeout)"]
         if let namespace = object.namespace {
             arguments += ["-n", namespace]
         }
-        try await run(arguments, context: context)
+        if dryRun { arguments.append("--dry-run=server") }
+        let result = try await run(arguments, context: context)
+        return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// ラベルで選んだ Pod の、コンテナごとの使用量。
+    ///
+    /// **全 Pod を引いてから絞らない。** 上限を決めるときに見たいのは
+    /// そのワークロードの Pod だけで、サーバ側で絞れる（`kubectl top -l` と
+    /// 同じ経路）。
+    func containerUsage(
+        selector: [String: String], namespace: String, context: String
+    ) async throws -> [String: [ResourceUsage]] {
+        guard !selector.isEmpty else { return [:] }
+        let expression = selector.map { "\($0.key)=\($0.value)" }
+            .sorted().joined(separator: ",")
+        let data = try await run(
+            ["get", "pods.metrics.k8s.io", "-o", "json", "-n", namespace,
+             "-l", expression, "--request-timeout=\(requestTimeout)"],
+            context: context).stdout
+
+        guard let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [:] }
+        var result: [String: [ResourceUsage]] = [:]
+        for item in root["items"]?.arrayValue ?? [] {
+            for container in item["containers"]?.arrayValue ?? [] {
+                guard let name = container["name"]?.stringValue else { continue }
+                result[name, default: []].append(Self.usage(from: container["usage"]))
+            }
+        }
+        return result
+    }
+
+    /// 書き戻しが「他人の更新とぶつかった」ものかどうか。
+    ///
+    /// **他の失敗と混ぜない。** 綴り間違いや immutable なフィールドは直せば
+    /// 通るが、こちらは**中身が古いだけ**で、直す先が違う（読み直す）。
+    /// 実測した書式に依存しているのでテストで固めてある。
+    static func isConflict(_ message: String) -> Bool {
+        message.contains("(Conflict)") || message.contains("the object has been modified")
     }
 
     func cordon(_ node: K8sObject, unschedulable: Bool, context: String) async throws {
