@@ -702,9 +702,23 @@ final class ClusterStore {
             guard isWindowVisible, !oldValue else { return }
             // **戻ってきたら 1 回引く。** 止めているあいだに進んだぶんを
             // 次の周期まで古いまま出すと、見えている数字が事実とずれる。
-            if autoRefresh, !isLoading { reload(showsSpinner: false) }
+            if autoRefresh, !isFetching { reload(showsSpinner: false) }
         }
     }
+
+    /// いま取得が走っているか。
+    ///
+    /// **`isLoading` で代用しない。** あちらは「まだ出せる中身が無い」の意味で、
+    /// スピナーの出し分けがそれに乗っている（更新のたびに画面が消えて点滅する
+    /// のを避けるため、自動更新では立てない）。重なりの判定にそれを使うと
+    /// **自動更新のときだけ素通りする。**
+    ///
+    /// 実測（Connect Gateway 越しの GKE・15 種別で 2.4MB）で 1 回の取得に
+    /// 9.7〜15.2 秒かかり、更新間隔 10 秒がそれを追い越していた。`reload` は
+    /// `loadTask?.cancel()` で**子プロセスまで殺す**ので、10 秒ごとに走っている
+    /// 取得を捨ててゼロから引き直す状態になっていた（子 kubectl の pid が
+    /// 経過 10 秒を超えず入れ替わり続ける、という形で観測できる）。
+    private var isFetching = false
 
     private func startTicker() {
         tickerTask?.cancel()
@@ -713,7 +727,10 @@ final class ClusterStore {
                 let interval = self?.refreshInterval ?? 10
                 try? await Task.sleep(for: .seconds(interval))
                 guard let self, !Task.isCancelled else { return }
-                guard self.autoRefresh, self.isWindowVisible, !self.isLoading else { continue }
+                // **走っている取得を追い越さない。** 見送るのは自動更新だけで、
+                // 人が押した更新や種別・Namespace の切り替えはこれまでどおり
+                // 打ち切る（見ているものが変わったのに前の取得を待つ意味は無い）。
+                guard self.autoRefresh, self.isWindowVisible, !self.isFetching else { continue }
                 self.reload(showsSpinner: false)
             }
         }
@@ -737,6 +754,9 @@ final class ClusterStore {
 
         loadTask?.cancel()
         if showsSpinner { isLoading = true }
+        // **取得の開始は同期で印を立てる。** Task の中で立てると、走り出す前に
+        // 次の周期が来たときに素通りする。
+        isFetching = true
 
         loadTask = Task { [weak self] in
             guard let self else { return }
@@ -762,14 +782,18 @@ final class ClusterStore {
                                 .persistentVolume,
                                 // NetworkPolicy は Service と同じくラベルで
                                 // Pod を選ぶ。入口の話なので同じ図に載る。
-                                .networkPolicy,
-                                // **RoleBinding は逆引きに要る。** Pod からは
-                                // ServiceAccount の名前しか辿れず、そこに何が
-                                // 付いているかは Binding 側にしか書いていない。
-                                // **ClusterRole / Role は入れない** — rules が
-                                // 重く（実測 264KB）、要るのは紐づいた数個だけ
-                                // なので、名前指定で引き直す（`roles(named:)`）。
-                                .roleBinding, .clusterRoleBinding],
+                                .networkPolicy],
+                                // **RBAC はここに入れない。** 逆引きに要るのは
+                                // RoleBinding / ClusterRoleBinding だが、実測
+                                // （Connect Gateway 越しの GKE）で
+                                // `clusterrolebindings` 単独 6.54 秒 / 224KB、
+                                // `rolebindings` 単独 3.87 秒。**種別を 1 つ
+                                // 足すぶんだけ往復が増える**ので、10 秒ごとの
+                                // 取得に載せると全 15 種別で 9.7〜15.2 秒かかり、
+                                // 更新間隔を追い越していた。要るのは「たどる」の
+                                // 権限の帯だけなので、起点が変わったときに引く
+                                // （`serviceAccountBindings`。ClusterRole の
+                                // rules を名前指定で引くのと同じ扱い）。
                         context: context, namespace: namespace)
                     guard token == self.generation else { return }
                     let loaded = listed.objects
@@ -790,7 +814,6 @@ final class ClusterStore {
                             || $0.kind == .persistentVolumeClaim
                             || $0.kind == .persistentVolume
                             || $0.kind == .networkPolicy
-                            || $0.kind == .roleBinding || $0.kind == .clusterRoleBinding
                     }
                     // **図に欠けがあることを黙らない。** Service が読めていない
                     // だけなのに「入口が無い」と読めてしまう。
@@ -823,12 +846,17 @@ final class ClusterStore {
                     await self.recoverClusterInfoIfNeeded()
                 }
             } catch is CancellationError {
+                // **印を下ろさない。** 打ち切られたときは、打ち切った側が
+                // すでに次の取得を始めている（`reload` が同期で立て直す）。
                 return
             } catch {
                 guard token == self.generation else { return }
                 self.errorMessage = error.localizedDescription
             }
-            if token == self.generation { self.isLoading = false }
+            if token == self.generation {
+                self.isLoading = false
+                self.isFetching = false
+            }
         }
     }
 
@@ -1267,6 +1295,45 @@ final class ClusterStore {
         }
     }
 
+    /// ServiceAccount に付いている Binding。**逆引きなので一覧が要る。**
+    ///
+    /// `--field-selector` は `subjects` を絞れないので、RoleBinding と
+    /// ClusterRoleBinding を引いて手元で突き合わせるしかない。**だから
+    /// 自動更新に載せない** —— 実測（Connect Gateway 越しの GKE）で
+    /// `clusterrolebindings` 6.54 秒 / 224KB、`rolebindings` 3.87 秒で、
+    /// 10 秒ごとの取得に載せると更新間隔を追い越す（`roleRules` と同じ判断を
+    /// もう 1 段手前にも適用する）。
+    ///
+    /// **Namespace は口座から決める。** すべて同じ Namespace なら `-n` で絞り、
+    /// ノードを起点にしたときのように跨っていれば全 Namespace を引く。
+    ///
+    /// **引けなかったことを「Binding が無い」にしない。** RBAC を読めない
+    /// クラスタはふつうにあるので、拒まれた種別は種別名で返す。
+    func serviceAccountBindings(for accounts: [AccessAccount]) async -> AccessBindings {
+        guard !accounts.isEmpty else { return AccessBindings(isLoaded: true) }
+
+        let namespaces = Set(accounts.map { $0.namespace ?? "" })
+        let namespace = namespaces.count == 1 ? namespaces.first.flatMap {
+            $0.isEmpty ? nil : $0
+        } : nil
+        let kinds: [ResourceKind] = [.roleBinding, .clusterRoleBinding]
+
+        do {
+            let listed = try await kubectl.list(
+                kinds: kinds, context: currentContext, namespace: namespace)
+            var result = AccessBindings(isLoaded: true)
+            result.byAccount = WorkloadRelations.bindings(
+                for: accounts, among: listed.objects)
+            // **一部だけ読めたことを黙らない。** ClusterRoleBinding だけ拒まれる
+            // のはふつうにあり、そのとき出ているのは RoleBinding だけになる。
+            result.failures = listed.uncounted.map(\.displayName)
+            return result
+        } catch {
+            return AccessBindings(
+                failures: kinds.map(\.displayName), isLoaded: true)
+        }
+    }
+
     /// Binding が指しているロールの中身。
     ///
     /// **自動更新に載せない。** ClusterRole は rules を持つぶん重く（実測
@@ -1601,28 +1668,35 @@ final class ClusterStore {
         guard logRequest != nil,
               followsSelectionForLogs,
               let object = selectedObject,
-              let request = PodLogRequest(object: object)
+              // **開ける形なら何でも追う。** Pod / Job は 1 つを、
+              // Deployment / Service はまとめて。ここだけ Pod と Job に
+              // 限ると、まとめ読みを開いたまま Deployment を選び直しても
+              // 前の対象が残り、どれを見ているのか分からなくなる。
+              let request = PodLogRequest(opening: object)
         else { return }
         logRequest = request
     }
 
     /// 明示的にログを開く。パネルが開くのはここだけ。
     ///
-    /// Pod だけでなく Job も受ける。**Job の Pod をここで解決しない** —
-    /// 解決には kubectl が要り、しかも「1 つも無い」「引けなかった」が起こる。
-    /// それを言える場所（`LogContent`）まで Job のまま持っていく。
-    func showLogs(for object: K8sObject) {
-        guard let request = PodLogRequest(object: object) else { return }
+    /// **指定はここで組み立てない。** 「1 つを読む」と「まとめて読む」の
+    /// どちらを開くかは押したボタンが決めていて（`ResourceActionSet`）、
+    /// ここで種別から導き直すと出し分けが 2 か所になる。
+    ///
+    /// Pod をここで解決しないのも同じ話 — 解決には kubectl が要り、しかも
+    /// 「1 つも無い」「引けなかった」が起こる。それを言える場所
+    /// （`LogContent`）まで指定のまま持っていく。
+    func showLogs(_ request: PodLogRequest) {
         logRequest = request
     }
 
-    /// Job が掴んでいる Pod。新しい順に返す。
+    /// セレクタが掴んでいる Pod。新しい順に返す。
     ///
     /// **「1 つも無い」と「引けなかった」を分ける。** 完了した Job の Pod は
     /// `ttlSecondsAfterFinished` や Pod のガベージコレクションで消え、ログも
     /// 一緒に消える。引けなかっただけのときに「もう残っていません」と書くと、
     /// 確かめていないことを断定することになる。
-    func pods(forJobSelector selector: [String: String], namespace: String)
+    func pods(matchingSelector selector: [String: String], namespace: String)
         async -> Result<[K8sObject], Error>
     {
         do {
@@ -1645,11 +1719,12 @@ final class ClusterStore {
     /// ログの取得。**行の塊で返す。** 1 行ずつ渡すと、受け手は行の数だけ
     /// 画面を作り直すことになる（`ProcessRunner.stream`）。
     func logStream(
-        namespace: String, pod: String, options: Kubectl.LogOptions
+        namespace: String, target: Kubectl.LogTarget, options: Kubectl.LogOptions
     ) async -> Result<(AsyncStream<[String]>, ProcessHandle), Error> {
         do {
             let stream = try await kubectl.logStream(
-                namespace: namespace, pod: pod, options: options, context: currentContext)
+                namespace: namespace, target: target, options: options,
+                context: currentContext)
             return .success((stream.lines, stream.handle))
         } catch {
             return .failure(error)

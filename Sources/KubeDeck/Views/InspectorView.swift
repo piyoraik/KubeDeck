@@ -12,6 +12,11 @@ struct InspectorView: View {
         case events
         case settings
         case yaml
+        /// **Pod だけの話にしない。** ログを見たい対象は Service や
+        /// Deployment のような上位のリソースで指すほうが多く、そこから
+        /// Pod 一覧へ移ってハッシュ付きの名前を拾い直すのが手間だった。
+        /// 掴んでいる Pod をまとめて読む（`PodLogRequest`）。
+        case logs
 
         var id: String { rawValue }
         var title: String {
@@ -20,11 +25,27 @@ struct InspectorView: View {
             case .events: return "イベント"
             case .settings: return "設定"
             case .yaml: return "YAML"
+            case .logs: return "ログ"
             }
         }
     }
 
     @State private var tab: Tab = .summary
+
+    /// この対象で出すタブ。
+    ///
+    /// **空のタブを増やさない。** ConfigMap に「ログ」が並ぶと、押しても
+    /// 何も出ないタブができる（「押しても失敗すると分かっているものを
+    /// 出さない」と同じ話）。開けるかどうかの判定は `PodLogRequest` の
+    /// 1 か所だけが持つ。
+    ///
+    /// **並びは末尾に足す。** 既存の 4 つの位置を動かすと、指が覚えている
+    /// 場所が変わる。
+    private func tabs(for object: K8sObject) -> [Tab] {
+        var tabs: [Tab] = [.summary, .events, .settings, .yaml]
+        if PodLogRequest(opening: object) != nil { tabs.append(.logs) }
+        return tabs
+    }
 
     var body: some View {
         Group {
@@ -68,9 +89,15 @@ struct InspectorView: View {
             Divider()
             // **横いっぱいに伸ばさない。** 下に置くと欄が 1,000pt を超え、
             // 4 つのタブが端まで散って押しにくい（切り替えの塊に見えなくなる）。
+            // **選ばれているタブが消えることがある。** ログの出せない種別へ
+            // 移ると「ログ」が一覧から落ちるので、`tab` をそのまま束ねると
+            // どのセグメントも光っていない Picker になる。出せるものへ倒す。
+            let available = tabs(for: object)
+            let current = available.contains(tab) ? tab : .summary
+
             HStack(spacing: 0) {
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { tab in
+                Picker("", selection: Binding(get: { current }, set: { tab = $0 })) {
+                    ForEach(available) { tab in
                         Text(tab.title).tag(tab)
                     }
                 }
@@ -81,7 +108,7 @@ struct InspectorView: View {
             }
             .padding(12)
 
-            switch tab {
+            switch current {
             case .summary:
                 SummaryPane(object: object)
             case .events:
@@ -93,6 +120,13 @@ struct InspectorView: View {
             case .yaml:
                 // 選択が変わったら読み直す。id を付けないと前の YAML が残る。
                 YAMLPane(object: object).id(object.id)
+            case .logs:
+                if let request = PodLogRequest(opening: object) {
+                    // **id を付けて作り直す。** 付けないと前の対象の
+                    // `kubectl logs -f` が生き残る（`LogContent.onDisappear`
+                    // が止める側なので、作り直させないと止まらない）。
+                    InspectorLogPane(request: request).id(request.id)
+                }
             }
         }
     }

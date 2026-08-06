@@ -216,6 +216,162 @@ struct PlacementTraceTests {
         #expect(groups.map(\.node) == ["node-a", "node-b"])
     }
 
+    // MARK: - ストレージを起点にする
+
+    /// **逆引きが要る。** 運用で出る問いは「この PVC を消してよいか」
+    /// 「なぜ Pending なのか」で、掴んでいる Pod を見つけないと答えられない。
+    @Test("PVC を起点にすると、それを使っている Pod を解く")
+    func claimAnchor() throws {
+        let volumes = #"[{"name":"data","persistentVolumeClaim":{"claimName":"data-0"}}]"#
+        let inventory = PlacementInventory(
+            pods: [
+                Fixture.pod(name: "web-0", owner: (kind: "StatefulSet", name: "web"),
+                            volumes: volumes),
+                Fixture.pod(name: "api-0"),
+            ],
+            related: [
+                Fixture.claim(name: "data-0", volumeName: "pvc-aaa"),
+                Fixture.volume(name: "pvc-aaa"),
+            ])
+
+        let anchors = PlacementTrace.anchors(kind: .claim, inventory: inventory, controllers: [:])
+        #expect(anchors.map(\.name) == ["data-0"])
+        #expect(anchors.first?.podCount == 1)
+        // 一覧の行に状態を出す（`Pending` を 1 つずつ押して探させない）。
+        #expect(anchors.first?.detail == "Bound")
+
+        let graph = PlacementTrace.graph(
+            for: try #require(anchors.first), inventory: inventory, controllers: [:])
+        #expect(graph.pods.map(\.name) == ["web-0"])
+        // 掴んでいる Pod が居るなら断りは要らない。
+        #expect(graph.anchorNotes.isEmpty)
+        #expect(graph.storage.map(\.volumeName) == ["pvc-aaa"])
+    }
+
+    /// **起点にした当のものを画面から消さない。** Pod が 0 だと
+    /// `claims(for: pods)` は空を返すので、そのままでは束ねる先も状態も
+    /// 見えないまま「辿れません」で終わる。
+    @Test("誰も使っていない PVC でも、ストレージの帯には出す")
+    func unusedClaimStillShowsStorage() throws {
+        let inventory = PlacementInventory(
+            pods: [Fixture.pod(name: "api-0")],
+            related: [
+                Fixture.claim(name: "orphan", volumeName: "pvc-bbb"),
+                Fixture.volume(name: "pvc-bbb"),
+            ])
+
+        let anchor = try #require(
+            PlacementTrace.anchors(kind: .claim, inventory: inventory, controllers: [:]).first)
+        let graph = PlacementTrace.graph(for: anchor, inventory: inventory, controllers: [:])
+
+        #expect(graph.podCount == 0)
+        #expect(graph.storage.map(\.claim.name) == ["orphan"])
+        // **「辿れません」で終わらせない。** なぜ空なのかを書く。
+        #expect(graph.anchorNotes.count == 1)
+        #expect(graph.anchorNotes[0].level == .warning)
+    }
+
+    /// PV から Pod へは直接辿れない（Pod の spec には PVC の名前しか無い）。
+    @Test("PV を起点にすると PVC 経由で Pod まで解く")
+    func volumeAnchor() throws {
+        let volumes = #"[{"name":"data","persistentVolumeClaim":{"claimName":"data-0"}}]"#
+        let inventory = PlacementInventory(
+            pods: [Fixture.pod(name: "web-0", namespace: "team-a", volumes: volumes)],
+            related: [
+                Fixture.claim(name: "data-0", namespace: "team-a", volumeName: "pvc-aaa"),
+                Fixture.volume(
+                    name: "pvc-aaa", capacity: "10Gi", phase: "Bound",
+                    claimRef: (namespace: "team-a", name: "data-0")),
+            ])
+
+        let anchor = try #require(
+            PlacementTrace.anchors(kind: .volume, inventory: inventory, controllers: [:]).first)
+        // **PV は Namespace を持たない。** 入れると図の中で組み立てた `id` と
+        // 食い違い、押しても一覧に無い起点になる。
+        #expect(anchor.namespace == nil)
+        #expect(anchor.podCount == 1)
+        #expect(anchor.detail == "Bound · 10Gi")
+
+        let graph = PlacementTrace.graph(for: anchor, inventory: inventory, controllers: [:])
+        #expect(graph.pods.map(\.name) == ["web-0"])
+        #expect(graph.anchorNotes.isEmpty)
+    }
+
+    /// **回収漏れを黙らない。** PVC を消しても PV とデータは残る。
+    @Test("Released の PV は「PVC が消えている」と書く")
+    func releasedVolumeNote() throws {
+        let inventory = PlacementInventory(
+            related: [
+                Fixture.volume(
+                    name: "pvc-aaa", phase: "Released",
+                    claimRef: (namespace: "team-a", name: "data-0"))
+            ])
+
+        let anchor = try #require(
+            PlacementTrace.anchors(kind: .volume, inventory: inventory, controllers: [:]).first)
+        let graph = PlacementTrace.graph(for: anchor, inventory: inventory, controllers: [:])
+
+        #expect(graph.anchorNotes.count == 1)
+        #expect(graph.anchorNotes[0].text.contains("消えています"))
+        #expect(graph.anchorNotes[0].text.contains("team-a/data-0"))
+        #expect(graph.anchorNotes[0].level == .warning)
+    }
+
+    /// **「無い」と「取れていない」を混ぜない。** `Bound` のままなら PVC は
+    /// 在るので、Namespace の絞り込みで手元に来ていないだけ。ここを
+    /// Released と同じ文言にすると、消えていないものを消えたことにする。
+    @Test("Bound のまま PVC が引けないときは「消えている」と書かない")
+    func boundVolumeWithUnfetchedClaim() throws {
+        let inventory = PlacementInventory(
+            related: [
+                Fixture.volume(
+                    name: "pvc-aaa", phase: "Bound",
+                    claimRef: (namespace: "team-b", name: "data-0"))
+            ])
+
+        let anchor = try #require(
+            PlacementTrace.anchors(kind: .volume, inventory: inventory, controllers: [:]).first)
+        let graph = PlacementTrace.graph(for: anchor, inventory: inventory, controllers: [:])
+
+        #expect(graph.anchorNotes.count == 1)
+        #expect(!graph.anchorNotes[0].text.contains("消えています"))
+        #expect(graph.anchorNotes[0].text.contains("取得している範囲"))
+        // 事実の断定ではないので、警告の重みは付けない。
+        #expect(graph.anchorNotes[0].level == .neutral)
+    }
+
+    /// 誰にも束ねられていない PV。`Available` は待っている状態でふつうなので、
+    /// **警告にしない**（警告で画面を埋めない）。
+    @Test("束ねる先の無い Available な PV は警告にしない")
+    func availableVolumeNote() throws {
+        let inventory = PlacementInventory(
+            related: [Fixture.volume(name: "free", phase: "Available")])
+
+        let anchor = try #require(
+            PlacementTrace.anchors(kind: .volume, inventory: inventory, controllers: [:]).first)
+        let graph = PlacementTrace.graph(for: anchor, inventory: inventory, controllers: [:])
+
+        #expect(graph.anchorNotes.count == 1)
+        #expect(graph.anchorNotes[0].level == .neutral)
+        #expect(graph.anchorNotes[0].text.contains("束ねられていません"))
+    }
+
+    /// **`id` に状態を入れない。** 自動更新で phase が動くたびに別の起点として
+    /// 扱われ、選んでいるものが外れる（`onChange` が「無効な選択」とみなす）。
+    @Test("状態が変わっても起点の id は変わらない")
+    func detailIsNotPartOfIdentity() {
+        let pending = TraceAnchor(
+            anchorKind: .claim, resourceKind: .persistentVolumeClaim,
+            kindLabel: "PersistentVolumeClaim", namespace: "team-a", name: "data-0",
+            detail: "Pending")
+        let bound = TraceAnchor(
+            anchorKind: .claim, resourceKind: .persistentVolumeClaim,
+            kindLabel: "PersistentVolumeClaim", namespace: "team-a", name: "data-0",
+            detail: "Bound")
+
+        #expect(pending.id == bound.id)
+    }
+
     /// **Pod が 0 の世代も出す。** 入れ替わりの途中や、古い世代が残って
     /// いることが分かる。
     @Test("Pod が 0 の ReplicaSet も枝に残す")

@@ -92,6 +92,29 @@ enum Fixture {
 
     static let running = #"{"running":{"startedAt":"2026-01-01T00:00:00Z"}}"#
 
+    /// `spec.containers` / `spec.initContainers` の 1 つ。割り当てだけを書く。
+    /// 書かなかった項目は `resources` に現れない（「0」ではなく「未設定」）。
+    static func container(
+        name: String = "app",
+        cpuRequest: String? = nil, memoryRequest: String? = nil,
+        cpuLimit: String? = nil, memoryLimit: String? = nil
+    ) -> String {
+        func quantities(_ cpu: String?, _ memory: String?) -> String? {
+            var parts: [String] = []
+            if let cpu { parts.append(#""cpu":"\#(cpu)""#) }
+            if let memory { parts.append(#""memory":"\#(memory)""#) }
+            return parts.isEmpty ? nil : "{\(parts.joined(separator: ","))}"
+        }
+        var fields: [String] = []
+        if let requests = quantities(cpuRequest, memoryRequest) {
+            fields.append(#""requests":\#(requests)"#)
+        }
+        if let limits = quantities(cpuLimit, memoryLimit) {
+            fields.append(#""limits":\#(limits)"#)
+        }
+        return #"{"name":"\#(name)","resources":{\#(fields.joined(separator: ","))}}"#
+    }
+
     // MARK: - そのほかの種別
 
     static func node(name: String, cpu: String = "8", memory: String = "16Gi") -> K8sObject {
@@ -144,32 +167,49 @@ enum Fixture {
             """, assuming: .ingress)
     }
 
+    /// **`phase` は既定で `volumeName` から決める。** 束ねる先が無いのに
+    /// `Bound` という組み合わせは実際には起きないので、合成でも作らない。
     static func claim(
-        name: String, namespace: String = "default", volumeName: String? = nil
+        name: String, namespace: String = "default", volumeName: String? = nil,
+        phase: String? = nil, requested: String? = nil
     ) -> K8sObject {
-        let volumeJSON = volumeName.map { #""volumeName":"\#($0)""# } ?? ""
+        var spec: [String] = []
+        if let volumeName { spec.append(#""volumeName":"\#(volumeName)""#) }
+        if let requested {
+            spec.append(#""resources":{"requests":{"storage":"\#(requested)"}}"#)
+        }
         return object(
             """
             {
               "kind": "PersistentVolumeClaim",
               "metadata": {"name": "\(name)", "namespace": "\(namespace)",
                            "uid": "\(namespace)-pvc-\(name)"},
-              "spec": {\(volumeJSON)},
-              "status": {"phase": "Bound"}
+              "spec": {\(spec.joined(separator: ","))},
+              "status": {"phase": "\(phase ?? (volumeName == nil ? "Pending" : "Bound"))"}
             }
             """, assuming: .persistentVolumeClaim)
     }
 
+    /// `claimRef` は**バインドしたコントローラが書く事実**。`phase` と組で
+    /// 渡せるようにしてあるのは、`Released`（PVC は消えた）と `Bound`（PVC は
+    /// 在るが手元に引けていない）を作り分けるため。
     static func volume(
-        name: String, capacity: String = "10Gi", storageClass: String = "standard"
+        name: String, capacity: String = "10Gi", storageClass: String = "standard",
+        phase: String? = nil, claimRef: (namespace: String?, name: String)? = nil
     ) -> K8sObject {
-        object(
+        var spec = [#""storageClassName":"\#(storageClass)""#]
+        if let claimRef {
+            let ns = claimRef.namespace.map { #""namespace":"\#($0)","# } ?? ""
+            spec.append(#""claimRef":{\#(ns)"name":"\#(claimRef.name)"}"#)
+        }
+        let phaseJSON = phase.map { #""phase":"\#($0)","# } ?? ""
+        return object(
             """
             {
               "kind": "PersistentVolume",
               "metadata": {"name": "\(name)", "uid": "pv-\(name)"},
-              "spec": {"storageClassName": "\(storageClass)"},
-              "status": {"capacity": {"storage": "\(capacity)"}}
+              "spec": {\(spec.joined(separator: ","))},
+              "status": {\(phaseJSON) "capacity": {"storage": "\(capacity)"}}
             }
             """, assuming: .persistentVolume)
     }

@@ -71,4 +71,107 @@ struct LogLineTests {
         #expect(LogLine(id: 0, text: "12345 request accepted here").timestampLength == 0)
         #expect(LogLine(id: 0, text: "2026/08/02 01:23:45 hello").timestampLength == 0)
     }
+
+    // MARK: - まとめ読みの出どころ（--prefix）
+
+    /// `kubectl logs -l ... --prefix` は行頭に出どころを足す。**本文から
+    /// 剥がして列に出す** —— 残すと行の絞り込みが Pod 名に当たり、深刻度の
+    /// 判定も先頭が prefix になってずれる。
+    ///
+    /// 段の数は数えず、囲みの中身をそのまま出どころとして扱う。
+    /// 2 段でも 3 段でも同じ経路で通ること。
+    @Test("囲みの中身を出どころとして剥がす")
+    func stripsPrefix() {
+        let two = LogLine(id: 0, text: "[web-7d9f/app] hello", strippingPrefix: true)
+        #expect(two.source == "web-7d9f/app")
+        #expect(two.text == "hello")
+
+        let three = LogLine(id: 0, text: "[pod/web-7d9f/app] hello", strippingPrefix: true)
+        #expect(three.source == "pod/web-7d9f/app")
+        #expect(three.text == "hello")
+    }
+
+    /// **実測（kubectl v1.32.13、GKE）で prefix は 3 段だった。**
+    /// `[pod/<Pod 名>/<コンテナ名>] `。
+    ///
+    /// 先頭の段を Pod 名として読んでいたので、**全行の Pod 名が `pod` になり**、
+    /// 絞り込みの候補に `pod` という偽の項目が 1 つ増えたうえ、どの Pod を
+    /// 選んでも 1 行も一致しなかった（実際そうなった）。**後ろから数える** ——
+    /// いちばん後ろがコンテナ名、その 1 つ前が Pod 名。
+    @Test(
+        "Pod 名は後ろから 2 番目の段",
+        arguments: [
+            ("[pod/web-7d9f-abcde/app] x", "web-7d9f-abcde", "web-7d9f-abcde/app"),
+            ("[web-7d9f-abcde/app] x", "web-7d9f-abcde", "web-7d9f-abcde/app"),
+        ])
+    func podNameComesFromTheEnd(_ text: String, _ pod: String, _ label: String) {
+        let line = LogLine(id: 0, text: text, strippingPrefix: true)
+        #expect(line.sourcePod == pod)
+        // 列に出すときは種別の段を落とす（104pt しかないので Pod 名が削れる）。
+        #expect(line.sourceLabel == label)
+    }
+
+    /// 出どころが付いていない行（kubectl 自身の文言）を Pod 扱いしない。
+    @Test("出どころが無ければ Pod 名も無い")
+    func noSourceNoPod() {
+        let line = LogLine(id: 0, text: "error: you are attempting to follow 8 log streams")
+        #expect(line.sourcePod == nil)
+        #expect(line.sourceLabel == nil)
+    }
+
+    /// 剥がしたあとの本文で深刻度を見る。**prefix ごと判定に掛けない** ——
+    /// 行頭が `[` になるので klog の判定が効かなくなる。
+    @Test("深刻度と時刻は、剥がしたあとの本文で測る")
+    func levelAfterStripping() {
+        let line = LogLine(
+            id: 0, text: "[web-7d9f/app] E0802 01:23:45.678901 leader lost",
+            strippingPrefix: true)
+        #expect(line.level == .error)
+
+        let stamped = LogLine(
+            id: 0, text: "[web-7d9f/app] 2026-08-02T01:23:45.123456789Z hello",
+            strippingPrefix: true)
+        #expect(stamped.timestampLength == 30)
+    }
+
+    /// **`--prefix` を付けていない行から剥がさない。** これを忘れると
+    /// `[ERROR] ...` の `[ERROR]` を出どころとして食う。
+    @Test("剥がすと言われなければ触らない")
+    func neverStripsWhenNotAsked() {
+        let line = LogLine(id: 0, text: "[web-7d9f/app] hello")
+        #expect(line.source == nil)
+        #expect(line.text == "[web-7d9f/app] hello")
+    }
+
+    /// 剥がすと言われていても、prefix に見えないものは本文のまま残す。
+    /// ここが緩いと、まとめ読みのときだけ本文の先頭が黙って消える。
+    @Test(
+        "本文の囲みを出どころと読み違えない",
+        arguments: [
+            // `/` が無い。kubectl の prefix は必ずコンテナ名まで入る。
+            "[ERROR] something went wrong",
+            "[main] starting up",
+            // 大文字を含む。Kubernetes の名前には使えない。
+            "[INFO/Server] ready",
+            // 空白を含む。
+            "[2026-08-02 01:23:45] hello",
+            // 閉じ括弧のあとが空白でない。
+            "[a/b]hello",
+            // 閉じ括弧が無い。
+            "[a/b hello",
+        ])
+    func keepsBody(_ text: String) {
+        let line = LogLine(id: 0, text: text, strippingPrefix: true)
+        #expect(line.source == nil)
+        #expect(line.text == text)
+    }
+
+    /// 本文の側に囲みが続いていても、剥がすのは先頭の 1 つだけ。
+    @Test("剥がすのは先頭の 1 つだけ")
+    func stripsOnlyTheHead() {
+        let line = LogLine(
+            id: 0, text: "[web-7d9f/app] [db/conn] connected", strippingPrefix: true)
+        #expect(line.source == "web-7d9f/app")
+        #expect(line.text == "[db/conn] connected")
+    }
 }

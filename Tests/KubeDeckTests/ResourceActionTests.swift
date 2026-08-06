@@ -109,6 +109,62 @@ struct ResourceActionTests {
         #expect(ids([job], target: .builtIn(.job)).contains("logs"))
     }
 
+    /// **セレクタを持つものはまとめて開ける。** ここも入口は 1 つ
+    /// （`PodLogRequest(group:)`）なので、通っていれば一覧からも詳細からも
+    /// 同じように開ける。
+    @Test(
+        "Deployment / StatefulSet / DaemonSet / ReplicaSet はまとめてログを開ける",
+        arguments: [
+            (ResourceKind.deployment, "Deployment"),
+            (.statefulSet, "StatefulSet"),
+            (.daemonSet, "DaemonSet"),
+            (.replicaSet, "ReplicaSet"),
+        ])
+    func workloadHasGroupedLogs(_ kind: ResourceKind, _ name: String) {
+        let object = Fixture.object(
+            """
+            {"kind":"\(name)","metadata":{"name":"web","namespace":"default"},
+             "spec":{"selector":{"matchLabels":{"app":"web"}},
+                     "template":{"spec":{"containers":[{"name":"app"}]}}}}
+            """)
+        let actions = ids([object], target: .builtIn(kind))
+        #expect(actions.contains("logs-group"))
+        // **1 つを読む操作と両方は出さない。** どちらを押したのかで結果が
+        // 変わる操作が同じ名前で 2 つ並ぶことになる。
+        #expect(!actions.contains("logs"))
+    }
+
+    @Test("Service もまとめてログを開ける（掴んでいる Pod がその Service の実体）")
+    func serviceHasGroupedLogs() {
+        let service = Fixture.service(name: "web", selector: ["app": "web"])
+        #expect(ids([service], target: .builtIn(.service)).contains("logs-group"))
+    }
+
+    /// **空のセレクタでは出さない。** `ExternalName` や手書き Endpoints の
+    /// Service は Pod を 1 つも掴んでいないので、押しても Namespace の Pod を
+    /// 全部読むか、何も出ないかにしかならない。
+    @Test("セレクタが空の Service にはログを出さない")
+    func serviceWithoutSelectorHasNoLogs() {
+        let service = Fixture.service(name: "ext", selector: [:])
+        let actions = ids([service], target: .builtIn(.service))
+        #expect(!actions.contains("logs-group"))
+        #expect(!actions.contains("logs"))
+    }
+
+    /// CronJob はセレクタを持たず Job を経由する 2 段なので、ここでは解けない。
+    /// **押しても何も出ないボタンを出さない。**
+    @Test("CronJob にはログを出さない")
+    func cronJobHasNoLogs() {
+        let cron = Fixture.object(
+            """
+            {"kind":"CronJob","metadata":{"name":"nightly","namespace":"default"},
+             "spec":{"jobTemplate":{"spec":{}}}}
+            """)
+        let actions = ids([cron], target: .builtIn(.cronJob))
+        #expect(!actions.contains("logs-group"))
+        #expect(!actions.contains("logs"))
+    }
+
     @Test("イベントは削除しない（消せる相手ではない）")
     func eventHasNoDelete() {
         let event = Fixture.object(

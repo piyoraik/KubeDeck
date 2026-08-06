@@ -38,7 +38,12 @@ struct LogContent: View {
     @State private var lines: [LogLine] = []
     /// 実際に読んでいる Pod。`.pod` で開いたときは指定そのもの、
     /// `.job` で開いたときは解決した結果。
+    /// **`.group` では空のまま** —— どれか 1 つを読むのではない。
     @State private var pod: String = ""
+    /// まとめ読みで、出どころ（Pod）を 1 つに絞って**表示**するときの名前。
+    /// **取得は絞らない** —— 絞るたびに kubectl を起こし直すと、それまで
+    /// 読んでいた行が消える（`streams` と `autoScroll` を分けたのと同じ話）。
+    @State private var sourceFilter = ""
     @State private var resolution: PodResolution = .pending
     @State private var container: String = ""
     /// `kubectl logs --follow` を付けるか。**取得そのものの話。**
@@ -62,6 +67,12 @@ struct LogContent: View {
     /// 上限に達して古い行を捨てたか。捨てた事実を黙っていると、
     /// 「最初のほうのログが無い」を不具合と誤解する。
     @State private var didTruncate = false
+    /// 実際に行が届いた Pod。
+    ///
+    /// **body の中で `lines` から数え直さない。** 5,000 行を毎フレーム
+    /// 舐めることになる（`visibleLines` を 1 度だけ作るのと同じ話）。
+    /// 取り込みのときに足す。
+    @State private var observedPods: [String] = []
     /// 何番目の取得か。待っているあいだに対象が変わったかの判定に使う。
     @State private var generation = 0
 
@@ -87,7 +98,12 @@ struct LogContent: View {
         .task(id: reloadKey) { await restart() }
         .onDisappear { stop() }
         .onAppear {
-            if container.isEmpty { container = request.containers.first ?? "" }
+            // **まとめ読みの既定は「すべてのコンテナ」。** サイドカーが
+            // 立っている Pod で 1 つ目のコンテナに固定すると、探している
+            // ログが最初から入っていないことになる。
+            if !request.isGroup, container.isEmpty {
+                container = request.containers.first ?? ""
+            }
         }
     }
 
@@ -97,7 +113,10 @@ struct LogContent: View {
         HStack(spacing: 10) {
             // Job は Pod を複数掴む（再試行、`completions`）。どれのログかを
             // 選べないと、最後の試行しか見られない。
-            if resolution.choices.count > 1 {
+            //
+            // **まとめ読みでは出さない。** あちらは 1 つ選ぶための Picker で、
+            // 選んだ瞬間に取得がやり直しになる（`reloadKey` に入っている）。
+            if !request.isGroup, resolution.choices.count > 1 {
                 Picker("Pod", selection: $pod) {
                     ForEach(resolution.choices) { choice in
                         Text(choice.label).tag(choice.name)
@@ -108,7 +127,37 @@ struct LogContent: View {
                 .help("この Job の Pod。再試行や completions で複数になる")
             }
 
-            if request.containers.count > 1 {
+            // まとめ読みは全部を混ぜて読むのが主目的なので、こちらは
+            // **表示を絞るだけ**（取得はそのまま）。取得に触ると、絞った
+            // 瞬間に読んでいた行が消える。
+            if request.isGroup, podChoices.count > 1 {
+                Picker("Pod", selection: $sourceFilter) {
+                    Text("すべての Pod（\(podChoices.count)）").tag("")
+                    Divider()
+                    ForEach(podChoices, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
+                .help("表示する Pod を絞る。取得は続いているので、"
+                    + "「すべての Pod」に戻せば絞っていたあいだの行も出る")
+            }
+
+            // Service にはテンプレートが無く、どのコンテナが並ぶかは開くまで
+            // 分からない。選べる中身が無い Picker は出さない（全部読む）。
+            if request.isGroup, !request.containers.isEmpty {
+                Picker("コンテナ", selection: $container) {
+                    Text("すべてのコンテナ").tag("")
+                    Divider()
+                    ForEach(request.containers, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 200)
+                .help("読むコンテナを絞る。こちらは取得そのものが変わる")
+            } else if request.containers.count > 1 {
                 Picker("コンテナ", selection: $container) {
                     ForEach(request.containers, id: \.self) { name in
                         Text(name).tag(name)
@@ -206,6 +255,26 @@ struct LogContent: View {
                 // 行番号は選択に含めない。コピーしたときに紛れ込む。
                 .textSelection(.disabled)
 
+            // **出どころは列にする。** 本文に混ぜたままだと、行の絞り込みが
+            // Pod 名にも当たるし、深刻度の判定も先頭が prefix になってずれる
+            // （`LogLine.splitPrefix` が剥がしている）。
+            //
+            // **色を付けない。** Pod ごとに塗り分けると読みやすそうに見えるが、
+            // ログの帯は深刻度（状態の 4 色）が持っている場所なので、隣で別の
+            // 意味の色が動くと、どちらが状態なのか分からなくなる。
+            if showsSource {
+                Text(line.sourceLabel ?? "—")
+                    .font(.system(size: fontSize - 1, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: isCompact ? 104 : 132, alignment: .leading)
+                    .padding(.trailing, 8)
+                    .textSelection(.disabled)
+                    .help(line.source ?? "出どころが付いていない行"
+                        + "（kubectl 自身の文言はここが空になる）")
+            }
+
             Text(attributed(line))
                 .font(.system(size: fontSize, design: .monospaced))
                 .textSelection(.enabled)
@@ -258,6 +327,75 @@ struct LogContent: View {
     /// 別の表示にする。** どれも本文が空になるが、見る場所も打つ手も違う。
     @ViewBuilder
     private var placeholder: some View {
+        if request.isGroup {
+            groupPlaceholder
+        } else {
+            singlePlaceholder
+        }
+    }
+
+    /// まとめ読みの空。
+    ///
+    /// **順番が意味を持つ。** 掴む相手を決めるのは kubectl 側なので、
+    /// こちらの Pod 一覧が引けなくてもログは出る。だから「Pod が無い」を
+    /// 先に見ると、引けていないだけのときに断定することになる。
+    /// 取得が動いているあいだは、まずそれを言う。
+    @ViewBuilder
+    private var groupPlaceholder: some View {
+        if !lines.isEmpty {
+            ContentUnavailableView(
+                "一致する行がありません",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text(groupFilterDescription))
+        } else if isRunning {
+            LoadingView(message: "ログを待っています")
+        } else if case .resolved(let choices) = resolution, choices.isEmpty {
+            ContentUnavailableView(
+                "掴んでいる Pod がありません",
+                systemImage: "questionmark.circle",
+                description: Text("\(selectorText) に一致する Pod は"
+                    + "\(request.namespace) にありません。"
+                    + "レプリカが 0 か、ラベルが食い違っています。"))
+        } else if case .failed(let message) = resolution {
+            // Pod の一覧は引けなかったが、ログの取得は終わっている。
+            // **どちらの話なのかを分ける。**
+            ContentUnavailableView(
+                "ログがありません",
+                systemImage: "text.alignleft",
+                description: Text("行は 1 つも届きませんでした。"
+                    + "掴んでいる Pod の一覧は引けていないので、"
+                    + "Pod が無いのか、あるが何も出していないのかは分かりません。"
+                    + "\n\n\(message)"))
+        } else {
+            ContentUnavailableView(
+                "ログがありません",
+                systemImage: "text.alignleft",
+                description: Text("掴んでいる Pod はまだ何も出力していません。"))
+        }
+    }
+
+    private var groupFilterDescription: String {
+        let needle = filter.trimmingCharacters(in: .whitespaces)
+        switch (needle.isEmpty, sourceFilter.isEmpty) {
+        case (false, false):
+            return "「\(needle)」を含む \(sourceFilter) の行は、"
+                + "いま読み込んでいる範囲にありません。"
+        case (false, true):
+            return "「\(needle)」を含む行は、いま読み込んでいる範囲にありません。"
+        default:
+            return "\(sourceFilter) の行は、いま読み込んでいる範囲にありません。"
+        }
+    }
+
+    private var selectorText: String {
+        request.selector
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+            .joined(separator: ",")
+    }
+
+    @ViewBuilder
+    private var singlePlaceholder: some View {
         if case .pending = resolution {
             LoadingView(message: "Pod を探しています")
         } else if case .failed(let message) = resolution {
@@ -309,6 +447,14 @@ struct LogContent: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            // **何個掴んでいるかを言う。** 混ぜて読んでいる以上、分母が
+            // 出ていないと「この Pod の行が来ていない」に気付けない。
+            if request.isGroup, case .resolved(let choices) = resolution {
+                Text("\(choices.count) 個の Pod")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
             Text(countText(visible))
                 .font(.caption)
                 .monospacedDigit()
@@ -320,6 +466,20 @@ struct LogContent: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
+            // **切られたことを黙らない。** kubectl は
+            // `--max-log-requests` を超えると追従そのものを断る。断りが
+            // 無いと、出ていない Pod は「何も出していない」に見える
+            // （「無い」と「取れていない」を混ぜない、と同じ話）。
+            if let excess = excessPodCount {
+                Label(
+                    "· \(excess.total) 個中 \(excess.limit) 個までしか追いかけられません",
+                    systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(Palette.textColor(for: .warning))
+                    .lineLimit(1)
+                    .help("kubectl の --max-log-requests の上限。"
+                        + "Pod を絞るか、個々の Pod を開いてください")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
@@ -327,21 +487,59 @@ struct LogContent: View {
         .background(.bar)
     }
 
+    /// 掴んでいる Pod が `--max-log-requests` を超えているとき、その内訳。
+    ///
+    /// **kubectl の文言を待たずに言う。** 超えたときの断りは stderr に出て
+    /// 本文へ混ざるが、追いかけていないときは kubectl が黙ることもある
+    /// （実測していない）。数は先に分かっているので、こちらから書く。
+    private var excessPodCount: (total: Int, limit: Int)? {
+        guard request.isGroup, case .resolved(let choices) = resolution else { return nil }
+        let limit = Kubectl.LogOptions.defaultMaxLogRequests
+        guard choices.count > limit else { return nil }
+        return (choices.count, limit)
+    }
+
     private func countText(_ visible: [LogLine]) -> String {
         let total = lines.count
         return visible.count == total ? "\(total) 行" : "\(visible.count) / \(total) 行"
     }
 
-    private var visibleLines: [LogLine] {
-        let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty else { return lines }
-        return lines.filter { $0.text.lowercased().contains(needle) }
+    /// 出どころの列を出すか。まとめ読みのときだけ。
+    private var showsSource: Bool { request.isGroup }
+
+    /// 絞り込みに並べる Pod。
+    ///
+    /// **2 つの出どころを混ぜる。** kubectl で引いた一覧（行が 1 つも来て
+    /// いない Pod も選べる）と、実際に行が届いた Pod（一覧を引けなかった
+    /// ときでも絞れる）。片方だけだと、権限で Pod 一覧が引けないクラスタで
+    /// 絞り込みそのものが消える。
+    private var podChoices: [String] {
+        var names = resolution.choices.map(\.name)
+        for name in observedPods where !names.contains(name) {
+            names.append(name)
+        }
+        return names
     }
 
+    private var visibleLines: [LogLine] {
+        let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        let pod = sourceFilter
+        guard !needle.isEmpty || !pod.isEmpty else { return lines }
+        return lines.filter { line in
+            if !pod.isEmpty, line.sourcePod != pod { return false }
+            return needle.isEmpty || line.text.lowercased().contains(needle)
+        }
+    }
+
+    /// **出どころも一緒にコピーする。** 混ぜて読んでいるので、貼った先で
+    /// 「どの Pod の行か」が落ちると、まとめ読みの結果としては使えない。
+    /// ここは幅の制約が無いので、種別の段も落とさず原文のまま出す。
     private func copyVisible() {
+        let text = visibleLines
+            .map { showsSource ? "[\($0.source ?? "-")] \($0.text)" : $0.text }
+            .joined(separator: "\n")
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(
-            visibleLines.map(\.text).joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     // MARK: - 取得
@@ -361,6 +559,11 @@ struct LogContent: View {
     /// 選んで出すので、再試行した Job では最後の試行しか見られないうえ、
     /// どれを見ているのかも画面に出ない。
     private func resolvePods() async {
+        // **対象が変わったら表示の絞りも捨てる。** 前の Deployment の Pod 名が
+        // 残ると、切り替えた先で 1 行も出ないうえ「〇〇 の行がありません」と
+        // 別の対象の名前を出すことになる（ここは `request.id` で走る）。
+        sourceFilter = ""
+
         switch request.source {
         case .pod:
             resolution = .resolved([PodChoice(name: request.name, status: "")])
@@ -370,7 +573,7 @@ struct LogContent: View {
             resolution = .pending
             pod = ""
             switch await store.pods(
-                forJobSelector: selector, namespace: request.namespace)
+                matchingSelector: selector, namespace: request.namespace)
             {
             case .success(let objects):
                 let choices = objects.map {
@@ -379,6 +582,23 @@ struct LogContent: View {
                 resolution = .resolved(choices)
                 // 新しい順に並んでいるので、既定は最後の試行。
                 pod = choices.first?.name ?? ""
+            case .failure(let error):
+                resolution = .failed(error.localizedDescription)
+            }
+
+        case .group(_, let selector):
+            // **取得を待たせない。** 掴む相手を決めるのは kubectl 側
+            // （`-l`）なので、こちらの一覧は「何個掴んでいるか」を言うため
+            // だけのもの。引けなくてもログは出る。
+            resolution = .pending
+            pod = ""
+            switch await store.pods(
+                matchingSelector: selector, namespace: request.namespace)
+            {
+            case .success(let objects):
+                resolution = .resolved(objects.map {
+                    PodChoice(name: $0.name, status: StatusResolver.status(for: $0).text)
+                })
             case .failure(let error):
                 resolution = .failed(error.localizedDescription)
             }
@@ -391,13 +611,22 @@ struct LogContent: View {
         let token = generation
         lines = []
         didTruncate = false
-        // 対象が変わったらコンテナの選択も入れ直す。
-        if !request.containers.contains(container) {
-            container = request.containers.first ?? ""
+        observedPods = []
+        // 対象が変わったらコンテナの選択も入れ直す。まとめ読みの「すべて」
+        // （空文字）はどの種別でも有効なので、そこへ落とす。
+        if !container.isEmpty, !request.containers.contains(container) {
+            container = request.isGroup ? "" : (request.containers.first ?? "")
         }
-        // Pod が決まるまでは何も起こさない。決まった時点で `reloadKey` が
-        // 変わり、ここへもう一度来る。
-        guard !pod.isEmpty else { return }
+
+        let target: Kubectl.LogTarget
+        if request.isGroup {
+            target = .selector(request.selector)
+        } else {
+            // Pod が決まるまでは何も起こさない。決まった時点で `reloadKey` が
+            // 変わり、ここへもう一度来る。
+            guard !pod.isEmpty else { return }
+            target = .pod(pod)
+        }
 
         var options = Kubectl.LogOptions()
         options.container = container.isEmpty ? nil : container
@@ -405,9 +634,11 @@ struct LogContent: View {
         options.timestamps = timestamps
         options.previous = previous
         options.tailLines = Preferences.shared.logTailLines
+        // コンテナを選んでいないまとめ読みは全部のコンテナを読む。
+        options.allContainers = request.isGroup && container.isEmpty
 
         switch await store.logStream(
-            namespace: request.namespace, pod: pod, options: options)
+            namespace: request.namespace, target: target, options: options)
         {
         case .failure(let error):
             guard token == generation else { return }
@@ -438,6 +669,10 @@ struct LogContent: View {
     /// 次の行が来るまで出ないことになる。塊はもともとパイプから塊で届いて
     /// いるので、ばらさずに受ければよい（`ProcessRunner.stream`）。
     private func consume(_ stream: AsyncStream<[String]>, token: Int) async {
+        // **`--prefix` を付けたときだけ剥がす。** 付けていない行から剥がすと、
+        // `[ERROR] ...` のような本文を出どころと読み違える。
+        let strips = request.isGroup
+
         for await chunk in stream {
             guard !Task.isCancelled, token == generation else { break }
             guard !chunk.isEmpty else { continue }
@@ -445,10 +680,18 @@ struct LogContent: View {
             var next = lines
             next.reserveCapacity(next.count + chunk.count)
             var index = (next.last?.id ?? -1) + 1
+            var seen = observedPods
             for text in chunk {
-                next.append(LogLine(id: index, text: text))
+                let line = LogLine(id: index, text: text, strippingPrefix: strips)
+                // 出どころは取り込みのときに数える。body から `lines` を
+                // 舐め直すと、5,000 行を毎フレーム歩くことになる。
+                if let name = line.sourcePod, !seen.contains(name) {
+                    seen.append(name)
+                }
+                next.append(line)
                 index += 1
             }
+            if seen.count != observedPods.count { observedPods = seen }
             // 溢れたぶんは 1 度で落とす。1 行ごとの `removeFirst` をやめる。
             if next.count > maximumLines {
                 next.removeFirst(next.count - maximumLines)

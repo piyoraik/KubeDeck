@@ -1406,32 +1406,104 @@ actor Kubectl {
     // MARK: - ログ
 
     struct LogOptions: Sendable {
+        /// 読むコンテナ。nil なら Pod の既定（1 つのとき）か、
+        /// `allContainers` が立っていれば全部。
         var container: String?
         var follow: Bool = true
         var tailLines: Int = 500
         var previous: Bool = false
         var timestamps: Bool = false
+        /// コンテナを選んでいないときに全部読むか。まとめ読みの既定。
+        var allContainers: Bool = false
+        /// `--max-log-requests`。**kubectl の既定 5 のままにしない** ——
+        /// 6 レプリカの Deployment を追いかけようとしただけで弾かれる。
+        /// 上げても青天井にはしない（1 本の kubectl が張る同時接続の数なので、
+        /// 数百 Pod の Service で全部に繋ぎに行かせても読めたものではない）。
+        /// 超えたぶんは kubectl が文言で断る（stderr は本文に混ざる）。
+        var maxLogRequests: Int = LogOptions.defaultMaxLogRequests
+
+        /// 画面（「N 個中 M 個だけ」の断り）と引数で同じ値を使うための既定。
+        static let defaultMaxLogRequests = 30
     }
 
-    /// Pod オブジェクトではなく名前で受ける。ログは別ウインドウで開くので、
-    /// 一覧が読み直されてオブジェクトが差し替わっても影響を受けないようにする。
+    /// 何のログを読むか。
+    ///
+    /// **セレクタのときも kubectl 1 本で済ませる。** Pod ごとに
+    /// `kubectl logs -f` を起こすと、Pod の数だけプロセスが立つ
+    /// （1 本あたりスレッド 3 本、というのは取得系で一度踏んで直した話）。
+    /// kubectl は `-l` で多重化して `--prefix` で出どころを書いてくれるので、
+    /// 混ぜ方も並べ替えも向こうに任せる。
+    enum LogTarget: Sendable, Equatable {
+        case pod(String)
+        case selector([String: String])
+    }
+
+    /// Pod オブジェクトではなく名前・セレクタで受ける。ログは別ウインドウで
+    /// 開くので、一覧が読み直されてオブジェクトが差し替わっても影響を受けない
+    /// ようにする。
     func logStream(
-        namespace: String, pod: String, options: LogOptions, context: String
+        namespace: String, target: LogTarget, options: LogOptions, context: String
     ) throws -> (lines: AsyncStream<[String]>, handle: ProcessHandle) {
+        if case .selector(let labels) = target, labels.isEmpty {
+            // **空のセレクタで引かない。** `-l` を付けずに投げたのと同じに
+            // なり、Namespace の Pod を全部読む。ここまで来ないはずだが
+            // （`PodLogRequest(group:)` が弾く）、届く道が残るなら塞ぐ。
+            throw CommandError(
+                command: "kubectl logs", exitCode: -1,
+                message: "セレクタが空です。掴んでいる Pod を決められません。")
+        }
         let environment = try environment()
-        // ここは `run` を通らないので、キャッシュの置き場所を自分で渡す
-        // （置き場所が 2 つあると、片方だけ壊れたときに症状が食い違う）。
-        var arguments = ["--cache-dir=\(Self.cacheDirectory)", "--context", context, "logs", pod]
-        if !namespace.isEmpty { arguments += ["-n", namespace] }
-        if let container = options.container { arguments += ["-c", container] }
-        arguments += ["--tail=\(options.tailLines)"]
-        if options.follow { arguments.append("--follow") }
-        if options.previous { arguments.append("--previous") }
-        if options.timestamps { arguments.append("--timestamps") }
+        let arguments = Self.logArguments(
+            namespace: namespace, target: target, options: options, context: context)
 
         return ProcessRunner.stream(
             executable: environment.executable,
             arguments: arguments,
             environment: environment.variables)
+    }
+
+    /// `kubectl logs` の引数。**純粋関数にしておく** —— プロセスを起こさずに
+    /// 固められる唯一の部分で、ここが狂うと画面には「ログがありません」としか
+    /// 出ない（＝間違っていることに気付けない）。
+    static func logArguments(
+        namespace: String, target: LogTarget, options: LogOptions, context: String
+    ) -> [String] {
+        // ここは `run` を通らないので、キャッシュの置き場所を自分で渡す
+        // （置き場所が 2 つあると、片方だけ壊れたときに症状が食い違う）。
+        var arguments = ["--cache-dir=\(cacheDirectory)", "--context", context, "logs"]
+
+        switch target {
+        case .pod(let name):
+            arguments.append(name)
+        case .selector(let labels):
+            arguments.append("--selector=" + labels
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: ","))
+            // **`--prefix` を必ず付ける。** どの Pod の行かが分からないと、
+            // まとめて読む意味そのものが無い。
+            arguments.append("--prefix")
+            arguments.append("--max-log-requests=\(options.maxLogRequests)")
+        }
+
+        if !namespace.isEmpty { arguments += ["-n", namespace] }
+
+        if let container = options.container, !container.isEmpty {
+            arguments += ["-c", container]
+        } else if options.allContainers {
+            // **これも prefix を立てる**（kubectl のヘルプに
+            // `Sets prefix to true` と明記されている）。Pod 1 つでも
+            // コンテナ名が行頭に付くので、剥がす側は同じ経路でよい。
+            arguments.append("--all-containers=true")
+        }
+
+        // **`--tail` は必ず明示する。** セレクタを付けたときの kubectl の既定は
+        // 10 行（実測。`kubectl logs --help` の `--tail` の説明）。黙って
+        // 落とすと、まとめ読みのときだけ 10 行しか出ない。
+        arguments += ["--tail=\(options.tailLines)"]
+        if options.follow { arguments.append("--follow") }
+        if options.previous { arguments.append("--previous") }
+        if options.timestamps { arguments.append("--timestamps") }
+        return arguments
     }
 }

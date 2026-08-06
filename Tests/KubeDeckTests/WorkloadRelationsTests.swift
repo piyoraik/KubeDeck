@@ -121,7 +121,9 @@ struct WorkloadRelationsTests {
 
         #expect(links[0].volumeName == "pvc-aaa")
         #expect(links[0].volume?.name == "pvc-aaa")
-        #expect(links[0].volumeDetail == "PersistentVolume · 10Gi · standard")
+        // **phase が来ていない PV を `Unknown` で埋めない。** クラスタが答えて
+        // いないことを、答えたことにしない（この fixture は phase を持たない）。
+        #expect(links[0].volumeDetail == "PV · 10Gi · standard")
         // 未バインド。名前そのものが無い。
         #expect(links[1].volumeName == nil)
         #expect(links[1].volume == nil)
@@ -129,6 +131,109 @@ struct WorkloadRelationsTests {
         #expect(links[2].volumeName == "pvc-ccc")
         #expect(links[2].volume == nil)
         #expect(links[2].volumeDetail == nil)
+    }
+
+    /// **`Released` を容量だけの表示に埋もれさせない。** PVC を消したあとも
+    /// PV とデータが残っている状態で、実運用でいちばんよくある回収漏れ。
+    @Test("PV の状態を見どころに含める")
+    func volumeDetailCarriesPhase() {
+        let claim = Fixture.claim(name: "data-0", volumeName: "pvc-aaa")
+        let released = Fixture.volume(name: "pvc-aaa", phase: "Released")
+
+        let links = WorkloadRelations.storageLinks(for: [claim], among: [released])
+        #expect(links[0].volumeDetail == "PV · Released · 10Gi · standard")
+    }
+
+    /// **PV と同じ容量を 2 度書かない。** 束ねる先があるなら実容量は PV 側が
+    /// 持っているので、要求は未バインドのときだけ出す（そのときはどこにも無い）。
+    @Test("PVC の見どころ。要求容量は未バインドのときだけ出す")
+    func claimDetail() {
+        let bound = Fixture.claim(name: "data-0", volumeName: "pvc-aaa", requested: "8Gi")
+        let pending = Fixture.claim(name: "data-1", requested: "8Gi")
+        let volume = Fixture.volume(name: "pvc-aaa")
+
+        let links = WorkloadRelations.storageLinks(for: [bound, pending], among: [volume])
+        #expect(links[0].claimDetail == "PVC · Bound")
+        #expect(links[1].claimDetail == "PVC · Pending · 要求 8Gi")
+    }
+
+    // MARK: - PVC → Pod（逆引き）
+
+    /// **同じ名前の PVC は Namespace ごとに別物。** StatefulSet が作る
+    /// `data-web-0` のような名前はとくに重なる。
+    @Test("PVC を使っている Pod を逆引きする。Namespace を跨がない")
+    func podsUsingClaim() {
+        let volumes = #"[{"name":"data","persistentVolumeClaim":{"claimName":"data-0"}}]"#
+        let user = Fixture.pod(name: "web-0", namespace: "team-a", volumes: volumes)
+        let sameNameOtherNamespace = Fixture.pod(
+            name: "web-0", namespace: "team-b", volumes: volumes)
+        let other = Fixture.pod(name: "api-0", namespace: "team-a")
+
+        let found = WorkloadRelations.pods(
+            using: "data-0", namespace: "team-a",
+            among: [user, sameNameOtherNamespace, other])
+        #expect(found.map(\.name) == ["web-0"])
+        #expect(found.first?.namespace == "team-a")
+    }
+
+    /// **空の名前で引かない。** `claimName` を持たないボリュームと当たって、
+    /// 無関係な Pod を掴む。
+    @Test("空の PVC 名では 1 つも掴まない")
+    func podsUsingEmptyClaimName() {
+        let pod = Fixture.pod(volumes: #"[{"name":"tmp","emptyDir":{}}]"#)
+        #expect(WorkloadRelations.pods(using: "", namespace: "default", among: [pod]).isEmpty)
+    }
+
+    // MARK: - PV → PVC（逆引き）
+
+    /// **`claimRef` が事実。** バインドしたコントローラが書くもので、PVC 側の
+    /// `spec.volumeName` は人が先に書いておくこともある（まだ束ねられていない指名）。
+    @Test("PV から PVC を claimRef で引く")
+    func claimBoundToVolume() throws {
+        let claim = Fixture.claim(name: "data-0", namespace: "team-a", volumeName: "pvc-aaa")
+        let volume = Fixture.volume(
+            name: "pvc-aaa", claimRef: (namespace: "team-a", name: "data-0"))
+
+        let found = try #require(WorkloadRelations.claim(boundTo: volume, among: [claim]))
+        #expect(found.name == "data-0")
+    }
+
+    /// **`claimRef` が指す先が手元に無いときに、別の PVC に落ちない。**
+    /// Namespace を絞っていれば在るのに引けていないだけで、そこで
+    /// `volumeName` 側の逆引きへ落とすと**別の Namespace の PVC を掴みうる**。
+    @Test("claimRef の指す PVC が無ければ nil。volumeName へ落ちない")
+    func claimReferenceDoesNotFallBack() {
+        let elsewhere = Fixture.claim(
+            name: "data-0", namespace: "team-b", volumeName: "pvc-aaa")
+        let volume = Fixture.volume(
+            name: "pvc-aaa", claimRef: (namespace: "team-a", name: "data-0"))
+
+        #expect(WorkloadRelations.claim(boundTo: volume, among: [elsewhere]) == nil)
+    }
+
+    /// `claimRef` が無い PV は、まだ誰にも束ねられていないか、PVC 側の指名しか
+    /// 無い状態。そのときだけ `volumeName` から引く。
+    @Test("claimRef が無ければ PVC の volumeName から引く")
+    func claimByVolumeName() throws {
+        let claim = Fixture.claim(name: "data-0", volumeName: "pvc-aaa")
+        let volume = Fixture.volume(name: "pvc-aaa")
+
+        let found = try #require(WorkloadRelations.claim(boundTo: volume, among: [claim]))
+        #expect(found.name == "data-0")
+    }
+
+    /// **実物が引けたかとは別に、指し先は分かる。** ここが分かれていないと
+    /// 「消えている」と「取得の範囲外」を書き分けられない。
+    @Test("claimRef の中身は実物が無くても読める")
+    func claimReferenceIsReadableWithoutTheClaim() throws {
+        let volume = Fixture.volume(
+            name: "pvc-aaa", phase: "Released",
+            claimRef: (namespace: "team-a", name: "data-0"))
+
+        let reference = try #require(WorkloadRelations.claimReference(of: volume))
+        #expect(reference.namespace == "team-a")
+        #expect(reference.name == "data-0")
+        #expect(WorkloadRelations.claimReference(of: Fixture.volume(name: "free")) == nil)
     }
 
     // MARK: - Pod → NetworkPolicy
@@ -184,24 +289,53 @@ struct WorkloadRelationsTests {
             name: "human", namespace: "app", role: (kind: "Role", name: "pod-reader"),
             subjects: [(kind: "User", name: "web-sa", namespace: nil)])
 
-        let summary = WorkloadRelations.accessSummary(
-            for: [pod], among: [hit, clusterHit, otherNamespace, user])
-
+        let summary = WorkloadRelations.accessSummary(for: [pod])
         #expect(summary.accounts.map(\.name) == ["web-sa"])
-        #expect(summary.bindings.map(\.name) == ["web-reader", "web-view"])
-        #expect(summary.bindings[0].roleID == "Role/app/pod-reader")
+
+        // **Binding は別に引く。** 逆引きに一覧が要るので重く、自動更新に
+        // 載せていない（`ClusterStore.serviceAccountBindings`）。
+        let found = WorkloadRelations.bindings(
+            for: summary.accounts, among: [hit, clusterHit, otherNamespace, user])
+        let bound = try! #require(found["app/web-sa"])
+
+        #expect(bound.map(\.name) == ["web-reader", "web-view"])
+        #expect(bound[0].roleID == "Role/app/pod-reader")
         // ClusterRole は Namespace を持たない。Role と同じ鍵にしない。
-        #expect(summary.bindings[1].roleID == "ClusterRole//view")
-        #expect(summary.bindings[1].isClusterWide)
+        #expect(bound[1].roleID == "ClusterRole//view")
+        #expect(bound[1].isClusterWide)
     }
 
     /// **無いことを異常にしない。** ただし「何も付いていない」と断定もしない
     /// （グループ経由の付与は見ていないので、画面側が断る）。
     @Test("Binding が 1 つも無くても ServiceAccount は出す")
     func accessSummaryKeepsAccountWithoutBindings() {
-        let summary = WorkloadRelations.accessSummary(for: [Fixture.pod()], among: [])
+        let summary = WorkloadRelations.accessSummary(for: [Fixture.pod()])
         #expect(summary.accounts.map(\.name) == ["default"])
-        #expect(summary.accounts[0].bindings.isEmpty)
+        // **鍵は必ず作る。** nil（引いていない）と空（付いていない）を
+        // 呼び出し側で区別できるようにしておく。
+        let found = WorkloadRelations.bindings(for: summary.accounts, among: [])
+        #expect(found["default/default"]?.isEmpty == true)
+    }
+
+    /// **口座の一覧は kubectl を増やさずに作れる。** `spec.serviceAccountName` は
+    /// Pod が持っているので、Binding を引く前でも帯そのものは出せる。
+    @Test("口座の一覧は Pod だけから作る。Namespace で分ける")
+    func accessSummaryIsNamespaced() {
+        let summary = WorkloadRelations.accessSummary(for: [
+            Fixture.pod(name: "a", namespace: "team-a", serviceAccount: "web-sa"),
+            Fixture.pod(name: "b", namespace: "team-a", serviceAccount: "web-sa"),
+            Fixture.pod(name: "c", namespace: "team-b", serviceAccount: "web-sa"),
+        ])
+
+        // 同じ名前でも Namespace が違えば別物。同じ口座は 1 度だけ。
+        #expect(summary.accounts.map(\.id) == ["team-a/web-sa", "team-b/web-sa"])
+    }
+
+    /// **「まだ引いていない」と「無い」を混ぜない。**
+    @Test("引く前の AccessBindings は isLoaded が偽")
+    func accessBindingsDistinguishesUnloaded() {
+        #expect(AccessBindings().isLoaded == false)
+        #expect(AccessBindings(isLoaded: true).all.isEmpty)
     }
 
     // MARK: - Pod → ConfigMap / Secret

@@ -307,4 +307,92 @@ struct KubectlTests {
         #expect(!Kubectl.isConflict(typo))
         #expect(!Kubectl.isConflict(immutable))
     }
+
+    // MARK: - ログの引数
+
+    /// **プロセスを起こさずに固められる唯一の部分。** ここが狂っても画面には
+    /// 「ログがありません」としか出ないので、間違っていることに気付けない。
+    private func logArguments(
+        target: Kubectl.LogTarget,
+        namespace: String = "default",
+        container: String? = nil,
+        allContainers: Bool = false
+    ) -> [String] {
+        var options = Kubectl.LogOptions()
+        options.container = container
+        options.allContainers = allContainers
+        options.follow = false
+        return Kubectl.logArguments(
+            namespace: namespace, target: target, options: options, context: "ctx")
+    }
+
+    /// **`--tail` を必ず明示する。** セレクタを付けたときの kubectl の既定は
+    /// 10 行（`kubectl logs --help` 実測）。落とすと、まとめ読みのときだけ
+    /// 10 行しか出ない。
+    @Test("セレクタでも Pod 名でも --tail を明示する")
+    func alwaysPassesTail() {
+        #expect(logArguments(target: .pod("web-0")).contains("--tail=500"))
+        #expect(logArguments(target: .selector(["app": "web"])).contains("--tail=500"))
+    }
+
+    /// セレクタは並び順を固定して組む。順序がぶれると、同じ対象なのに
+    /// 引数が変わって（＝取得の鍵が変わって）取り直しが起きる。
+    @Test("セレクタは key=value をキー順に並べる")
+    func selectorIsSorted() {
+        let arguments = logArguments(
+            target: .selector(["tier": "front", "app": "web"]))
+        #expect(arguments.contains("--selector=app=web,tier=front"))
+    }
+
+    /// **`--prefix` はセレクタのときだけ。** どの Pod の行かが分からないと
+    /// まとめて読む意味が無い。逆に Pod 1 つのときに付けると、
+    /// `LogLine` が剥がす側と食い違う。
+    @Test("--prefix と --max-log-requests はセレクタのときだけ")
+    func prefixOnlyForSelector() {
+        let grouped = logArguments(target: .selector(["app": "web"]))
+        #expect(grouped.contains("--prefix"))
+        #expect(grouped.contains("--max-log-requests=30"))
+
+        let single = logArguments(target: .pod("web-0"))
+        #expect(!single.contains("--prefix"))
+        #expect(!single.contains(where: { $0.hasPrefix("--max-log-requests") }))
+    }
+
+    /// コンテナを選んでいれば全部読まない。選んでいなければ全部。
+    /// **両方渡さない** —— kubectl は `-c` と `--all-containers` の併用を
+    /// 受けるが、どちらが効くのかを画面の側で説明できなくなる。
+    @Test("コンテナの指定は --all-containers より優先する")
+    func containerBeatsAllContainers() {
+        let chosen = logArguments(
+            target: .selector(["app": "web"]), container: "app", allContainers: true)
+        #expect(chosen.contains("-c"))
+        #expect(chosen.contains("app"))
+        #expect(!chosen.contains("--all-containers=true"))
+
+        let all = logArguments(
+            target: .selector(["app": "web"]), container: nil, allContainers: true)
+        #expect(all.contains("--all-containers=true"))
+        #expect(!all.contains("-c"))
+    }
+
+    /// 空文字のコンテナ名を `-c ""` として渡さない（Picker の「すべて」が
+    /// 空文字なので、そのまま届くと kubectl が空名のコンテナを探す）。
+    @Test("空のコンテナ名を -c として渡さない")
+    func emptyContainerIsNotPassed() {
+        let arguments = logArguments(
+            target: .selector(["app": "web"]), container: "", allContainers: true)
+        #expect(!arguments.contains("-c"))
+        #expect(arguments.contains("--all-containers=true"))
+    }
+
+    /// ここは `run` を通らないので、キャッシュの置き場所を自分で渡す。
+    /// **落とすとターミナルの kubectl と同じ場所を使う**ことになり、
+    /// 片方が壊した API の一覧をもう一方も読む。
+    @Test("--cache-dir と --context は必ず付く")
+    func alwaysPassesCacheDirAndContext() {
+        let arguments = logArguments(target: .pod("web-0"))
+        #expect(arguments.contains("--cache-dir=\(Kubectl.cacheDirectory)"))
+        #expect(arguments.contains("--context"))
+        #expect(arguments.contains("ctx"))
+    }
 }

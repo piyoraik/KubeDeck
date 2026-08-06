@@ -120,6 +120,61 @@ enum WorkloadRelations {
             .sorted { $0.name < $1.name }
     }
 
+    /// この PVC を使っている Pod。**逆引き。**
+    ///
+    /// `claims(for:)` は「この Pod 群が使っている PVC」を解くが、運用で出る問いは
+    /// 逆のほうが多い —— 消してよいか、なぜ Pending なのか、この PV は誰のものか。
+    ///
+    /// **名前だけで突き合わせない。** PVC は Namespace ごとに別物で、同じ名前が
+    /// 別の Namespace に居るのはふつう（StatefulSet が作る `data-web-0` のような
+    /// 名前はとくに重なる）。**空の名前で引かない** —— `claimName` が空の
+    /// ボリュームと当たって、無関係な Pod を掴む。
+    static func pods(
+        using claimName: String, namespace: String?, among pods: [K8sObject]
+    ) -> [K8sObject] {
+        guard !claimName.isEmpty else { return [] }
+        return pods.filter { pod in
+            guard pod.namespace == namespace else { return false }
+            return (pod.spec?["volumes"]?.arrayValue ?? []).contains {
+                $0.path("persistentVolumeClaim.claimName")?.stringValue == claimName
+            }
+        }
+    }
+
+    /// PV を掴んでいる PVC。
+    ///
+    /// **`claimRef` を先に見る。** どの PVC に束ねられたかを書くのはバインドした
+    /// コントローラの側で、これが事実。PVC の `spec.volumeName` は人が先に書いて
+    /// おくこともある（まだ束ねられていない指名）ので、`claimRef` が無いときだけ
+    /// そちらから逆引きする。
+    static func claim(boundTo volume: K8sObject, among all: [K8sObject]) -> K8sObject? {
+        let claims = all.filter { $0.kind == .persistentVolumeClaim }
+        if let reference = claimReference(of: volume) {
+            // **見つからないことを「無い」にしない。** ここで volumeName 側の
+            // 逆引きに落とすと、Namespace を絞って PVC が手元に無いだけのときに
+            // 別の PVC を掴みうる。指している先が引けなかったことは、
+            // 呼び出し側が `claimReference` と突き合わせて書き分ける。
+            return claims.first {
+                $0.namespace == reference.namespace && $0.name == reference.name
+            }
+        }
+        return claims.first {
+            let name = $0.spec?["volumeName"]?.stringValue
+            return name == volume.name && !volume.name.isEmpty
+        }
+    }
+
+    /// PV が指している PVC の名前。**実物が引けたかとは別**
+    /// （Namespace を絞っていれば、在るのに手元に無いことがある）。
+    static func claimReference(
+        of volume: K8sObject
+    ) -> (namespace: String?, name: String)? {
+        guard let reference = volume.spec?["claimRef"],
+              let name = reference["name"]?.stringValue, !name.isEmpty
+        else { return nil }
+        return (reference["namespace"]?.stringValue, name)
+    }
+
     /// PVC と、それが束ねられている PV。
     ///
     /// **PVC の名前だけでは足りない。** 実体がどこにあるのか（容量・
@@ -174,28 +229,45 @@ enum WorkloadRelations {
     /// ようなグループへの Binding まで拾うと、どの SA にも同じものが並ぶ。
     /// そのぶん、何も見つからないことを「権限が無い」と書かない
     /// （`AccessSummary.note` が断る）。
-    static func accessSummary(for pods: [K8sObject], among all: [K8sObject]) -> AccessSummary {
+    ///
+    /// **Binding はここで解かない。** `spec.serviceAccountName` は Pod が
+    /// すでに持っているので、口座の一覧は kubectl を 1 本も増やさずに作れる。
+    /// 逆引きに要る RoleBinding / ClusterRoleBinding は重い（実測で
+    /// 併せて 10.4 秒・245KB）ので、**起点が変わったときだけ引く**
+    /// （`bindings(for:among:)` / `ClusterStore.serviceAccountBindings`）。
+    static func accessSummary(for pods: [K8sObject]) -> AccessSummary {
         guard !pods.isEmpty else { return AccessSummary(accounts: []) }
 
         var accounts: [AccessAccount] = []
         var seen = Set<String>()
-        let bindings = all.filter { $0.kind == .roleBinding || $0.kind == .clusterRoleBinding }
 
         for pod in pods {
-            let name = serviceAccountName(of: pod)
-            let namespace = pod.namespace
-            let key = "\(namespace ?? "")/\(name)"
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-
-            let bound = bindings
-                .filter { binds($0, toServiceAccount: name, in: namespace) }
-                .map { AccessBinding(binding: $0) }
-                .sorted { $0.binding.name < $1.binding.name }
-            accounts.append(
-                AccessAccount(name: name, namespace: namespace, bindings: bound))
+            let account = AccessAccount(
+                name: serviceAccountName(of: pod), namespace: pod.namespace)
+            guard seen.insert(account.id).inserted else { continue }
+            accounts.append(account)
         }
         return AccessSummary(accounts: accounts.sorted { $0.name < $1.name })
+    }
+
+    /// 口座ごとに、付いている Binding を逆引きする。
+    ///
+    /// **鍵は口座の `id`（`Namespace/名前`）。** 同じ名前の ServiceAccount は
+    /// Namespace ごとに別物なので、名前だけで束ねると別の SA の権限が付く。
+    static func bindings(
+        for accounts: [AccessAccount], among all: [K8sObject]
+    ) -> [String: [AccessBinding]] {
+        let candidates = all.filter {
+            $0.kind == .roleBinding || $0.kind == .clusterRoleBinding
+        }
+        var result: [String: [AccessBinding]] = [:]
+        for account in accounts {
+            result[account.id] = candidates
+                .filter { binds($0, toServiceAccount: account.name, in: account.namespace) }
+                .map { AccessBinding(binding: $0) }
+                .sorted { $0.binding.name < $1.binding.name }
+        }
+        return result
     }
 
     /// Pod が使う ServiceAccount 名。省略時は `default`。
@@ -345,24 +417,53 @@ struct StorageLink: Identifiable, Sendable {
 
     var id: String { claim.id }
 
+    /// PVC 側の見どころ。
+    ///
+    /// **PV と同じことを書かない。** 容量は PV 側が実物なので、こちらは
+    /// 束ねる先が無いときだけ「要求」を出す（そのときは実容量がどこにも無い）。
+    ///
+    /// **状態は出す。** `Pending` は Pod が起動しない理由そのもので、`Lost` は
+    /// 束ねていた PV が消えた状態。どちらも名前を見ただけでは分からない。
+    var claimDetail: String {
+        var parts = ["PVC"]
+        if let phase = claim.status?["phase"]?.stringValue, !phase.isEmpty {
+            parts.append(phase)
+        }
+        if volumeName == nil,
+           let requested = claim.spec?.path("resources.requests.storage")?.stringValue,
+           !requested.isEmpty {
+            parts.append("要求 \(requested)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// PV 側の見どころ。容量と StorageClass はここにしか無い。
+    ///
+    /// **状態を落とさない。** `Released` の PV は、PVC を消したあとも実体と
+    /// データが残っている状態で、実運用でいちばんよくある回収漏れ。容量だけ
+    /// 出していると、それが分からない。
     var volumeDetail: String? {
         guard let volume else { return nil }
         let capacity = volume.status?.path("capacity.storage")?.stringValue
             ?? volume.spec?.path("capacity.storage")?.stringValue
-        let storageClass = volume.spec?["storageClassName"]?.stringValue
-        let parts = [ResourceKind.persistentVolume.apiKind, capacity, storageClass]
+        let parts = [
+            "PV", volume.status?["phase"]?.stringValue, capacity,
+            volume.spec?["storageClassName"]?.stringValue,
+        ]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
         return parts.joined(separator: " · ")
     }
 }
 
-/// Pod が使っている ServiceAccount 1 つと、そこに付いている Binding。
-struct AccessAccount: Identifiable, Sendable {
+/// Pod が使っている ServiceAccount 1 つ。
+///
+/// **付いている Binding は持たない。** そちらは引き直して足すもの
+/// （`AccessBindings`）。抱えさせると、自動更新のたびに Binding を引くか、
+/// 引けていないものを「無い」として運ぶかのどちらかになる。
+struct AccessAccount: Identifiable, Sendable, Hashable {
     let name: String
     let namespace: String?
-    let bindings: [AccessBinding]
 
     var id: String { "\(namespace ?? "")/\(name)" }
 }
@@ -397,12 +498,31 @@ struct AccessRules: Sendable {
     var isLoaded = false
 }
 
+/// 引き直した Binding。**`AccessRules` と同じ 3 分け。**
+///
+/// **「まだ引いていない」を「Binding が無い」と書かない。** RoleBinding と
+/// ClusterRoleBinding は重いので起点が変わったときだけ引く（自動更新に載せない）。
+/// 引く前の空と、引いた結果の空を同じ見た目にすると、**読み込み中に
+/// 「権限が付いていません」と断定する**ことになる。
+struct AccessBindings: Sendable {
+    /// 口座の `id` → 付いている Binding。
+    var byAccount: [String: [AccessBinding]] = [:]
+    /// 引けなかった種別（「RoleBinding」など）。
+    var failures: [String] = []
+    var isLoaded = false
+
+    func bindings(for account: AccessAccount) -> [AccessBinding] {
+        byAccount[account.id] ?? []
+    }
+
+    var all: [AccessBinding] { byAccount.values.flatMap { $0 } }
+}
+
 /// たどるで見せる「この一式は何の権限で動いているか」。
 struct AccessSummary: Sendable {
     let accounts: [AccessAccount]
 
     var isEmpty: Bool { accounts.isEmpty }
-    var bindings: [AccessBinding] { accounts.flatMap(\.bindings) }
 }
 
 /// Pod や Ingress が参照している ConfigMap / Secret 1 つぶん。

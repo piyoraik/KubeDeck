@@ -177,6 +177,8 @@ struct PlacementView: View {
         var id: String { "\(namespace ?? "-")/\(name)" }
         var podCount: Int { byNode.reduce(0) { $0 + $1.pods.count } }
         var nodeCount: Int { byNode.count }
+        /// ノードをまたいだ全部。使用量の合計を出すときに使う。
+        var pods: [K8sObject] { byNode.flatMap(\.pods) }
 
         /// 2 つ以上あるのに 1 つのノードに固まっている状態。
         /// **これを見るための画面なので、文字で言う。**
@@ -388,13 +390,15 @@ private struct NodeUsageBars: View {
             let metric = Preferences.shared.placementMetric
             HStack(alignment: .top, spacing: 20) {
                 if metric.showsCPU {
-                    bar(
-                        "CPU", used: usage.cpuCores, of: allocatable.cpuCores,
+                    PlacementUsageBar(
+                        title: "CPU", used: usage.cpuCores, base: allocatable.cpuCores,
+                        ratio: Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores),
                         format: { Quantity.formatCPU(cores: $0) })
                 }
                 if metric.showsMemory {
-                    bar(
-                        "メモリ", used: usage.memoryBytes, of: allocatable.memoryBytes,
+                    PlacementUsageBar(
+                        title: "メモリ", used: usage.memoryBytes, base: allocatable.memoryBytes,
+                        ratio: Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes),
                         format: { Quantity.formatMemory(bytes: $0) })
                 }
             }
@@ -405,12 +409,89 @@ private struct NodeUsageBars: View {
                 .foregroundStyle(.tertiary)
         }
     }
+}
 
-    /// ノードは状態の色のまま。ここは「割り当て可能に対してどれだけ近いか」が
-    /// 主役で、系列という考え方が無い。
-    private func bar(
-        _ title: String, used: Double, of base: Double, format: (Double) -> String
-    ) -> some View {
+/// ワークロードの合計。**ノードと同じ形で出す** — 同じ画面の同じ問い
+/// （どれだけ食っているか）なので、箱が変わるたびに作りが変わって見えない
+/// ようにする。
+///
+/// **右のパネルに追い出さない。** ノードの使用量と同じ理由で、「このワークロードが
+/// どれだけ食っているか」は配置を見る目的そのもの。行を選ばないと分からないのでは遅い。
+private struct WorkloadUsageBars: View {
+    @Environment(ClusterStore.self) private var store
+    let pods: [K8sObject]
+
+    var body: some View {
+        let usage = store.metrics.workloadUsage(of: pods)
+        let metric = Preferences.shared.placementMetric
+
+        if usage.isMeasured {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 20) {
+                    if metric.showsCPU {
+                        PlacementUsageBar(
+                            title: "CPU", used: usage.cpu.used, base: usage.cpu.base,
+                            basePrefix: usage.cpu.baseLabel, ratio: usage.cpu.ratio,
+                            format: { Quantity.formatCPU(cores: $0) })
+                    }
+                    if metric.showsMemory {
+                        PlacementUsageBar(
+                            title: "メモリ", used: usage.memory.used, base: usage.memory.base,
+                            basePrefix: usage.memory.baseLabel, ratio: usage.memory.ratio,
+                            format: { Quantity.formatMemory(bytes: $0) })
+                    }
+                }
+                // **何個ぶんの合計なのかを黙らない。** 引けていない Pod があると
+                // 合計は小さく出るので、断りが無いと「そういう値」に読める。
+                ForEach(notes(usage, metric: metric), id: \.self) { note in
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            Text("使用量を取得できません。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// 断りは、当てはまるものだけ。**出していない軸のことは書かない**
+    /// （メモリを出していないのに「メモリの分母が…」と書いても確かめようがない）。
+    private func notes(_ usage: WorkloadUsage, metric: PlacementMetric) -> [String] {
+        var notes: [String] = []
+        if usage.isPartial {
+            notes.append(
+                "\(usage.podCount) 個中 \(usage.measuredPods) 個ぶんの合計です"
+                    + "（残りは使用量を引けていません）。")
+        }
+        let missing =
+            (metric.showsCPU ? usage.cpu.podsWithoutBase : 0)
+            + (metric.showsMemory ? usage.memory.podsWithoutBase : 0)
+        if missing > 0 {
+            notes.append("上限も要求も書かれていない Pod があるので、割合は出しません。")
+        }
+        return notes
+    }
+}
+
+/// 使用量の棒 1 本。ノードもワークロードもこれで描く。
+///
+/// **状態の色のまま。** ここは「分母にどれだけ近いか」が主役で、系列という
+/// 考え方が無い（概要の折れ線とは持ち場が違う）。
+private struct PlacementUsageBar: View {
+    let title: String
+    let used: Double
+    let base: Double
+    /// 分母の呼び名（`上限` など）。ノードは分母が 1 つしか無いので付けない。
+    var basePrefix: String?
+    /// **`used / base` から導かない。** 分母を持たない Pod が混ざっているときは
+    /// 分母が足りないので、割合を出さないという判断が呼び出し側にある。
+    let ratio: Double?
+    let format: (Double) -> String
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
@@ -421,12 +502,12 @@ private struct NodeUsageBars: View {
                     .font(.caption)
                     .monospacedDigit()
                 if base > 0 {
-                    Text("/ \(format(base))")
+                    Text("/ \(basePrefix.map { $0 + " " } ?? "")\(format(base))")
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                if let ratio = Quantity.ratio(used, of: base) {
+                if let ratio {
                     Text(Quantity.formatPercent(ratio))
                         .font(.caption)
                         .monospacedDigit()
@@ -435,7 +516,7 @@ private struct NodeUsageBars: View {
                         .frame(minWidth: 40, alignment: .trailing)
                 }
             }
-            if let ratio = Quantity.ratio(used, of: base) {
+            if let ratio {
                 UsageBar(ratio: ratio)
             }
         }
@@ -479,6 +560,11 @@ private struct WorkloadCard: View {
                     .foregroundStyle(Palette.textColor(for: .warning))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            // ノードの箱と同じ位置に、同じ形で出す。ここでの分母は Pod ごとの
+            // 上限（無ければ要求）の合計で、ノードの割り当て可能量とは別物なので
+            // 呼び名を添える。
+            WorkloadUsageBars(pods: spread.pods)
 
             Divider().opacity(0.5)
             VStack(alignment: .leading, spacing: 8) {

@@ -123,7 +123,7 @@ struct TraceMapView: View {
                 }
             }
             .labelsHidden()
-            // **セグメントにしない。** 5 つを 236pt に詰めると記号だけになり、
+            // **セグメントにしない。** 7 つを 236pt に詰めると記号だけになり、
             // どれが何なのか読めなくなる。
             .pickerStyle(.menu)
             Text(anchorKind.help)
@@ -180,6 +180,9 @@ struct TraceMapView: View {
             parts.append(anchor.kindLabel)
         }
         if let namespace = anchor.namespace { parts.append(namespace) }
+        // **状態を一覧の行に出す。** `Released` の PV や `Pending` の PVC は
+        // ここでいちばん見つけたいものなので、1 つずつ押させない。
+        if let detail = anchor.detail, !detail.isEmpty { parts.append(detail) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -291,6 +294,9 @@ private struct TraceGraphView: View {
     @Environment(ClusterStore.self) private var store
     let graph: TraceGraph
     let select: (TraceAnchor) -> Void
+    /// ServiceAccount に付いている Binding。**自動更新に載せない** —— 逆引きに
+    /// 一覧が要るので重い（実測で RoleBinding + ClusterRoleBinding が 10.4 秒）。
+    @State private var bindings = AccessBindings()
     /// 引き直したロールの中身。**自動更新に載せない** — 起点が変わった
     /// ときだけ引く（イベントタブと同じ考え方）。
     @State private var rules = AccessRules()
@@ -308,8 +314,10 @@ private struct TraceGraphView: View {
             configs
             policies
             access
+            // **断りを二重に出さない。** PVC / PV の起点は、なぜ辿れないのかを
+            // `anchorNotes` がすでに書いている（そちらのほうが具体的）。
             if graph.isEmpty && graph.danglingServices.isEmpty
-                && graph.missingServiceNames.isEmpty {
+                && graph.missingServiceNames.isEmpty && graph.anchorNotes.isEmpty {
                 Text("この起点から辿れる Pod はありません。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -318,14 +326,27 @@ private struct TraceGraphView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // **鍵は「引く相手」だけにする。** 起点が同じなら引き直さない
         // （`graph` そのものを鍵にすると、10 秒ごとの取得で Pod の中身が
-        // 変わるたびに ClusterRole を引き直すことになる）。
-        .task(id: graph.access.bindings.map(\.id).joined(separator: ",")) {
-            let bindings = graph.access.bindings
-            guard !bindings.isEmpty else {
+        // 変わるたびに Binding と ClusterRole を引き直すことになる）。
+        //
+        // 鍵は ServiceAccount の一覧。**Binding にしない** —— それ自身が
+        // これから引くものなので、鍵にすると引けた瞬間に鍵が変わる。
+        .task(id: graph.access.accounts.map(\.id).joined(separator: ",")) {
+            let accounts = graph.access.accounts
+            guard !accounts.isEmpty else {
+                bindings = AccessBindings(isLoaded: true)
                 rules = AccessRules(isLoaded: true)
                 return
             }
-            rules = await store.roleRules(for: bindings)
+            // **2 段で引く。** どのロールを引けばよいかは Binding の
+            // `roleRef` にしか書いていないので、順番は入れ替えられない。
+            let loaded = await store.serviceAccountBindings(for: accounts)
+            bindings = loaded
+            let all = loaded.all
+            guard !all.isEmpty else {
+                rules = AccessRules(isLoaded: true)
+                return
+            }
+            rules = await store.roleRules(for: all)
         }
     }
 
@@ -334,6 +355,11 @@ private struct TraceGraphView: View {
     /// 何も出さないと「先に何も無い」のか「壊れている」のかが分からない。
     @ViewBuilder
     private var notes: some View {
+        // 起点そのものについての断りを先に置く。**帯の下ではなく上** ——
+        // なぜ図が空なのかを、空の図を見てから探させない。
+        ForEach(graph.anchorNotes) { anchorNote in
+            note(anchorNote.text, level: anchorNote.level)
+        }
         if !graph.missingServiceNames.isEmpty {
             note(
                 "指している Service がありません: "
@@ -365,15 +391,12 @@ private struct TraceGraphView: View {
     @ViewBuilder
     private var storage: some View {
         if !graph.storage.isEmpty {
-            band("使っているストレージ") {
+            // 起点が PVC / PV のときは「使っている」ではない（起点そのもの）。
+            band(isStorageAnchor ? "ストレージ" : "使っているストレージ") {
                 tiles(minimumWidth: 200, maximumWidth: 420) {
                     ForEach(graph.storage) { link in
                         HStack(spacing: 8) {
-                            TraceNodeLabel(
-                                name: link.claim.name,
-                                kindLabel: ResourceKind.persistentVolumeClaim.displayName,
-                                symbol: ResourceKind.persistentVolumeClaim.symbol,
-                                tint: .secondary, maxWidth: 160)
+                            claim(link)
                             DiagramArrow(length: 16)
                             volume(link)
                         }
@@ -383,16 +406,44 @@ private struct TraceGraphView: View {
         }
     }
 
+    private var isStorageAnchor: Bool {
+        graph.anchor.anchorKind == .claim || graph.anchor.anchorKind == .volume
+    }
+
+    /// **ここも押せる。** 「この PVC を使っているのは何か」は帯を見ている
+    /// まさにその場で起きる問いなので、一覧に戻って選び直させない
+    /// （図の中の器を押せるようにしてあるのと同じ判断）。
+    private func claim(_ link: StorageLink) -> some View {
+        let target = TraceAnchor(
+            anchorKind: .claim, resourceKind: .persistentVolumeClaim,
+            kindLabel: ResourceKind.persistentVolumeClaim.apiKind,
+            namespace: link.claim.namespace, name: link.claim.name)
+
+        return TraceNodeLabel(
+            name: link.claim.name, kindLabel: link.claimDetail,
+            symbol: ResourceKind.persistentVolumeClaim.symbol,
+            tint: .secondary, maxWidth: 160,
+            isAnchor: target.id == graph.anchor.id, select: { select(target) })
+    }
+
     @ViewBuilder
     private func volume(_ link: StorageLink) -> some View {
         if let name = link.volumeName {
+            // **引けていないことを「無い」と書かない。** 名前は分かっている
+            // ので、中身が来ていないことだけを言う。
+            let target = TraceAnchor(
+                anchorKind: .volume, resourceKind: .persistentVolume,
+                kindLabel: ResourceKind.persistentVolume.apiKind,
+                namespace: nil, name: name)
             TraceNodeLabel(
                 name: name,
-                // 実物が引けていれば容量と StorageClass まで。引けていなければ
-                // 種別だけ書く（**「無い」と言わない**）。
-                kindLabel: link.volumeDetail ?? ResourceKind.persistentVolume.displayName,
+                // 実物が引けていれば状態・容量・StorageClass まで。
+                kindLabel: link.volumeDetail ?? "PV · 中身を引けていません",
                 symbol: ResourceKind.persistentVolume.symbol, tint: .secondary,
-                minWidth: 90, maxWidth: 200)
+                minWidth: 90, maxWidth: 200,
+                isAnchor: target.id == graph.anchor.id,
+                // 実物が無いものを起点にすると、押した先で何も出せない。
+                select: link.volume == nil ? nil : { select(target) })
         } else {
             Text("まだバインドされていません")
                 .font(.caption2)
@@ -450,8 +501,9 @@ private struct TraceGraphView: View {
     /// 動いている権限。ServiceAccount → Binding → ロールの中身。
     ///
     /// **名前だけ並べない。** どの Role が強いのかが分からず、結局 1 つずつ
-    /// 開くことになる（「アクセス制御」の一覧と同じ判断）。rules は重いので
-    /// **紐づいたぶんだけ引き直す**（`ClusterStore.roleRules`）。
+    /// 開くことになる（「アクセス制御」の一覧と同じ判断）。Binding も rules も
+    /// 重いので**起点が変わったときだけ引き直す**
+    /// （`ClusterStore.serviceAccountBindings` / `roleRules`）。
     @ViewBuilder
     private var access: some View {
         if !graph.access.isEmpty {
@@ -460,27 +512,47 @@ private struct TraceGraphView: View {
                     ForEach(graph.access.accounts) { account in
                         accountRow(account)
                     }
+                    // **「権限が無い」と書かない。** 読めなかっただけ。
+                    // Binding が読めなかったのと、Binding は読めたが指している
+                    // ロールが読めなかったのは**見る場所が違う**ので分けて出す。
+                    if !bindings.failures.isEmpty {
+                        failureNote(
+                            "\(bindings.failures.joined(separator: "・")) を読めませんでした。"
+                                + "付いている Binding がこれで全部とは限りません。")
+                    }
                     if !rules.failures.isEmpty {
-                        // **「権限が無い」と書かない。** 読めなかっただけ。
-                        Label(
+                        failureNote(
                             "\(rules.failures.joined(separator: "・")) を読めませんでした。"
-                                + "付いている規則がこれで全部とは限りません。",
-                            systemImage: StatusLevel.warning.symbol)
-                            .font(.caption2)
-                            .foregroundStyle(Palette.textColor(for: .warning))
+                                + "付いている規則がこれで全部とは限りません。")
                     }
                 }
             }
         }
     }
 
+    private func failureNote(_ text: String) -> some View {
+        Label(text, systemImage: StatusLevel.warning.symbol)
+            .font(.caption2)
+            .foregroundStyle(Palette.textColor(for: .warning))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private func accountRow(_ account: AccessAccount) -> some View {
-        HStack(alignment: .center, spacing: 8) {
+        let bound = bindings.bindings(for: account)
+
+        return HStack(alignment: .center, spacing: 8) {
             TraceNodeLabel(
                 name: account.name, kindLabel: ResourceKind.serviceAccount.displayName,
                 symbol: ResourceKind.serviceAccount.symbol, tint: .secondary,
                 minWidth: 110, maxWidth: 170)
-            if account.bindings.isEmpty {
+            if !bindings.isLoaded {
+                // **引く前の空を「無い」と書かない。** Binding は起点が変わった
+                // ときに引き直すので、ここに来るあいだが実際にある
+                // （遅いクラスタでは数秒）。
+                Text("付いている Binding を調べています…")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if bound.isEmpty {
                 // **「権限がありません」と断定しない。** グループ経由の付与
                 // （`system:serviceaccounts:*`）は見ていない。
                 Text("直接付いている Binding はありません（グループ経由の付与は見ていません）")
@@ -489,7 +561,7 @@ private struct TraceGraphView: View {
             } else {
                 DiagramArrow(length: 16)
                 tiles(minimumWidth: 200, maximumWidth: 340) {
-                    ForEach(account.bindings) { binding in
+                    ForEach(bound) { binding in
                         bindingTile(binding)
                     }
                 }

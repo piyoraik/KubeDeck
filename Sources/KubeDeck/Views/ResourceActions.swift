@@ -80,10 +80,30 @@ enum ResourceActionSet {
                 ResourceAction(
                     id: "logs", title: "ログを見る", shortTitle: "ログ",
                     symbol: "text.alignleft", group: .primary
-                ) { _, store in store.showLogs(for: object) })
+                ) { _, store in store.showLogs(request) })
             actions.append(
                 ResourceAction(
                     id: "logs-window", title: "ログを別ウインドウで見る",
+                    shortTitle: "ログ（別窓）", symbol: "macwindow.on.rectangle",
+                    group: .utility
+                ) { _, _ in openLogWindow(request) })
+        } else if let request = PodLogRequest(group: object) {
+            // **Pod / Job と同じ枝にしない。** あちらは 1 つを読む操作で、
+            // こちらはセレクタが掴む Pod を混ぜて読む操作。両方が出る種別は
+            // 無い（Pod と Job は `group` を作れない）ので `else if` でよく、
+            // 分けておけば文言も別に書ける。
+            //
+            // **「まとめて」と書く。** 「ログを見る」のままだと、どれか 1 つの
+            // Pod のログが出ると読める。
+            actions.append(
+                ResourceAction(
+                    id: "logs-group", title: "まとめてログを見る",
+                    shortTitle: "ログ", symbol: "text.line.first.and.arrowtriangle.forward",
+                    group: .primary
+                ) { _, store in store.showLogs(request) })
+            actions.append(
+                ResourceAction(
+                    id: "logs-group-window", title: "まとめてログを別ウインドウで見る",
                     shortTitle: "ログ（別窓）", symbol: "macwindow.on.rectangle",
                     group: .utility
                 ) { _, _ in openLogWindow(request) })
@@ -471,17 +491,35 @@ struct ResourceActionBar: View {
     /// 一覧の右クリックと同じ `ResourceActionSet` なので、抜け落ちはしない。
     private static let visibleCount = 3
 
+    /// ボタンとしては出さないもの。
+    ///
+    /// **ログはすぐ下のタブが持っている。** 名前の下に「ログ」ボタンがあり、
+    /// その 30pt 下のタブ列にも「ログ」があると、同じ名前が 2 つ並んでいて
+    /// **押した先が違う**（片方はここに開き、もう片方は一覧の下に開く）。
+    /// タブのほうが「選んだらそこにある」ので、ボタンから落とす。
+    ///
+    /// **メニューからは落とさない。** 一覧の右クリックと ⌘L はこの画面の
+    /// 外にあり、タブと重ならない（`ResourceActionSet` の中身は変えないので、
+    /// 出し分けは 1 か所のまま）。
+    private static let hiddenFromBar: Set<String> = ["logs", "logs-group"]
+
     var body: some View {
         let actions = ResourceActionSet.actions(
             for: objects, target: target, isReadOnly: store.isReadOnly,
             openLogWindow: { openWindow(id: LogWindow.id, value: $0) })
-        let shown = actions.filter { $0.group != .utility }
+        let shown = actions.filter {
+            $0.group != .utility && !Self.hiddenFromBar.contains($0.id)
+        }
         let visible = Array(shown.prefix(Self.visibleCount))
         let overflow = Array(shown.dropFirst(Self.visibleCount)) + actions.filter {
             $0.group == .utility
         }
 
-        if !visible.isEmpty {
+        // **ボタンが 1 つも無いときに「その他」ごと消さない。** 読み取り専用の
+        // クラスタではクラスタを動かす操作が全部落ちるので、残るのは
+        // `utility` だけになる。そこで丸ごと畳むと、名前のコピーも別ウインドウも
+        // 届かなくなる（ログをボタンから落としたぶん、ここに掛かりやすくなった）。
+        if !visible.isEmpty || !overflow.isEmpty {
             ActionFlow {
                 ForEach(visible) { action in
                     button(action)

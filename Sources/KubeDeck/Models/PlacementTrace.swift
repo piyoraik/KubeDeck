@@ -27,6 +27,12 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
     case service
     case ingress
     case node
+    /// PVC。**付属物ではあるが、起点としては逆引きの入口。**
+    /// 「この PVC を消してよいか」「なぜ Pending なのか」は、掴んでいる Pod を
+    /// 見つけないと答えられない。
+    case claim
+    /// PV。PVC が消えても残るので、**PVC からしか辿れないと回収漏れが見えない。**
+    case volume
 
     var id: String { rawValue }
 
@@ -37,6 +43,10 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .service: return "Service"
         case .ingress: return "Ingress"
         case .node: return "ノード"
+        // **略記で出す。** `PersistentVolumeClaim` は 236pt の欄に入らず、
+        // 真ん中を落とすと PV と見分けが付かなくなる。
+        case .claim: return "PVC"
+        case .volume: return "PV"
         }
     }
 
@@ -47,6 +57,8 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .service: return ResourceKind.service.symbol
         case .ingress: return ResourceKind.ingress.symbol
         case .node: return ResourceKind.node.symbol
+        case .claim: return ResourceKind.persistentVolumeClaim.symbol
+        case .volume: return ResourceKind.persistentVolume.symbol
         }
     }
 
@@ -58,6 +70,8 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .service: return "この Service が掴んでいるのは何か"
         case .ingress: return "この入口の先に何があるか"
         case .node: return "このノードに載っているものは何に繋がっているか"
+        case .claim: return "この PVC を使っているのは何か"
+        case .volume: return "この PV は誰に掴まれているか"
         }
     }
 
@@ -70,6 +84,8 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .service: return "Service がありません。"
         case .ingress: return "Ingress がありません。"
         case .node: return "ノードがありません。"
+        case .claim: return "PersistentVolumeClaim がありません。"
+        case .volume: return "PersistentVolume がありません。"
         }
     }
 }
@@ -91,6 +107,11 @@ struct TraceAnchor: Identifiable, Hashable, Sendable {
     var isStandalone: Bool = false
     /// 一覧の行に出す Pod の数。
     var podCount: Int = 0
+    /// 一覧の行に添える short な状態（PVC / PV の phase と容量）。
+    ///
+    /// **`id` には入れない。** 状態は自動更新で動くので、入れると同じものを
+    /// 選んでいるのに別の起点として扱われ、選択が外れる。
+    var detail: String?
 
     var id: String {
         "\(anchorKind.rawValue)|\(namespace ?? "-")|\(kindLabel)|\(name)"
@@ -149,10 +170,25 @@ struct TraceBranch: Identifiable, Sendable {
     var pods: [K8sObject] { generations.flatMap(\.pods) }
 }
 
+/// 図に添える断り。**文言と重みを組で持つ。**
+///
+/// 「無い」と「取れていない」を混ぜないためには、同じ「見つからない」でも
+/// 言い方と重みを変える必要がある（消えているのか、取得の範囲外なのか）。
+struct TraceNote: Identifiable, Sendable {
+    let text: String
+    let level: StatusLevel
+
+    var id: String { text }
+}
+
 /// 起点から解いた図ぜんぶ。
 struct TraceGraph: Sendable {
     let anchor: TraceAnchor
     let branches: [TraceBranch]
+    /// 起点そのものについての断り。**PVC / PV を起点にしたときが本番** ——
+    /// 誰も使っていない、束ねる先が無い、束ねていた PVC が消えている。
+    /// どれも枝が空になるだけなので、書かないと「辿れません」で終わる。
+    let anchorNotes: [TraceNote]
     /// 起点から辿れたが Pod に届かなかった Service。
     /// **黙って落とさない** — 「先に何も無い」と「掴んでいる Pod が無い」は別。
     let danglingServices: [K8sObject]
@@ -194,6 +230,8 @@ enum PlacementTrace {
         case .service: return serviceAnchors(inventory: inventory)
         case .ingress: return ingressAnchors(inventory: inventory)
         case .node: return nodeAnchors(inventory: inventory)
+        case .claim: return claimAnchors(inventory: inventory)
+        case .volume: return volumeAnchors(inventory: inventory)
         }
     }
 
@@ -301,6 +339,58 @@ enum PlacementTrace {
             .sorted(by: byName)
     }
 
+    /// **名前順で出す。** 数の多い順にすると、誰にも使われていない PVC
+    /// （＝いちばん見つけたいもの）が末尾に沈む。名前で探すほうがふつうでもある。
+    private static func claimAnchors(inventory: PlacementInventory) -> [TraceAnchor] {
+        inventory.related
+            .filter { $0.kind == .persistentVolumeClaim }
+            .map { claim in
+                TraceAnchor(
+                    anchorKind: .claim, resourceKind: .persistentVolumeClaim,
+                    kindLabel: ResourceKind.persistentVolumeClaim.apiKind,
+                    namespace: claim.namespace, name: claim.name,
+                    podCount: WorkloadRelations.pods(
+                        using: claim.name, namespace: claim.namespace,
+                        among: inventory.pods).count,
+                    detail: phase(of: claim))
+            }
+            .sorted(by: byName)
+    }
+
+    /// **PV は Namespace を持たない。** `namespace` に何か入れると、`id` が
+    /// 図の中で組み立てたものと食い違い、押しても一覧に無い起点になる。
+    private static func volumeAnchors(inventory: PlacementInventory) -> [TraceAnchor] {
+        inventory.related
+            .filter { $0.kind == .persistentVolume }
+            .map { volume in
+                let claim = WorkloadRelations.claim(boundTo: volume, among: inventory.related)
+                let pods = claim.map {
+                    WorkloadRelations.pods(
+                        using: $0.name, namespace: $0.namespace, among: inventory.pods)
+                } ?? []
+                return TraceAnchor(
+                    anchorKind: .volume, resourceKind: .persistentVolume,
+                    kindLabel: ResourceKind.persistentVolume.apiKind, namespace: nil,
+                    name: volume.name, podCount: pods.count,
+                    detail: [
+                        phase(of: volume),
+                        volume.status?.path("capacity.storage")?.stringValue
+                            ?? volume.spec?.path("capacity.storage")?.stringValue,
+                    ]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "))
+            }
+            .sorted(by: byName)
+    }
+
+    /// **空を「Unknown」に書き換えない。** phase が来ていないだけのことを、
+    /// クラスタが Unknown と答えたことにしない。
+    private static func phase(of object: K8sObject) -> String? {
+        let phase = object.status?["phase"]?.stringValue
+        return (phase?.isEmpty ?? true) ? nil : phase
+    }
+
     private static func byName(_ lhs: TraceAnchor, _ rhs: TraceAnchor) -> Bool {
         lhs.name == rhs.name
             ? (lhs.namespace ?? "") < (rhs.namespace ?? "") : lhs.name < rhs.name
@@ -354,9 +444,18 @@ enum PlacementTrace {
             break
         }
 
-        let claims = WorkloadRelations.claims(for: pods, among: inventory.related)
+        var claims = WorkloadRelations.claims(for: pods, among: inventory.related)
+        // **起点そのものは、掴んでいる Pod が無くても帯に出す。** PVC を起点に
+        // したのに帯が消えると、束ねる先も状態も見えないまま「辿れません」で
+        // 終わる（起点にした当のものが画面から消えるのはいちばん困る消え方）。
+        if let anchored = anchoredClaim(for: anchor, inventory: inventory),
+           !claims.contains(where: { $0.id == anchored.id }) {
+            claims.insert(anchored, at: 0)
+        }
         return TraceGraph(
-            anchor: anchor, branches: branches, danglingServices: dangling,
+            anchor: anchor, branches: branches,
+            anchorNotes: storageNotes(for: anchor, pods: pods, inventory: inventory),
+            danglingServices: dangling,
             missingServiceNames: missing,
             claims: claims,
             storage: WorkloadRelations.storageLinks(for: claims, among: inventory.related),
@@ -364,7 +463,106 @@ enum PlacementTrace {
             configs: WorkloadRelations.configReferences(
                 for: pods, ingresses: branches.flatMap(\.ingresses)),
             policies: WorkloadRelations.policies(for: pods, among: inventory.related),
-            access: WorkloadRelations.accessSummary(for: pods, among: inventory.related))
+            // 口座の一覧は Pod の spec だけで作れる（kubectl は増えない）。
+            // 付いている Binding は画面が引き直して足す。
+            access: WorkloadRelations.accessSummary(for: pods))
+    }
+
+    /// 起点そのものの PVC。PV を起点にしたときは、束ねている PVC。
+    private static func anchoredClaim(
+        for anchor: TraceAnchor, inventory: PlacementInventory
+    ) -> K8sObject? {
+        switch anchor.anchorKind {
+        case .claim:
+            return object(for: anchor, in: inventory)
+        case .volume:
+            guard let volume = object(for: anchor, in: inventory) else { return nil }
+            return WorkloadRelations.claim(boundTo: volume, among: inventory.related)
+        default:
+            return nil
+        }
+    }
+
+    /// PVC / PV を起点にしたときの断り。
+    ///
+    /// **「誰も使っていない」と「取れていない」を混ぜない。** PV の `claimRef` が
+    /// 指す PVC が手元に無いことは、消えていること（Released）とは別で、Namespace を
+    /// 絞っていれば在るのに見えていないだけ。**どちらなのかは PV の phase が
+    /// 知っている**ので、そこで書き分ける（`Bound` のままなら PVC は在る）。
+    private static func storageNotes(
+        for anchor: TraceAnchor, pods: [K8sObject], inventory: PlacementInventory
+    ) -> [TraceNote] {
+        switch anchor.anchorKind {
+        case .claim:
+            guard pods.isEmpty else { return [] }
+            // **「消してよい」と言わない。** Pod が止まらないことと、データが
+            // 消えないことは別の話で、消すのは PV とデータのほう。
+            return [
+                TraceNote(
+                    text: "この PVC を使っている Pod はありません。"
+                        + "消しても止まる Pod はありませんが、PV とデータの行き先は"
+                        + "StorageClass の回収方針で決まります。",
+                    level: .warning)
+            ]
+        case .volume:
+            return volumeNotes(for: anchor, pods: pods, inventory: inventory)
+        default:
+            return []
+        }
+    }
+
+    private static func volumeNotes(
+        for anchor: TraceAnchor, pods: [K8sObject], inventory: PlacementInventory
+    ) -> [TraceNote] {
+        guard let volume = object(for: anchor, in: inventory) else { return [] }
+        let phase = volume.status?["phase"]?.stringValue ?? ""
+        let reference = WorkloadRelations.claimReference(of: volume)
+        let claim = WorkloadRelations.claim(boundTo: volume, among: inventory.related)
+
+        guard let reference else {
+            // 指し先そのものが無い。`Available` なら待っている状態でふつう。
+            return [
+                TraceNote(
+                    text: "この PV はどの PVC にも束ねられていません"
+                        + (phase.isEmpty ? "。" : "（\(phase)）。"),
+                    level: phase.isEmpty || phase == "Available" ? .neutral : .warning)
+            ]
+        }
+        let name = "\(reference.namespace ?? "-")/\(reference.name)"
+        if claim == nil {
+            switch phase {
+            case "Released":
+                return [
+                    TraceNote(
+                        text: "束ねていた PVC \(name) は消えています（Released）。"
+                            + "PVC を消しても PV とデータは残るので、"
+                            + "回収するには手で消します。",
+                        level: .warning)
+                ]
+            case "Failed":
+                return [
+                    TraceNote(
+                        text: "PVC \(name) を消したあとの回収に失敗しています"
+                            + "（Failed）。実体は残っています。",
+                        level: .serious)
+                ]
+            default:
+                // **「PVC がありません」と書かない。** Bound のままなら PVC は
+                // 在るので、取得の範囲外にあるだけ。
+                return [
+                    TraceNote(
+                        text: "束ねている PVC \(name) は、いま取得している範囲に"
+                            + "ありません（Namespace の絞り込みを外すと出ます）。",
+                        level: .neutral)
+                ]
+            }
+        }
+        guard pods.isEmpty else { return [] }
+        return [
+            TraceNote(
+                text: "PVC \(name) は在りますが、それを使っている Pod はありません。",
+                level: .warning)
+        ]
     }
 
     /// 起点が掴んでいる Pod。ここだけが起点ごとに違う。
@@ -400,6 +598,17 @@ enum PlacementTrace {
             return result
         case .node:
             return inventory.pods.filter { nodeName(of: $0) == anchor.name }
+        case .claim:
+            return WorkloadRelations.pods(
+                using: anchor.name, namespace: anchor.namespace, among: inventory.pods)
+        case .volume:
+            // PV → PVC → Pod の 2 段。**PV から Pod へ直接は辿れない**
+            // （Pod の spec に書いてあるのは PVC の名前だけ）。
+            guard let volume = object(for: anchor, in: inventory),
+                  let claim = WorkloadRelations.claim(boundTo: volume, among: inventory.related)
+            else { return [] }
+            return WorkloadRelations.pods(
+                using: claim.name, namespace: claim.namespace, among: inventory.pods)
         }
     }
 
@@ -631,7 +840,7 @@ enum PlacementTrace {
         switch anchor.anchorKind {
         case .node: pool = inventory.nodes
         case .generation: pool = inventory.generations
-        case .service, .ingress: pool = inventory.related
+        case .service, .ingress, .claim, .volume: pool = inventory.related
         case .workload: pool = inventory.workloads
         }
         return pool.first {

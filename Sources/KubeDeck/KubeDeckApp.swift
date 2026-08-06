@@ -91,8 +91,14 @@ private struct ObjectCommands: View {
 
     /// よく使うものにだけ割り当てる。**全部に付けない** —— 覚えられないし、
     /// 押し間違いが増えるだけ。
+    /// **同じキーを両方の形に割り当てる。** 「1 つを読む」（`logs`）と
+    /// 「まとめて読む」（`logs-group`）は同じ種別に同時には出ないので、
+    /// ⌘L がどちらを指すかは選んでいるものが決める。片方だけ書くと、
+    /// **Deployment を選んだときだけ ⌘L が効かない**という気付きにくい
+    /// 抜け方をする。
     private static let shortcuts: [String: KeyEquivalent] = [
         "logs": "l",
+        "logs-group": "l",
         "exec": "e",
         "delete": .delete,
         "delete-many": .delete,
