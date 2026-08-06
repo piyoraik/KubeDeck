@@ -16,10 +16,13 @@ struct PlacementView: View {
 
     var body: some View {
         if store.placementNodes.isEmpty && store.objects.isEmpty {
-            if store.errorMessage != nil {
-                failureState
-            } else if store.isLoading {
+            // **読み込み中を失敗より先に見る。** `errorMessage` は前回の取得の
+            // ものなので、Namespace を切り替えて引き直している最中にこれを先に
+            // 見ると、まだ何も試していないのに失敗の画面が出たままになる。
+            if store.isLoading {
                 LoadingView(detail: store.currentContext)
+            } else if store.errorMessage != nil {
+                failureState
             } else {
                 emptyState
             }
