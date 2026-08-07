@@ -121,10 +121,12 @@ struct ResourceListView: View {
         HStack(spacing: 12) {
             ForEach(columns) { column in
                 let sort = store.sortDescriptor
-                let isActive = sort?.columnTitle == column.title
+                // **鍵で突き合わせる。** 見出しは訳されるので、比べる相手に
+                // 使うと訳が衝突したときに別の列が光る。
+                let isActive = sort?.columnKey == column.key
 
                 Button {
-                    store.toggleSort(column: column.title)
+                    store.toggleSort(column: column.key)
                 } label: {
                     HStack(spacing: 3) {
                         if column.trailing { Spacer(minLength: 0) }
@@ -144,8 +146,7 @@ struct ResourceListView: View {
                 .buttonStyle(.plain)
                 .help(
                     isActive
-                        ? "\(column.title) で並べ替え中。もう一度押すと逆順、"
-                            + "3 度目で既定（異常が上）に戻る"
+                        ? "\(column.title) で並べ替え中。もう一度押すと逆順、3 度目で既定（異常が上）に戻る"
                         : "\(column.title) で並べ替える")
                 .modifier(ColumnFrame(column: column))
             }

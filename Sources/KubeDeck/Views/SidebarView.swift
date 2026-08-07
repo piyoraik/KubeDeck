@@ -61,7 +61,11 @@ struct SidebarView: View {
     /// API グループごとにまとめた CRD。グループ名の昇順。
     private var customGroups: [(name: String, types: [CustomResourceType])] {
         Dictionary(grouping: store.customTypes, by: \.group)
-            .map { (name: $0.key.isEmpty ? "カスタムリソース" : $0.key, types: $0.value) }
+            .map {
+                (name: $0.key.isEmpty
+                    ? String(localized: "カスタムリソース") : $0.key,
+                 types: $0.value)
+            }
             .sorted { $0.name < $1.name }
     }
 

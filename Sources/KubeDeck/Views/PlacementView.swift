@@ -98,9 +98,16 @@ struct PlacementView: View {
         let id: String
         let node: K8sObject?
         let pods: [K8sObject]
+        /// 見出しに出す名前。**`id` を見出しに流用しない** —— `id` は
+        /// 突き合わせと並べ替えに使う値なので訳せず、未スケジュールの箱だけ
+        /// 日本語のまま残ることになる。
+        var title: String?
 
-        var name: String { node?.name ?? id }
+        var name: String { node?.name ?? title ?? id }
     }
+
+    /// 未スケジュールの箱の `id`。**言語で変わらない値にする。**
+    static let unscheduledID = "kubedeck.unscheduled"
 
     /// **Pod が 0 のノードも出す。** 空いているノードが見えないと、偏りの
     /// 片側（受け入れ先があるのに寄っている）が分からない。
@@ -132,7 +139,12 @@ struct PlacementView: View {
             groups.append(Group(id: name, node: nil, pods: pods))
         }
         if !unscheduled.isEmpty {
-            groups.append(Group(id: "未スケジュール", node: nil, pods: unscheduled))
+            // **`id` は訳さない。** 並べ替えと突き合わせに使う値で、
+            // 言語で変わると別の箱として扱われる。見出しは view の側が訳す。
+            groups.append(
+                Group(
+                    id: Self.unscheduledID, node: nil, pods: unscheduled,
+                    title: String(localized: "未スケジュール")))
         }
         return groups
     }
@@ -189,7 +201,8 @@ struct PlacementView: View {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
         for pod in store.filteredObjects {
-            let owner = Self.owner(of: pod, controllers: index) ?? "単体の Pod"
+            let owner = Self.owner(of: pod, controllers: index)
+                ?? String(localized: "単体の Pod")
             byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
         }
 
@@ -199,7 +212,7 @@ struct PlacementView: View {
             let namespace = pods.first?.namespace
             var byNode: [String: [K8sObject]] = [:]
             for pod in pods {
-                let node = Self.nodeName(of: pod) ?? "未スケジュール"
+                let node = Self.nodeName(of: pod) ?? String(localized: "未スケジュール")
                 byNode[node, default: []].append(pod)
             }
             var ordered: [(node: String, pods: [K8sObject])] = []
@@ -360,7 +373,8 @@ private struct NodeCard: View {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
         for pod in group.pods {
-            let owner = PlacementView.owner(of: pod, controllers: index) ?? "単体の Pod"
+            let owner = PlacementView.owner(of: pod, controllers: index)
+            ?? String(localized: "単体の Pod")
             byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
         }
         var result: [Workload] = []
@@ -463,14 +477,17 @@ private struct WorkloadUsageBars: View {
         var notes: [String] = []
         if usage.isPartial {
             notes.append(
-                "\(usage.podCount) 個中 \(usage.measuredPods) 個ぶんの合計です"
-                    + "（残りは使用量を引けていません）。")
+                String(localized: """
+                    \(usage.podCount) 個中 \(usage.measuredPods) 個ぶんの合計です\
+                    （残りは使用量を引けていません）。
+                    """))
         }
         let missing =
             (metric.showsCPU ? usage.cpu.podsWithoutBase : 0)
             + (metric.showsMemory ? usage.memory.podsWithoutBase : 0)
         if missing > 0 {
-            notes.append("上限も要求も書かれていない Pod があるので、割合は出しません。")
+            notes.append(
+                String(localized: "上限も要求も書かれていない Pod があるので、割合は出しません。"))
         }
         return notes
     }
@@ -481,7 +498,7 @@ private struct WorkloadUsageBars: View {
 /// **状態の色のまま。** ここは「分母にどれだけ近いか」が主役で、系列という
 /// 考え方が無い（概要の折れ線とは持ち場が違う）。
 private struct PlacementUsageBar: View {
-    let title: String
+    let title: LocalizedStringResource
     let used: Double
     let base: Double
     /// 分母の呼び名（`上限` など）。ノードは分母が 1 つしか無いので付けない。
@@ -545,7 +562,7 @@ private struct WorkloadCard: View {
                 CountPill(text: "\(spread.podCount) Pod")
                 // 散っている数は、固まっているときだけ色を付ける。
                 CountPill(
-                    text: "\(spread.nodeCount) ノード",
+                    text: String(localized: "\(spread.nodeCount) ノード"),
                     tint: spread.isConcentrated ? Palette.color(for: .warning) : nil)
             }
 
@@ -553,8 +570,7 @@ private struct WorkloadCard: View {
             // この画面でいちばん見たいものなので、文字で書く。
             if spread.isConcentrated {
                 Label(
-                    "\(spread.podCount) 個すべてが 1 つのノードに載っています。"
-                        + "このノードが落ちると全部止まります。",
+                    "\(spread.podCount) 個すべてが 1 つのノードに載っています。このノードが落ちると全部止まります。",
                     systemImage: StatusLevel.warning.symbol)
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .warning))
@@ -755,8 +771,10 @@ private struct PodTile: View {
     private func helpText(_ status: ResourceStatus) -> String {
         var text = "\(pod.namespace ?? "-")/\(pod.name) · \(status.text)"
         if let usage = store.metrics.usage(for: pod) {
-            text += " · CPU \(Quantity.formatCPU(cores: usage.cpuCores))"
-                + " · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))"
+            text += """
+                 · CPU \(Quantity.formatCPU(cores: usage.cpuCores))\
+                 · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))
+                """
         }
         return text
     }

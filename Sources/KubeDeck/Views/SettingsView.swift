@@ -149,9 +149,11 @@ private struct GeneralSettings: View {
             // **残るものを正確に書く。** 以前は `contextProfiles` も消して
             // いたのに「コンテキストは残ります」と書いており、読み取り専用の
             // 指定が黙って外れていた。いまは消さないので、そう書ける。
-            Text("接続先のコンテキストや Namespace の選択は残ります。"
-                 + "コンテキストごとの色・別名・読み取り専用の指定も残ります"
-                 + "（消すときは「コンテキスト」タブから）。")
+            Text("""
+                接続先のコンテキストや Namespace の選択は残ります。\
+                コンテキストごとの色・別名・読み取り専用の指定も残ります\
+                （消すときは「コンテキスト」タブから）。
+                """)
         }
     }
 }
@@ -251,7 +253,7 @@ private struct MetricsSettings: View {
 
                 LabeledContent("いま使っている先") {
                     Text(store.activeMetricsSource.isAvailable
-                        ? store.activeMetricsSource.label : "なし")
+                        ? store.activeMetricsSource.label : String(localized: "なし"))
                         .foregroundStyle(.secondary)
                 }
             } header: {
@@ -357,7 +359,7 @@ private struct MetricsSettings: View {
 
     private func checkManualEndpoint() {
         guard let port = Int(manualPort) else {
-            manualResult = "ポート番号が数値ではありません。"
+            manualResult = String(localized: "ポート番号が数値ではありません。")
             return
         }
         let endpoint = PrometheusEndpoint(
@@ -371,7 +373,9 @@ private struct MetricsSettings: View {
             let ok = await store.useManualPrometheus(endpoint)
             isChecking = false
             // 応答しない場所を「設定した」と言わない。
-            manualResult = ok ? "つながりました。" : "応答がありません。"
+            manualResult = ok
+                ? String(localized: "つながりました。")
+                : String(localized: "応答がありません。")
         }
     }
 
@@ -405,9 +409,11 @@ private struct ContextSettings: View {
     var body: some View {
         Form {
             Section {
-                Text("色を付けたコンテキストは、窓の上に帯が出ます。"
-                     + "読み取り専用にすると、変更する操作をいっさい出しません"
-                     + "（見るだけのクラスタを取り違えても壊せません）。")
+                Text("""
+                    色を付けたコンテキストは、窓の上に帯が出ます。\
+                    読み取り専用にすると、変更する操作をいっさい出しません\
+                    （見るだけのクラスタを取り違えても壊せません）。
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -447,9 +453,7 @@ private struct ContextSettings: View {
                 }
                 .disabled(preferences.contextProfiles.isEmpty)
             } footer: {
-                Text("色・別名・読み取り専用の指定をまとめて消します。"
-                     + "他の設定は「一般」タブの「すべて既定値に戻す」で戻せますが、"
-                     + "そちらではこの札は消えません。")
+                Text("色・別名・読み取り専用の指定をまとめて消します。他の設定は「一般」タブの「すべて既定値に戻す」で戻せますが、そちらではこの札は消えません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -464,8 +468,7 @@ private struct ContextSettings: View {
         } message: {
             // **何が外れるのかを名指しする。** 読み取り専用はこのアプリで
             // 唯一「壊せなくする」仕組みなので、消える前に言う。
-            Text("読み取り専用の指定も外れます。"
-                 + "以後、それらのクラスタでも削除や drain が押せるようになります。")
+            Text("読み取り専用の指定も外れます。以後、それらのクラスタでも削除や drain が押せるようになります。")
         }
     }
 
@@ -491,8 +494,7 @@ private struct ContextSettings: View {
                 prompt: Text("空ならコンテキスト名"))
             Toggle("読み取り専用", isOn: binding(context, \.isReadOnly))
             if profile.isReadOnly {
-                Text("この設定はこのアプリの中だけの話です。"
-                     + "クラスタ側の権限は変わりません。")
+                Text("この設定はこのアプリの中だけの話です。クラスタ側の権限は変わりません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -571,7 +573,7 @@ private struct ConnectionSettings: View {
             }
 
             Section {
-                Text(cacheDirectory ?? "確認中")
+                Text(cacheDirectory ?? String(localized: "確認中"))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -581,7 +583,7 @@ private struct ConnectionSettings: View {
                     // **「まだ捨てていない」と「捨てた」を混ぜない。**
                     Text(lastDiscoveryReset.map {
                         $0.formatted(date: .omitted, time: .standard)
-                    } ?? "まだありません")
+                    } ?? String(localized: "まだありません"))
                     .foregroundStyle(.secondary)
                 }
             } header: {
@@ -593,7 +595,7 @@ private struct ConnectionSettings: View {
             }
 
             Section {
-                Text(searchPath ?? "確認中")
+                Text(searchPath ?? String(localized: "確認中"))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -636,8 +638,10 @@ private struct ConnectionSettings: View {
         }
         .formStyle(.grouped)
         .task(id: preferences.kubectlPathOverride) {
-            resolvedPath = await Kubectl.shared.resolvedExecutablePath() ?? "見つかりません"
-            searchPath = await Kubectl.shared.resolvedSearchPath() ?? "確認できません"
+            resolvedPath = await Kubectl.shared.resolvedExecutablePath()
+            ?? String(localized: "見つかりません")
+            searchPath = await Kubectl.shared.resolvedSearchPath()
+            ?? String(localized: "確認できません")
             variables = await Kubectl.shared.resolvedVariables()
             let cache = await Kubectl.shared.resolvedCacheDirectory()
             cacheDirectory = cache.path

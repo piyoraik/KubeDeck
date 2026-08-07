@@ -81,7 +81,9 @@ struct TraceMapView: View {
             kindSelector
             Rectangle().fill(Palette.hairline).frame(height: 1)
             if visible.isEmpty {
-                Text(anchors.isEmpty ? anchorKind.emptyMessage : "一致するものがありません。")
+                Text(anchors.isEmpty
+                        ? anchorKind.emptyMessage
+                        : String(localized: "一致するものがありません。"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -256,11 +258,11 @@ struct TraceMapView: View {
         // ワークロードを起点にしたときの「何ワークロード」は自明なので出さない
         // （同じ数字を 2 度出さない）。
         if graph.anchor.anchorKind != .workload && graph.branches.count > 1 {
-            parts.append("\(graph.branches.count) ワークロード")
+            parts.append(String(localized: "\(graph.branches.count) ワークロード"))
         }
         // ノードを起点にしているときの「1 ノード」は自分のことなので出さない。
         if graph.nodeCount > 0 && graph.anchor.anchorKind != .node {
-            parts.append("\(graph.nodeCount) ノード")
+            parts.append(String(localized: "\(graph.nodeCount) ノード"))
         }
         return parts.joined(separator: " · ")
     }
@@ -361,14 +363,15 @@ private struct TraceGraphView: View {
             note(anchorNote.text, level: anchorNote.level)
         }
         if !graph.missingServiceNames.isEmpty {
+            let names = graph.missingServiceNames.joined(separator: ", ")
             note(
-                "指している Service がありません: "
-                    + graph.missingServiceNames.joined(separator: ", "),
+                String(localized: "指している Service がありません: \(names)"),
                 level: .serious)
         }
         ForEach(graph.danglingServices, id: \.id) { service in
             note(
-                "Service \(service.name) のセレクタに一致する Pod がありません。",
+                String(
+                    localized: "Service \(service.name) のセレクタに一致する Pod がありません。"),
                 level: .warning)
         }
     }
@@ -438,7 +441,7 @@ private struct TraceGraphView: View {
             TraceNodeLabel(
                 name: name,
                 // 実物が引けていれば状態・容量・StorageClass まで。
-                kindLabel: link.volumeDetail ?? "PV · 中身を引けていません",
+                kindLabel: link.volumeDetail ?? String(localized: "PV · 中身を引けていません"),
                 symbol: ResourceKind.persistentVolume.symbol, tint: .secondary,
                 minWidth: 90, maxWidth: 200,
                 isAnchor: target.id == graph.anchor.id,
@@ -515,15 +518,21 @@ private struct TraceGraphView: View {
                     // **「権限が無い」と書かない。** 読めなかっただけ。
                     // Binding が読めなかったのと、Binding は読めたが指している
                     // ロールが読めなかったのは**見る場所が違う**ので分けて出す。
+                    // **添字や引数を鍵の中で組まない。** 補間の中に `"` が入ると
+                    // 文言としての切れ目が読めなくなる。先に組んでおく。
                     if !bindings.failures.isEmpty {
-                        failureNote(
-                            "\(bindings.failures.joined(separator: "・")) を読めませんでした。"
-                                + "付いている Binding がこれで全部とは限りません。")
+                        let names = bindings.failures.joined(separator: "・")
+                        failureNote("""
+                            \(names) を読めませんでした。\
+                            付いている Binding がこれで全部とは限りません。
+                            """)
                     }
                     if !rules.failures.isEmpty {
-                        failureNote(
-                            "\(rules.failures.joined(separator: "・")) を読めませんでした。"
-                                + "付いている規則がこれで全部とは限りません。")
+                        let names = rules.failures.joined(separator: "・")
+                        failureNote("""
+                            \(names) を読めませんでした。\
+                            付いている規則がこれで全部とは限りません。
+                            """)
                     }
                 }
             }
@@ -614,7 +623,7 @@ private struct TraceGraphView: View {
     /// 付属物の帯。見出しの幅を揃えるのは、帯が何本も並ぶため
     /// （ばらばらだと段に見えない）。
     private func band<Content: View>(
-        _ title: String, @ViewBuilder content: () -> Content
+        _ title: LocalizedStringResource, @ViewBuilder content: () -> Content
     ) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text(title)
@@ -653,7 +662,8 @@ private struct TraceBranchView: View {
 
     var body: some View {
         DiagramBox(
-            title: branch.namespace ?? "クラスタ", symbol: ResourceKind.namespace.symbol,
+            title: branch.namespace ?? String(localized: "クラスタ"),
+                symbol: ResourceKind.namespace.symbol,
             tint: .secondary
         ) {
             HStack(alignment: .center, spacing: 0) {
@@ -726,7 +736,8 @@ private struct TraceBranchView: View {
                 .multilineTextAlignment(.center)
                 .frame(minWidth: 88, maxWidth: 120)
                 .lineLimit(2)
-            Text(target.isStandalone ? "所有者なし" : target.kindLabel)
+            Text(target.isStandalone
+                    ? String(localized: "所有者なし") : target.kindLabel)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -758,7 +769,7 @@ private struct TraceGenerationView: View {
                 title: generation.name, symbol: generation.kind?.symbol,
                 tint: tint,
                 action: target.map { anchor in { select(anchor) } },
-                help: "この世代だけを起点にする"
+                help: String(localized: "この世代だけを起点にする")
             ) {
                 if generation.pods.isEmpty {
                     Text("Pod はありません（古い世代）")
@@ -833,7 +844,7 @@ private struct TraceNodeGroupRow: View {
                 isAnchor: target.id == anchor.id, select: { select(target) })
         } else {
             TraceNodeLabel(
-                name: "未スケジュール", kindLabel: count,
+                name: String(localized: "未スケジュール"), kindLabel: count,
                 symbol: "questionmark.square.dashed", tint: .secondary, size: 26,
                 minWidth: 70, maxWidth: 170)
         }
@@ -852,8 +863,11 @@ private struct TracePodTile: View {
 
     var body: some View {
         let status = StatusResolver.health(for: pod)
+        // **`??` を鍵の中に書かない。** 補間の中の `"` で文言の切れ目が
+        // 読めなくなる（この画面で実際に壊した）。先に決めておく。
+        let place = node ?? String(localized: "未スケジュール")
 
-        Button {
+        return Button {
             // 配置のタイルと同じ入口を通す（`selectedObjectID` を直に
             // 書くと、操作の対象になる集合が空のまま取り残される）。
             store.selectOnly(pod)
@@ -885,9 +899,10 @@ private struct TracePodTile: View {
         }
         .buttonStyle(.plain)
         // 名前は幅が足りないと真ん中を落とすので、全体はここで読めるようにする。
-        .help(
-            "\(pod.namespace ?? "-")/\(pod.name) · \(status.text) · "
-                + "\(node ?? "未スケジュール") · 押すと右のパネルに詳細")
+        .help("""
+            \(pod.namespace ?? "-")/\(pod.name) · \(status.text) · \
+            \(place) · 押すと右のパネルに詳細
+            """)
     }
 }
 

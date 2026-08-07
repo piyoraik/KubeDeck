@@ -64,7 +64,7 @@ final class UpdateController {
     private init() {
         currentVersion =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "不明"
+            ?? String(localized: "不明")
 
         // startingUpdater: true で、Preferences が入れた設定のまま走り出す。
         controller = SPUStandardUpdaterController(

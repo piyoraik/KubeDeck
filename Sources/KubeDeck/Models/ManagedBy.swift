@@ -41,6 +41,8 @@ enum ManagedBy: String, Sendable {
     /// 書き戻す前に出す断り。**何が起きるかを書く**（「管理されています」だけだと
     /// それで困るのかどうかが分からない）。
     var warning: String {
-        "\(rawValue) が管理しています。ここで書き戻しても、次の同期で元に戻ります。"
+        String(localized: """
+            \(rawValue) が管理しています。ここで書き戻しても、次の同期で元に戻ります。
+            """)
     }
 }

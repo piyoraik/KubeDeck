@@ -6,10 +6,10 @@ import SwiftUI
 /// リングは全体に対する割合、中央は総数。状態色は淡いところで見分けにくく
 /// なるので、内訳を出すときは必ずアイコンとラベルを添える（色だけで意味を運ばせない）。
 struct StatusRing: View {
-    let title: String
+    let title: LocalizedStringResource
     let tally: StatusTally
     /// 中央に出す単位（「Pod」など）。
-    let unit: String
+    let unit: LocalizedStringResource
 
     var body: some View {
         HStack(spacing: 14) {

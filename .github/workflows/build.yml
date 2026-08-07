@@ -46,6 +46,58 @@ jobs:
           fi
           grep -E "Test run with" build/xcodebuild-test.log || true
 
+      # **未訳をここで落とす。** 未訳は日本語のまま出るだけで、どこも失敗
+      # しない（「無い」と「取れていない」を混ぜないのと同じで、気付く手立てを
+      # 別に置く必要がある）。テストでは見ない —— あちらは ja 固定で走らせて
+      # いるので、訳が 1 つも無くても通ってしまう。
+      #
+      # `.stringsdata` は直前のテスト実行で吐かれている（`SWIFT_EMIT_LOC_STRINGS`）。
+      - name: 表示文言の訳を確かめる
+        run: |
+          OBJROOT=build/DerivedData/Build/Intermediates.noindex
+          ARGS=()
+          while IFS= read -r f; do
+            ARGS+=("--stringsdata=$f")
+          done < <(find "$OBJROOT/KubeDeck.build" \
+            -path "*/KubeDeck.build/Objects-normal/*" -name "*.stringsdata" | sort)
+          if [[ ${#ARGS[@]} -eq 0 ]]; then
+            echo "'.stringsdata' が無い。SWIFT_EMIT_LOC_STRINGS を確かめること" >&2
+            exit 1
+          fi
+          # **カタログのほうは書き換えない。** CI で同期すると、コミットされて
+          # いない鍵の増減が結果に混ざる。写しに対して同期して、差だけを見る。
+          #
+          # **写しの名前を変えない。** `xcstringstool sync` はファイル名から
+          # テーブル名を決めるので、`strings-check.xcstrings` にすると
+          # `Localizable` テーブルと一致せず、**全 802 鍵が「使われていない」に
+          # なる**（実測。エラーにはならないので気付きにくい）。
+          mkdir -p build/strings-check
+          cp Resources/Localizable.xcstrings build/strings-check/Localizable.xcstrings
+          "$(xcode-select -p)/usr/bin/xcstringstool" sync \
+            build/strings-check/Localizable.xcstrings "${ARGS[@]}"
+          python3 - build/strings-check/Localizable.xcstrings <<'PY'
+          import json, sys
+          strings = json.load(open(sys.argv[1]))["strings"]
+          missing, stale = [], []
+          for key, entry in strings.items():
+              if entry.get("extractionState") == "stale":
+                  stale.append(key)
+                  continue
+              if entry.get("shouldTranslate") is False:
+                  continue
+              unit = entry.get("localizations", {}).get("en", {}).get("stringUnit", {})
+              if not unit.get("value"):
+                  missing.append(key)
+          print(f"鍵 {len(strings)} / 未訳(en) {len(missing)} / 使われていない鍵 {len(stale)}")
+          for key in missing[:40]:
+              print("  未訳:", repr(key))
+          for key in stale[:40]:
+              print("  使われていない:", repr(key))
+          if missing or stale:
+              print("Scripts/sync-strings.sh を実行して直してください", file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: 建てる
         run: |
           mkdir -p build

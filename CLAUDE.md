@@ -28,6 +28,184 @@ open "$(xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
   -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR /{print $3}')/KubeDeck.app"
 ```
 
+## 表示文言は String Catalog に集める
+
+ソース言語は **ja**、訳は **en**（`Resources/Localizable.xcstrings`）。
+**鍵は日本語の原文そのもの。**
+
+```bash
+# 鍵を同期して、訳の埋まり具合を報告する
+Scripts/sync-strings.sh
+Scripts/sync-strings.sh --check   # 建てずに、いまのカタログだけ見る
+```
+
+**セマンティックな鍵（`action.delete`）にしない。** このリポジトリは表示文言を
+根拠付きでここに記録する作りで、コードから文言が読めなくなると「なぜこの言い方
+なのか」を辿れなくなる。原文を鍵にすれば `Text("削除")` は無変更で訳が当たり、
+テストの断定もそのまま残る。**代わりに、文言を直すと鍵が変わる**（カタログの
+移行が要る）ことを引き受ける。
+
+**`developmentLanguage` を en にしない。** 訳の無い言語では鍵、つまり日本語へ
+落ちる。ソース言語が en だと「en を要求したのに日本語が出た」ことになり、
+未訳と取り違える。
+
+### 鍵は手で足さない。コンパイラに吐かせる
+
+`SWIFT_EMIT_LOC_STRINGS` を立ててあるので、ビルドすると 1 ソースにつき 1 つ
+`.stringsdata` が出る。`Scripts/sync-strings.sh` が `xcstringstool sync` で
+カタログへ流し込む。
+
+**`xcstringstool extract` で済ませない。** あれは型を見ないので、補間の書式
+指定子が `%arg` のままになる（実測）。実際の鍵は型で決まる（`%lld` / `%@`）ため、
+抽出だけで作った鍵は**当たらない。しかもどこも失敗しない**ので、日本語のまま
+出ていることに気付けない。
+
+**ビルドが通らないときは同期しない。** 鍵が欠けた `.stringsdata` で同期すると、
+まだ使われている訳を stale として落とす。
+
+**`.xcstrings` の名前を変えない。** `xcstringstool sync` は**ファイル名から
+テーブル名を決める**。写しを取って確かめるときに `strings-check.xcstrings` の
+ような名前にすると `Localizable` テーブルと一致せず、**全 802 鍵が「使われて
+いない」になる**（実測。エラーにはならないので、そのまま信じると訳を全部
+捨てる）。CI の写しはディレクトリを分けて名前を保つ。
+
+### ソース言語も明示で埋める
+
+**`state: new` のまま残さない。** `xcstringstool sync` はソース言語の項目を
+`new` で書くが、その状態ではコンパイル対象から外れて **`ja.lproj` が焼かれない**。
+すると配布物の中身は `en.lproj` だけになり、**日本語環境でも英語が出る**
+（実測。`preferred: ["en"]`、`削除しますか？ → Delete?`）。国際化した結果として
+既存の利用者に英語を出す、といういちばん避けたい壊れ方。
+
+`ja` は値＝鍵で `state: translated` として全鍵に入れてある。確認は配布物を見る。
+
+```bash
+ls "$APP/Contents/Resources" | grep lproj          # en.lproj と ja.lproj の両方
+plutil -extract "削除しますか？" raw -o - "$APP/Contents/Resources/en.lproj/Localizable.strings"
+```
+
+**`Bundle(path:)` を使ったプローブで確かめない。** CFBundle は
+`AppleLanguages` を CFPreferences から読むので、`UserDefaults` の引数ドメインに
+入れても効かない（`preferred` が常に同じ値を返して**確かめたつもりになる**）。
+アプリ自身を起こして撮る（`defaults write com.piyoraik.KubeDeck AppleLanguages
+-array en` → `Scripts/screenshot.sh`。**確かめたら `defaults delete` で戻す**）。
+
+**未対応の言語では日本語に落ちる。** ソース言語が ja で
+`CFBundleDevelopmentRegion` も ja なので、en / ja のどちらにも当たらない環境
+（de など）は英語ではなく日本語になる。en を既定の落ち先にしたいなら、
+ソース言語の選び直しになる（いまはしない）。
+
+### 独自のラッパーを作らない
+
+短く書きたくなるが、`L("…")` のような関数を挟むとコンパイラの抽出が効かず、鍵を
+手で書くことになる（上のとおり、それがいちばん危ない）。**素の
+`String(localized:)` をそのまま書く。**
+
+### 型の側で受けると、呼び出し側は無変更で済む
+
+`Text("削除")` は SwiftUI が `LocalizedStringKey` で受けるので何もしなくてよい。
+**問題は `Text(変数)` に流れる `String`** で、あれは訳されない。そこで
+**表示文言を受け取る型のパラメータを `LocalizedStringResource` にする。**
+呼び出し側は日本語のリテラルを書くだけで鍵になり、実測で抽出も効く（独自の
+初期化子・`String.LocalizationValue`・`LocalizedStringKey`・
+`LocalizedStringResource` の 4 つとも拾われた。複数行リテラルと補間も拾う）。
+
+`SettingRow` / `SettingGroup` / `ResourceColumn` / `ResourceAction` /
+`PendingAction` / `InfoSection` / `InfoRow` / `UsageMeter` / `StatusRing` /
+`LoadingView` / `ClusterStore.perform` などがこの形。これで約 300 の呼び出し側を
+1 文字も触らずに済んだ。
+
+**`String` のままにするものもある。** 対象の名前を継ぎ足して組む文面
+（`PendingAction.message`）と、**すでに訳された文字列が渡ってくる経路**
+（`ManagedBy.warning` → `YAMLEditSheet.notice`）。後者を
+`LocalizedStringResource` で受けると、訳した文字列をもう一度鍵として引くことに
+なる。
+
+### 鍵と id を兼ねさせない
+
+**訳した文字列を突き合わせに使わない。** 別の原文が同じ訳になったとき
+（`要求` と `リクエスト` がどちらも `Requests`）に取り違える。
+
+- `ResourceSort` は `columnTitle` を捨てて `ResourceColumn.key`
+  （＝`LocalizedStringResource.key`、つまり原文）で持つ。**列の位置でも表示名でも
+  ない。**
+- `SettingRow.id` / `SettingGroup.id` も原文の鍵から作る。`ForEach` の同一性が訳で
+  動くと行が入れ替わる。
+- `ResourceAction.id`（`logs` / `logs-group`）と `PlacementView.unscheduledID` は
+  最初から訳さない値にしてある。後者は箱の見出しに `id` を流用していたので、
+  **見出しだけを別に持たせた**（`Group.title`）。
+
+CRD の列だけは別で、見出しがサーバから来る（`ResourceColumn(serverTitle:)`）。
+**訳す先が無い**ので鍵もその名前をそのまま使う。
+
+### 文をつなぎ合わせて組まない
+
+行の長さに収めるための `+` は、**断片ごとに鍵を作る**。訳す側は語順を変えられない
+と英語として組めない（`Spread (preferred)`）。1 つの文に 1 つの鍵を当て、行を
+折るのは複数行リテラルの `\`（改行を打ち消す）で行う。
+
+```swift
+return String(localized: """
+    この Namespace の中にあるものが、すべて一緒に消えます\
+    （Pod・Service・ConfigMap・Secret・PVC など）。\
+    クラスタでいちばん戻せない操作です。
+    """)
+```
+
+**補間の中に `"` を書かない。** `\(hpa.spec?["minReplicas"]?.intValue ?? 1)` の
+ような添字や `?? "既定値"` を鍵の中に置くと、文言としての切れ目が読めなくなる
+（実際に 3 か所壊した）。値は先に `let` で取り出す。
+
+### セルの中で毎回引かない
+
+列の値を作る閉包は、描画のたびに見えているセルの数だけ走る。決まった文言は
+`static let` で 1 度だけ引く（`ResourceTable.allPods`、`SettingsDigest.yes` など。
+`KubernetesLogo` の `unitBody` と同じ話）。値が混ざるものは鍵に書式指定子が要る
+ので、その場で組む。
+
+### テストは ja で走らせる
+
+`SafetyTests` や `PlacementTraceTests` は「『消えています』と書くか」
+「『取得している範囲』と書き分けるか」まで断定しており、それはこのリポジトリが
+守りたい判断そのもの。ロケール任せにすると**日本語環境の手元では通って英語の
+CI ランナーでだけ落ちる**ので、スキームの test action に `language: ja` を
+入れてある（`project.yml` の `schemes:`。ターゲットの `scheme: testTargets:` の
+略記では指定できないので、明示のスキームに書き換えた）。
+
+**訳の網羅をテストで見ない。** あちらは `Scripts/sync-strings.sh` の報告が持つ
+（未訳は日本語のまま出るだけで、どこも失敗しない ——「無い」と「取れていない」を
+混ぜないのと同じで、**気付く手立てを別に置く**）。
+
+### 訳は測ってから入れる
+
+```bash
+swift Scripts/measure-widths.swift
+```
+
+**幅は日本語で決めてある。** 一覧の列は `.fixed(n)`、詳細パネルの見出し欄は
+96pt 固定で、収まらなければ `.lineLimit(1)` が黙って切る（**切れたことが画面に
+出ない**）。撮って眺めるだけでは、クラスタが繋がっていない画面では列そのものが
+出ないので確かめられない。
+
+実測で 3 件溢れていた。`退避できる数 → Disruptions allowed` は 8pt 溢れ ——
+ここは**文言を削るより列を広げた**（110 → 130pt。CLAUDE.md がこの列を
+「この一覧を足した理由そのもの」と書いている場所なので、短くして意味を削らない）。
+
+**そして、測ったことから誤訳が出た。** 溢れた `希望` を見に行って、
+kubectl の `DESIRED`（ReplicaSet の `spec.replicas`）に `Preferred` を当てて
+いたことに気付いた。そこから列見出しを kubectl の語彙と突き合わせ直して、
+さらに 5 件直した。**とくに `種別`（resource kind）と `種類`（Service や Secret の
+`type`）は訳が入れ替わっていた。** 短い語は 1 つの鍵が何か所からも使われるので、
+**鍵ごとに使われ方を全部見てから訳す**（`grep -rn '"種類"' Sources/`）。
+
+### 訳さないもの
+
+- 区切り記号（`"・"` / `" / "` / `", "`）。ただし **`" の "` は訳す** ——
+  「Namespace x の Pod y」は日本語の語順で、英語では別の繋ぎになる。
+- 開発者にしか出ないもの（`fatalError` / `Codable` の `debugDescription`）。
+- kubectl / Kubernetes の語（`cordon` / `drain` / `Running`）。**訳し分けると押す
+  側にどちらがどちらか決まらない**（`ResourceAction.shortTitle` の判断と同じ）。
+
 ## クラスタへの接続は kubectl 経由
 
 API サーバを直接叩かず、`kubectl ... -o json` の標準出力を読む（`Services/Kubectl.swift`）。**この方針を変えない。** kubeconfig の exec 認証プラグイン（EKS の `aws`、GKE の `gke-gcloud-auth-plugin`）、クライアント証明書、OIDC のトークン更新、プロキシ設定を、すべて kubectl に肩代わりさせるため。自前で URLSession を張ると、この認証まわりを全部実装することになる。

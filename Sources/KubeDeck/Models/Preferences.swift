@@ -201,7 +201,9 @@ final class Preferences {
     var historyWindowLabel: String { Self.windowLabel(minutes: historyWindowMinutes) }
 
     static func windowLabel(minutes: Int) -> String {
-        minutes < 60 ? "\(minutes) 分" : "\(minutes / 60) 時間"
+        minutes < 60
+            ? String(localized: "\(minutes) 分")
+            : String(localized: "\(minutes / 60) 時間")
     }
 
     /// 推移を取り直す間隔（秒）。範囲クエリは 1 回につき kubectl を 1 本起こすので、
@@ -479,8 +481,8 @@ enum StartupScreen: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .lastViewed: return "前回の続き"
-        case .overview: return "概要"
+        case .lastViewed: return String(localized: "前回の続き")
+        case .overview: return String(localized: "概要")
         }
     }
 }
@@ -495,9 +497,9 @@ enum RowDensity: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .comfortable: return "ゆったり"
-        case .standard: return "標準"
-        case .compact: return "詰める"
+        case .comfortable: return String(localized: "ゆったり")
+        case .standard: return String(localized: "標準")
+        case .compact: return String(localized: "詰める")
         }
     }
 
@@ -532,8 +534,8 @@ enum InspectorPlacement: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .trailing: return "右"
-        case .bottom: return "下"
+        case .trailing: return String(localized: "右")
+        case .bottom: return String(localized: "下")
         }
     }
 
@@ -555,9 +557,9 @@ enum PlacementTileSize: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .small: return "小"
-        case .medium: return "中"
-        case .large: return "大"
+        case .small: return String(localized: "小")
+        case .medium: return String(localized: "中")
+        case .large: return String(localized: "大")
         }
     }
 
@@ -593,9 +595,9 @@ enum PlacementNodeOrder: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .name: return "名前順"
-        case .podCount: return "Pod が多い順"
-        case .usage: return "使用率が高い順"
+        case .name: return String(localized: "名前順")
+        case .podCount: return String(localized: "Pod が多い順")
+        case .usage: return String(localized: "使用率が高い順")
         }
     }
 }
@@ -616,19 +618,19 @@ enum PlacementGrouping: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .node: return "ノード別"
-        case .workload: return "ワークロード別"
-        case .map: return "たどる"
+        case .node: return String(localized: "ノード別")
+        case .workload: return String(localized: "ワークロード別")
+        case .map: return String(localized: "たどる")
         }
     }
 
     var help: String {
         switch self {
-        case .node: return "ノードごとに、載っている Pod を並べます。"
+        case .node: return String(localized: "ノードごとに、載っている Pod を並べます。")
         case .workload:
-            return "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。"
+            return String(localized: "ワークロードごとに、どのノードへ何個ずつ載っているかを出します。")
         case .map:
-            return "Ingress・Service・ワークロード・ノードのどれかから、繋がりを辿ります。"
+            return String(localized: "Ingress・Service・ワークロード・ノードのどれかから、繋がりを辿ります。")
         }
     }
 
@@ -647,9 +649,9 @@ enum PlacementMetric: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .both: return "CPU とメモリ"
+        case .both: return String(localized: "CPU とメモリ")
         case .cpu: return "CPU"
-        case .memory: return "メモリ"
+        case .memory: return String(localized: "メモリ")
         }
     }
 

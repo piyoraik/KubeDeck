@@ -12,11 +12,11 @@ enum KubectlSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notFound:
-            return """
+            return String(localized: """
                 kubectl が見つかりません。
                 Homebrew なら `brew install kubectl` で入ります。
                 すでに入っている場合は、/opt/homebrew/bin か /usr/local/bin から辿れるか確認してください。
-                """
+                """)
         }
     }
 }
@@ -32,7 +32,7 @@ enum KubectlError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedRollout(let kind):
-            return "\(kind) には rollout が効きません。"
+            return String(localized: "\(kind) には rollout が効きません。")
         }
     }
 }
@@ -335,18 +335,24 @@ actor Kubectl {
         // 打ち切った断りを先に書くと、肝心の理由が畳まれた側に入る（そうなった）。
         if let hint = authenticationHint(for: stderr) {
             return hint
-                + "\n（kubectl は \(seconds) 秒で返らなかったので打ち切っています。"
-                + "上は打ち切るまでに書き出されていた失敗です。）"
+                + "\n" + String(localized: """
+                    （kubectl は \(seconds) 秒で返らなかったので打ち切っています。\
+                    上は打ち切るまでに書き出されていた失敗です。）
+                    """)
                 + "\n\n" + condense(stderr)
         }
 
-        let head = "kubectl が \(seconds) 秒のあいだ何も返さなかったので打ち切りました。\n"
-            + "待ち上限（`--request-timeout`）は API への要求しか縛りません。"
-            + "kubeconfig の exec 認証プラグイン（`gke-gcloud-auth-plugin` など）が"
-            + "返ってこない場合は、ここで打ち切るまで待つことになります。\n"
-            + "ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、"
-            + "そちらの言い分を確かめてください。設定の「接続」で待ち上限を延ばすと、"
-            + "kubectl 自身の理由を最後まで受け取れることがあります。"
+        // 段落の切れ目（`\n`）は文の一部なので鍵に含める。**訳す側で改行の
+        // 位置を変えられるようにしておく** —— 英語では 1 文が短くなる。
+        let head = String(localized: """
+            kubectl が \(seconds) 秒のあいだ何も返さなかったので打ち切りました。
+            待ち上限（`--request-timeout`）は API への要求しか縛りません。\
+            kubeconfig の exec 認証プラグイン（`gke-gcloud-auth-plugin` など）が\
+            返ってこない場合は、ここで打ち切るまで待つことになります。
+            ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、\
+            そちらの言い分を確かめてください。設定の「接続」で待ち上限を延ばすと、\
+            kubectl 自身の理由を最後まで受け取れることがあります。
+            """)
         return stderr.isEmpty ? head : head + "\n\n" + condense(stderr)
     }
 
@@ -384,10 +390,12 @@ actor Kubectl {
         guard let variables = (try? environment())?.variables else { return [:] }
         var shown: [String: String] = [:]
         for (key, value) in variables where key != "PATH" {
-            shown[key] = Self.hidesValue(name: key, value: value) ? "（伏せています）" : value
+            shown[key] = Self.hidesValue(name: key, value: value) ? Self.redacted : value
         }
         return shown
     }
+
+    private static let redacted = String(localized: "（伏せています）")
 
     private static let secretHints = [
         "SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL", "AUTH", "SESSION",
@@ -451,17 +459,20 @@ actor Kubectl {
         let subject = stderr.firstMatch(of: #/User "([^"]+)"/#)?.1
             ?? stderr.firstMatch(of: #/ServiceAccount "([^"]+)"/#)?.1
 
-        var lines = ["権限が足りません。認証は通っていて、その操作が許されていないだけです。"]
+        var lines = [
+            String(localized: "権限が足りません。認証は通っていて、その操作が許されていないだけです。")
+        ]
         if let verb {
-            lines.append("拒まれたのは `\(verb.1)` （対象は `\(verb.2)`）です。")
+            lines.append(String(localized: "拒まれたのは `\(verb.1)` （対象は `\(verb.2)`）です。"))
         }
         if let subject {
-            lines.append("いまの資格情報は `\(subject)` です。")
+            lines.append(String(localized: "いまの資格情報は `\(subject)` です。"))
         }
-        lines.append(
-            "確かめるには `kubectl auth can-i <動詞> <種別> -n <Namespace>`、"
-                + "許すには対象の Role / ClusterRole に規則を足して Binding で結びます"
-                + "（アプリの「アクセス制御」から中身を見られます）。")
+        lines.append(String(localized: """
+            確かめるには `kubectl auth can-i <動詞> <種別> -n <Namespace>`、\
+            許すには対象の Role / ClusterRole に規則を足して Binding で結びます\
+            （アプリの「アクセス制御」から中身を見られます）。
+            """))
         return lines.joined(separator: "\n")
     }
 
@@ -477,7 +488,7 @@ actor Kubectl {
     private static func discoveryHint(for stderr: String) -> String? {
         guard let match = stderr.firstMatch(
             of: #/doesn't have a resource type "([^"]+)"/#) else { return nil }
-        return """
+        return String(localized: """
             クラスタに `\(match.1)` という種別が見つかりませんでした。認証や経路ではなく、\
             kubectl がこの種別を解決できていません。
             考えられるのは 2 つで、対処が違います。
@@ -491,7 +502,7 @@ actor Kubectl {
             AVAILABLE=False が無いかを確かめてください。KubeDeck の一覧は\
             ターミナルとは別に持っているので（設定の「接続」に置き場所を出しています）、\
             片方だけで起きることもあります。
-            """
+            """)
     }
 
     private static func authenticationHint(for stderr: String) -> String? {
@@ -501,28 +512,36 @@ actor Kubectl {
         if stderr.contains("CERTIFICATE_VERIFY_FAILED")
             || stderr.contains("self-signed certificate")
             || stderr.contains("certificate signed by unknown authority") {
-            return "サーバの証明書を検証できませんでした。認証情報ではなく TLS の問題です。\n"
-                + "TLS を覗くプロキシの下では、その CA を信頼させる環境変数"
-                + "（`REQUESTS_CA_BUNDLE` や `SSL_CERT_FILE` など）が要ります。\n"
-                + "KubeDeck はログインシェルの環境をそのまま子プロセスへ渡すので、"
-                + "シェルの設定ファイルでこれらを設定していれば効きます。"
-                + "ターミナルでだけ通る場合は、その設定が対話シェルより後で"
-                + "行われていないか確かめてください。"
+            return String(localized: """
+                サーバの証明書を検証できませんでした。認証情報ではなく TLS の問題です。
+                TLS を覗くプロキシの下では、その CA を信頼させる環境変数\
+                （`REQUESTS_CA_BUNDLE` や `SSL_CERT_FILE` など）が要ります。
+                KubeDeck はログインシェルの環境をそのまま子プロセスへ渡すので、\
+                シェルの設定ファイルでこれらを設定していれば効きます。\
+                ターミナルでだけ通る場合は、その設定が対話シェルより後で\
+                行われていないか確かめてください。
+                """)
         }
 
         // kubeconfig が要求する exec 認証プラグインが PATH に無い。
         if let match = stderr.firstMatch(of: /executable (\S+) not found/) {
             let plugin = String(match.1)
             var lines = [
-                "kubeconfig が exec 認証プラグイン `\(plugin)` を要求していますが、"
-                    + "見つかりませんでした。",
+                String(localized: """
+                    kubeconfig が exec 認証プラグイン `\(plugin)` を要求していますが、\
+                    見つかりませんでした。
+                    """)
             ]
             if plugin.contains("gke-gcloud-auth-plugin") {
-                lines.append("入っていなければ `gcloud components install gke-gcloud-auth-plugin` "
-                    + "で入ります。")
+                lines.append(String(localized: """
+                    入っていなければ `gcloud components install gke-gcloud-auth-plugin` \
+                    で入ります。
+                    """))
             }
-            lines.append("入っているのにここで見つからないときは、KubeDeck から見える PATH に "
-                + "その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。")
+            lines.append(String(localized: """
+                入っているのにここで見つからないときは、KubeDeck から見える PATH に \
+                その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。
+                """))
             return lines.joined(separator: "\n")
         }
 
@@ -533,27 +552,35 @@ actor Kubectl {
         if stderr.contains("failure while executing gcloud")
             || stderr.contains("print credential failed") {
             var lines = [
-                "exec 認証プラグインは動きましたが、その先の gcloud が"
-                    + "アクセストークンを出せませんでした。",
+                String(localized: """
+                    exec 認証プラグインは動きましたが、その先の gcloud が\
+                    アクセストークンを出せませんでした。
+                    """)
             ]
             if stderr.contains("UNAUTHENTICATED") || stderr.contains("invalid authentication") {
-                lines.append("gcloud の資格情報が期限切れか、再認証を求められている状態です。"
-                    + "ターミナルで `gcloud auth login` を実行してから、もう一度読み込んでください。")
+                lines.append(String(localized: """
+                    gcloud の資格情報が期限切れか、再認証を求められている状態です。\
+                    ターミナルで `gcloud auth login` を実行してから、もう一度読み込んでください。
+                    """))
             }
             // 認証プラグインは標準入力を持たない状態で動く（対話プロンプトが
             // 出ると待ち続けてしまうため、意図的にそうしてある）。
-            lines.append("再認証は対話的な操作なので、KubeDeck からは代行できません。"
-                + "下の元の文言にある gcloud のコマンドをターミナルでそのまま実行すると、"
-                + "同じ失敗になるか確かめられます。")
+            lines.append(String(localized: """
+                再認証は対話的な操作なので、KubeDeck からは代行できません。\
+                下の元の文言にある gcloud のコマンドをターミナルでそのまま実行すると、\
+                同じ失敗になるか確かめられます。
+                """))
             return lines.joined(separator: "\n")
         }
 
         // kubectl 1.26 で in-tree の GCP 認証が消えている。kubeconfig が古い。
         if stderr.contains("gcp auth plugin has been removed") {
-            return "kubeconfig がこのクラスタを古い `auth-provider: gcp` 形式で持っています。"
-                + "kubectl 1.26 以降はこの形式を読めません。\n"
-                + "`gcloud container clusters get-credentials <クラスタ名> "
-                + "--region <リージョン>` で作り直してください。"
+            return String(localized: """
+                kubeconfig がこのクラスタを古い `auth-provider: gcp` 形式で持っています。\
+                kubectl 1.26 以降はこの形式を読めません。
+                `gcloud container clusters get-credentials <クラスタ名> \
+                --region <リージョン>` で作り直してください。
+                """)
         }
 
         // API サーバまで届いていない。**認証の失敗と混ぜない。**
@@ -564,15 +591,21 @@ actor Kubectl {
             || stderr.contains("no such host")
             || stderr.contains("connection refused")
             || stderr.contains("i/o timeout") {
-            var lines = ["クラスタの API サーバに届きませんでした。認証ではなく経路の問題です。"]
+            var lines = [
+                String(localized: "クラスタの API サーバに届きませんでした。認証ではなく経路の問題です。")
+            ]
             if let match = stderr.firstMatch(of: /Get \\?"https?:\/\/([^\/"\\]+)/) {
                 let host = String(match.1)
-                lines.append("宛先は `\(host)` です。"
-                    + "プライベートなアドレスであれば、VPN や社内ネットワークからでないと届きません。")
+                lines.append(String(localized: """
+                    宛先は `\(host)` です。\
+                    プライベートなアドレスであれば、VPN や社内ネットワークからでないと届きません。
+                    """))
             }
-            lines.append("ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、"
-                + "そちらも届かないか確かめてください。届かないなら、"
-                + "止まっているのは KubeDeck ではなく経路です。")
+            lines.append(String(localized: """
+                ターミナルで同じコンテキストに `kubectl cluster-info` を実行して、\
+                そちらも届かないか確かめてください。届かないなら、\
+                止まっているのは KubeDeck ではなく経路です。
+                """))
             return lines.joined(separator: "\n")
         }
 
@@ -625,7 +658,8 @@ actor Kubectl {
             ["version", "-o", "json", "--request-timeout=\(requestTimeout)"],
             context: context)
         let root = try JSONDecoder().decode(JSONValue.self, from: result.stdout)
-        return root.path("serverVersion.gitVersion")?.stringValue ?? "不明"
+        return root.path("serverVersion.gitVersion")?.stringValue
+            ?? String(localized: "不明")
     }
 
     // MARK: - 取得
@@ -1161,9 +1195,10 @@ actor Kubectl {
                     ? failures.joined(separator: "\n\n")
                     // **一部だけ消えたことを黙らない。** 全部失敗したのと
                     // 見分けが付かないと、残っている行の意味が読めない。
-                    : "一部の Namespace で削除できませんでした。"
-                        + "他は削除を要求済みです。\n\n"
-                        + failures.joined(separator: "\n\n"))
+                    : String(localized: """
+                        一部の Namespace で削除できませんでした。他は削除を要求済みです。
+                        """)
+                        + "\n\n" + failures.joined(separator: "\n\n"))
         }
     }
 
@@ -1243,7 +1278,8 @@ actor Kubectl {
         _ arguments: [String], on object: K8sObject, context: String
     ) async throws -> CommandResult {
         guard let kind = object.kind, kind.supportsRollout else {
-            throw KubectlError.unsupportedRollout(object.kind?.displayName ?? "この種別")
+            throw KubectlError.unsupportedRollout(
+                object.kind?.displayName ?? String(localized: "この種別"))
         }
         var full = ["rollout"] + arguments + ["\(kind.resourceName)/\(object.name)"]
         if let namespace = object.namespace {
@@ -1450,7 +1486,7 @@ actor Kubectl {
             // （`PodLogRequest(group:)` が弾く）、届く道が残るなら塞ぐ。
             throw CommandError(
                 command: "kubectl logs", exitCode: -1,
-                message: "セレクタが空です。掴んでいる Pod を決められません。")
+                message: String(localized: "セレクタが空です。掴んでいる Pod を決められません。"))
         }
         let environment = try environment()
         let arguments = Self.logArguments(

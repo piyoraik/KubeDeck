@@ -93,9 +93,11 @@ struct YAMLEditSheet: View {
                 .arrayValue ?? []).isEmpty
             notice(
                 hasOwner
-                    ? "この Pod は作り直されると元に戻ります。ふだん直すのは、"
-                        + "所有者（Deployment など）のほうです。"
-                    : "Pod は変えられる項目がごく限られています（image など）。",
+                    ? String(localized: """
+                    この Pod は作り直されると元に戻ります。\
+                    ふだん直すのは、所有者（Deployment など）のほうです。
+                    """)
+                    : String(localized: "Pod は変えられる項目がごく限られています（image など）。"),
                 level: .warning)
         }
     }
@@ -199,14 +201,22 @@ struct YAMLEditSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 if Kubectl.isConflict(dryRunFailure) {
                     // **他の失敗と混ぜない。** 直す先が違う（中身ではなく、古さ）。
+                    // **`??` を鍵の中で書かない。** 補間の中に `"` が入ると
+                    // 文言としての切れ目が読めなくなる。先に決めておく。
+                    let kindName = object.kind?.displayName
+                        ?? String(localized: "オブジェクト")
                     notice(
-                        "開いたあとに、この \(object.kind?.displayName ?? "オブジェクト")は"
-                            + "変わっています。書き戻すと、そのあいだの変更を消すことに"
-                            + "なるので弾かれました。「読み直す」で最新から編集し直して"
-                            + "ください（いまの編集内容はコピーできます）。",
+                        String(localized: """
+                        開いたあとに、この \(kindName)は\
+                        変わっています。書き戻すと、そのあいだの変更を消すことに\
+                        なるので弾かれました。「読み直す」で最新から編集し直して\
+                        ください（いまの編集内容はコピーできます）。
+                        """),
                         level: .critical)
                 } else {
-                    notice("このままでは書き戻せません。理由は次のとおりです。", level: .critical)
+                    notice(
+                        String(localized: "このままでは書き戻せません。理由は次のとおりです。"),
+                        level: .critical)
                 }
                 ScrollView {
                     Text(dryRunFailure)

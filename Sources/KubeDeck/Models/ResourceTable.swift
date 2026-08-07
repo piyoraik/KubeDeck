@@ -15,10 +15,15 @@ struct ResourceCell: Sendable {
 
 /// 一覧の並べ替え。
 ///
-/// **列の位置ではなく見出しで持つ。** 使用量の列は metrics-server が
-/// 見つかってから増えるので、位置で覚えると途中で別の列を指す。
+/// **列の位置で持たない。** 使用量の列は metrics-server が見つかってから
+/// 増えるので、位置で覚えると途中で別の列を指す。
+///
+/// **表示名でも持たない。** 表示名は言語で変わるので、訳が衝突すると
+/// （`要求` と `リクエスト` がどちらも `Requests` になるなど）**別の列を
+/// 掴む**。`ResourceColumn.key` は原文（＝String Catalog の鍵）なので
+/// 言語が変わっても動かない。
 struct ResourceSort: Equatable, Sendable {
-    let columnTitle: String
+    let columnKey: String
     var ascending: Bool = true
 }
 
@@ -29,15 +34,63 @@ struct ResourceColumn: Identifiable, Sendable {
     }
 
     var id: Int = 0
+    /// 言語で変わらない鍵。並べ替えと「いまどの列で並んでいるか」の判定に使う。
+    /// 見出しの原文そのもの（`LocalizedStringResource.key`）なので、
+    /// **呼び出し側は何も渡さなくてよい。**
+    let key: String
+    /// 画面に出す見出し。訳があれば訳。
     let title: String
     var width: Width = .fixed(110)
     var trailing: Bool = false
     let value: @Sendable (K8sObject) -> ResourceCell
+
+    /// 組み込みの種別の列。見出しは String Catalog を通る。
+    init(
+        title: LocalizedStringResource, width: Width = .fixed(110), trailing: Bool = false,
+        value: @escaping @Sendable (K8sObject) -> ResourceCell
+    ) {
+        self.key = title.key
+        self.title = String(localized: title)
+        self.width = width
+        self.trailing = trailing
+        self.value = value
+    }
+
+    /// CRD が `additionalPrinterColumns` で宣言している列。
+    ///
+    /// **こちらは訳さない。** サーバが返してきた名前で、訳す先が無い
+    /// （クラスタごとに語彙が違う）。鍵もその名前をそのまま使う。
+    init(
+        serverTitle: String, width: Width = .fixed(110), trailing: Bool = false,
+        value: @escaping @Sendable (K8sObject) -> ResourceCell
+    ) {
+        self.key = serverTitle
+        self.title = serverTitle
+        self.width = width
+        self.trailing = trailing
+        self.value = value
+    }
 }
 
 /// 種別ごとの一覧の列定義。列とセルを 1 つの定義から作るので、
 /// 片方だけ足して列数がずれる、という壊れ方をしない。
 enum ResourceTable {
+    // MARK: - セルに出す決まった文言
+    //
+    // **セルの中で `String(localized:)` を毎回呼ばない。** 列の値を作る閉包は
+    // 描画のたびに見えているセルの数だけ走るので、決まった文言はここで 1 度
+    // だけ引く（`KubernetesLogo` の `unitBody` を `static let` で持つのと
+    // 同じ話）。値が混ざるものは鍵に書式指定子が要るので閉包の中で組む。
+    private static let allPods = String(localized: "すべての Pod")
+    private static let bySelectorExpression = String(localized: "式で指定")
+    private static let isDefaultMark = String(localized: "既定")
+    private static let supported = String(localized: "可")
+    private static let unsupported = String(localized: "不可")
+    private static let localAPIService = String(localized: "ローカル（集約なし）")
+    private static let unsetBase = String(localized: "未設定")
+    private static let ingressDirection = String(localized: "Ingress（入）")
+    private static let egressDirection = String(localized: "Egress（出）")
+
     /// `metrics` は metrics-server が入っているクラスタでだけ渡ってくる。
     /// 入っていないクラスタで空の列を並べても意味が無いので、そのときは列ごと出さない。
     static func columns(
@@ -98,7 +151,7 @@ enum ResourceTable {
             let path = column.jsonPath
             let colorize = Self.looksLikeStatus(column.name)
             columns.append(
-                ResourceColumn(title: column.name, width: .flexible(min: 110)) { object in
+                ResourceColumn(serverTitle: column.name, width: .flexible(min: 110)) { object in
                     let text = object.raw.jsonPath(path)?.displayText ?? ""
                     // 状態らしい列だけ色を付ける。任意の文字列を色分けすると、
                     // ただの名前が「異常」に見えることがある。
@@ -486,7 +539,10 @@ enum ResourceTable {
                 },
                 // **これが 0 だと drain が止まる。** この一覧を足した理由そのもの
                 // なので、色を付けて先に見えるようにする。
-                ResourceColumn(title: "退避できる数", width: .fixed(110), trailing: true) {
+                // **幅は英語でも収まるように取る。** 日本語で決めた 110pt には
+                // `Disruptions allowed` が 8pt 溢れて黙って切れていた（実測）。
+                // ここは文言を削るより広げる —— この一覧を足した理由そのものの列。
+                ResourceColumn(title: "退避できる数", width: .fixed(130), trailing: true) {
                     let allowed = $0.status?["disruptionsAllowed"]?.intValue
                     return ResourceCell(
                         text: allowed.map(String.init) ?? "—",
@@ -550,7 +606,8 @@ enum ResourceTable {
                 ResourceColumn(title: "既定", width: .fixed(60)) {
                     let isDefault = $0.annotations[
                         "storageclass.kubernetes.io/is-default-class"] == "true"
-                    return ResourceCell(text: isDefault ? "既定" : "", level: isDefault ? .good : nil)
+                    return ResourceCell(
+                        text: isDefault ? isDefaultMark : "", level: isDefault ? .good : nil)
                 },
                 ResourceColumn(title: "プロビジョナ", width: .flexible(min: 200)) {
                     ResourceCell(text: $0.raw["provisioner"]?.stringValue ?? "", emphasis: .secondary)
@@ -563,7 +620,8 @@ enum ResourceTable {
                 },
                 ResourceColumn(title: "拡張", width: .fixed(70)) {
                     ResourceCell(
-                        text: $0.raw["allowVolumeExpansion"]?.boolValue == true ? "可" : "不可",
+                        text: $0.raw["allowVolumeExpansion"]?.boolValue == true
+                            ? supported : unsupported,
                         emphasis: .secondary)
                 },
             ]
@@ -575,7 +633,8 @@ enum ResourceTable {
                 },
                 ResourceColumn(title: "既定", width: .fixed(60)) {
                     let isDefault = $0.raw["globalDefault"]?.boolValue == true
-                    return ResourceCell(text: isDefault ? "既定" : "", level: isDefault ? .good : nil)
+                    return ResourceCell(
+                        text: isDefault ? isDefaultMark : "", level: isDefault ? .good : nil)
                 },
                 // **追い出す側かどうかを出す。** 同じ優先度でも、ここが
                 // `Never` なら他を蹴らない。
@@ -623,7 +682,7 @@ enum ResourceTable {
                 },
                 ResourceColumn(title: "実体", width: .flexible(min: 200)) {
                     guard let service = $0.spec?["service"] else {
-                        return ResourceCell(text: "ローカル（集約なし）", emphasis: .secondary)
+                        return ResourceCell(text: localAPIService, emphasis: .secondary)
                     }
                     let namespace = service["namespace"]?.stringValue ?? ""
                     let name = service["name"]?.stringValue ?? ""
@@ -660,7 +719,7 @@ enum ResourceTable {
         guard let selector = object.spec?["selector"] else { return "—" }
         let labels = selector["matchLabels"]?.stringDictionary ?? [:]
         if labels.isEmpty {
-            return selector.objectValue.isEmpty ? "すべての Pod" : "式で指定"
+            return selector.objectValue.isEmpty ? allPods : bySelectorExpression
         }
         return labels.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
@@ -676,7 +735,7 @@ enum ResourceTable {
         return hard.keys.sorted().prefix(4).map { key in
             "\(key) \(used[key]?.displayText ?? "0")/\(hard[key]?.displayText ?? "")"
         }.joined(separator: "  ")
-            + (hard.count > 4 ? "  他 \(hard.count - 4)" : "")
+            + (hard.count > 4 ? "  " + String(localized: "他 \(hard.count - 4)") : "")
     }
 
     /// LimitRange の中身。**種類（Container / Pod / PVC）まで書く** ——
@@ -686,19 +745,20 @@ enum ResourceTable {
         guard !limits.isEmpty else { return "—" }
         return limits.prefix(3).map { limit in
             let type = limit["type"]?.stringValue ?? "?"
-            let parts = [
+            let parts: [(LocalizedStringResource, JSONValue?)] = [
                 ("既定", limit["default"]),
                 ("既定要求", limit["defaultRequest"]),
                 ("最小", limit["min"]),
                 ("最大", limit["max"]),
-            ].compactMap { label, value -> String? in
+            ]
+            let rendered = parts.compactMap { label, value -> String? in
                 guard let value, !value.objectValue.isEmpty else { return nil }
                 let inner = value.objectValue.keys.sorted()
                     .map { "\($0)=\(value[$0]?.displayText ?? "")" }
                     .joined(separator: ",")
-                return "\(label) \(inner)"
+                return String(localized: label) + " \(inner)"
             }
-            return "\(type): " + (parts.isEmpty ? "—" : parts.joined(separator: " / "))
+            return "\(type): " + (rendered.isEmpty ? "—" : rendered.joined(separator: " / "))
         }.joined(separator: "  ")
     }
 
@@ -712,7 +772,7 @@ enum ResourceTable {
         guard !resources.isEmpty else { return "—" }
         let unique = Array(Set(resources)).sorted()
         return unique.prefix(4).joined(separator: ", ")
-            + (unique.count > 4 ? " 他 \(unique.count - 4)" : "")
+            + (unique.count > 4 ? " " + String(localized: "他 \(unique.count - 4)") : "")
     }
 
     // MARK: - 使用量の列
@@ -790,7 +850,7 @@ enum ResourceTable {
                 emphasis: .mono, level: level)
         }
         return ResourceCell(
-            text: base > 0 ? "\(text) / \(format(base))" : "\(text) / 未設定",
+            text: base > 0 ? "\(text) / \(format(base))" : "\(text) / \(unsetBase)",
             emphasis: .mono, level: level)
     }
 
@@ -811,7 +871,9 @@ enum ResourceTable {
         }
     }
 
-    private static func readyColumn(title: String = "Ready") -> ResourceColumn {
+    private static func readyColumn(
+        title: LocalizedStringResource = "Ready"
+    ) -> ResourceColumn {
         ResourceColumn(title: title, width: .fixed(78)) { object in
             let status = StatusResolver.status(for: object)
             return ResourceCell(text: status.text, emphasis: .mono, level: status.level)
@@ -947,7 +1009,8 @@ enum ResourceTable {
     /// 長い一覧は頭だけ出して「他 N」。**黙って切らない。**
     private static func joined(_ values: [String], limit: Int) -> String {
         guard values.count > limit else { return values.joined(separator: ",") }
-        return values.prefix(limit).joined(separator: ",") + " 他 \(values.count - limit)"
+        return values.prefix(limit).joined(separator: ",")
+            + " " + String(localized: "他 \(values.count - limit)")
     }
 
     /// RoleBinding / ClusterRoleBinding が指しているロール。
@@ -985,7 +1048,7 @@ enum ResourceTable {
     /// 設定を「何も効いていない」と表示する**。
     static func policyTargets(_ policy: K8sObject) -> String {
         let selector = policySelector(policy)
-        guard !selector.isEmpty else { return "すべての Pod" }
+        guard !selector.isEmpty else { return allPods }
         return joined(selector.map { "\($0.key)=\($0.value)" }.sorted(), limit: 3)
     }
 
@@ -1004,7 +1067,7 @@ enum ResourceTable {
         let declared = (policy.spec?["policyTypes"]?.arrayValue ?? [])
             .compactMap { $0.stringValue }
         let types = declared.isEmpty ? impliedPolicyTypes(policy) : declared
-        return types.map { $0 == "Egress" ? "Egress（出）" : "Ingress（入）" }
+        return types.map { $0 == "Egress" ? egressDirection : ingressDirection }
             .joined(separator: " · ")
     }
 
@@ -1023,8 +1086,8 @@ enum ResourceTable {
         let ingress = policy.spec?["ingress"]?.arrayValue.count
         let egress = policy.spec?["egress"]?.arrayValue.count
         var parts: [String] = []
-        if let ingress { parts.append("入 \(ingress)") }
-        if let egress { parts.append("出 \(egress)") }
+        if let ingress { parts.append(String(localized: "入 \(ingress)")) }
+        if let egress { parts.append(String(localized: "出 \(egress)")) }
         return parts.isEmpty ? "—" : parts.joined(separator: " / ")
     }
 

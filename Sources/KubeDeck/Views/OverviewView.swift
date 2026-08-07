@@ -63,7 +63,8 @@ struct OverviewView: View {
                 activity: store.activity, level: store.clusterHealth, size: 34)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(store.currentContext.isEmpty ? "コンテキスト未選択" : store.currentContext)
+                Text(store.currentContext.isEmpty
+                    ? String(localized: "コンテキスト未選択") : store.currentContext)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -82,12 +83,12 @@ struct OverviewView: View {
         // **しるしと文字を食い違わせない。** アイコンはクラスタの状態（色つき）
         // なのに、取得中だけ文字が「取得中」に変わっていた。異常があるクラスタ
         // では赤いしるしの隣に「取得中」と出て、取得が失敗しているように読めた。
-        case .busy: return "取得中 · \(store.clusterHealth.label)"
-        case .live: return "稼働中 · \(store.clusterHealth.label)"
+        case .busy: return String(localized: "取得中 · \(store.clusterHealth.label)")
+        case .live: return String(localized: "稼働中 · \(store.clusterHealth.label)")
         case .idle:
             return store.setupErrorMessage == nil
-                ? "自動更新は停止中 · \(store.clusterHealth.label)"
-                : "未接続"
+                ? String(localized: "自動更新は停止中 · \(store.clusterHealth.label)")
+                : String(localized: "未接続")
         }
     }
 
@@ -122,17 +123,21 @@ struct OverviewView: View {
                 // `EventsPane` と同じ言い分け）。
                 emptyNote(
                     "イベントを取得できませんでした。",
-                    detail: "この Namespace のイベントを読む権限が無いか、"
-                        + "クラスタから応答がありませんでした。"
-                        + "何も起きていないという意味ではありません。",
+                    detail: """
+                        この Namespace のイベントを読む権限が無いか、\
+                        クラスタから応答がありませんでした。\
+                        何も起きていないという意味ではありません。
+                        """,
                     level: .warning)
             } else if recent.isEmpty {
                 // **0 件も黙って終えない。** イベントには寿命があり
                 // （既定で 1 時間）、古い出来事は本当に消える。
                 emptyNote(
                     "イベントはありません。",
-                    detail: "イベントはしばらく（クラスタの既定で 1 時間）で消えます。"
-                        + "それより前の出来事はクラスタに残っていません。",
+                    detail: """
+                        イベントはしばらく（クラスタの既定で 1 時間）で消えます。\
+                        それより前の出来事はクラスタに残っていません。
+                        """,
                     level: nil)
             } else {
                 ForEach(Array(recent.enumerated()), id: \.element.id) { index, event in
@@ -151,7 +156,8 @@ struct OverviewView: View {
 
     /// 行が無いときの断り。**「取れていない」と「0 件」で書き分ける。**
     private func emptyNote(
-        _ text: String, detail: String, level: StatusLevel?
+        _ text: LocalizedStringResource, detail: LocalizedStringResource,
+        level: StatusLevel?
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(text, systemImage: level?.symbol ?? "bell.slash")

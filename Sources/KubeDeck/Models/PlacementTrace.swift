@@ -36,17 +36,20 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// **種別の名前も含めて鍵にする。** `Service` のように訳が同じものまで
+    /// 通すのは、switch の枝ごとに通す・通さないが混ざると、種別を足したときに
+    /// 片方だけ訳し忘れるため（出し分けを 1 か所にする、といつもの話）。
     var title: String {
         switch self {
-        case .workload: return "ワークロード"
-        case .generation: return "ReplicaSet / Job"
-        case .service: return "Service"
-        case .ingress: return "Ingress"
-        case .node: return "ノード"
+        case .workload: return String(localized: "ワークロード")
+        case .generation: return String(localized: "ReplicaSet / Job")
+        case .service: return String(localized: "Service")
+        case .ingress: return String(localized: "Ingress")
+        case .node: return String(localized: "ノード")
         // **略記で出す。** `PersistentVolumeClaim` は 236pt の欄に入らず、
         // 真ん中を落とすと PV と見分けが付かなくなる。
-        case .claim: return "PVC"
-        case .volume: return "PV"
+        case .claim: return String(localized: "PVC")
+        case .volume: return String(localized: "PV")
         }
     }
 
@@ -65,13 +68,14 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
     /// 何が分かる起点なのか。一覧の上に添える。
     var help: String {
         switch self {
-        case .workload: return "このワークロードがどこへ散っているか"
-        case .generation: return "この世代の Pod がどこに居るか"
-        case .service: return "この Service が掴んでいるのは何か"
-        case .ingress: return "この入口の先に何があるか"
-        case .node: return "このノードに載っているものは何に繋がっているか"
-        case .claim: return "この PVC を使っているのは何か"
-        case .volume: return "この PV は誰に掴まれているか"
+        case .workload: return String(localized: "このワークロードがどこへ散っているか")
+        case .generation: return String(localized: "この世代の Pod がどこに居るか")
+        case .service: return String(localized: "この Service が掴んでいるのは何か")
+        case .ingress: return String(localized: "この入口の先に何があるか")
+        case .node:
+            return String(localized: "このノードに載っているものは何に繋がっているか")
+        case .claim: return String(localized: "この PVC を使っているのは何か")
+        case .volume: return String(localized: "この PV は誰に掴まれているか")
         }
     }
 
@@ -79,13 +83,13 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
     /// ここは「このクラスタには無い」と言い切れる場合の文言。
     var emptyMessage: String {
         switch self {
-        case .workload: return "ワークロードがありません。"
-        case .generation: return "ReplicaSet も Job もありません。"
-        case .service: return "Service がありません。"
-        case .ingress: return "Ingress がありません。"
-        case .node: return "ノードがありません。"
-        case .claim: return "PersistentVolumeClaim がありません。"
-        case .volume: return "PersistentVolume がありません。"
+        case .workload: return String(localized: "ワークロードがありません。")
+        case .generation: return String(localized: "ReplicaSet も Job もありません。")
+        case .service: return String(localized: "Service がありません。")
+        case .ingress: return String(localized: "Ingress がありません。")
+        case .node: return String(localized: "ノードがありません。")
+        case .claim: return String(localized: "PersistentVolumeClaim がありません。")
+        case .volume: return String(localized: "PersistentVolume がありません。")
         }
     }
 }
@@ -117,7 +121,7 @@ struct TraceAnchor: Identifiable, Hashable, Sendable {
         "\(anchorKind.rawValue)|\(namespace ?? "-")|\(kindLabel)|\(name)"
     }
 
-    var displayName: String { isStandalone ? "単体の Pod" : name }
+    var displayName: String { isStandalone ? String(localized: "単体の Pod") : name }
 
     var symbol: String {
         if isStandalone { return ResourceKind.pod.symbol }
@@ -499,9 +503,11 @@ enum PlacementTrace {
             // 消えないことは別の話で、消すのは PV とデータのほう。
             return [
                 TraceNote(
-                    text: "この PVC を使っている Pod はありません。"
-                        + "消しても止まる Pod はありませんが、PV とデータの行き先は"
-                        + "StorageClass の回収方針で決まります。",
+                    text: String(localized: """
+                        この PVC を使っている Pod はありません。\
+                        消しても止まる Pod はありませんが、\
+                        PV とデータの行き先は StorageClass の回収方針で決まります。
+                        """),
                     level: .warning)
             ]
         case .volume:
@@ -521,10 +527,15 @@ enum PlacementTrace {
 
         guard let reference else {
             // 指し先そのものが無い。`Available` なら待っている状態でふつう。
+            // **phase を継ぎ足さない。** 「（Available）。」を後ろに貼ると、
+            // 訳す側は括弧の位置を動かせない。phase を含む・含まないで
+            // 別の鍵にする。
             return [
                 TraceNote(
-                    text: "この PV はどの PVC にも束ねられていません"
-                        + (phase.isEmpty ? "。" : "（\(phase)）。"),
+                    text: phase.isEmpty
+                        ? String(localized: "この PV はどの PVC にも束ねられていません。")
+                        : String(
+                            localized: "この PV はどの PVC にも束ねられていません（\(phase)）。"),
                     level: phase.isEmpty || phase == "Available" ? .neutral : .warning)
             ]
         }
@@ -534,16 +545,19 @@ enum PlacementTrace {
             case "Released":
                 return [
                     TraceNote(
-                        text: "束ねていた PVC \(name) は消えています（Released）。"
-                            + "PVC を消しても PV とデータは残るので、"
-                            + "回収するには手で消します。",
+                        text: String(localized: """
+                            束ねていた PVC \(name) は消えています（Released）。\
+                            PVC を消しても PV とデータは残るので、回収するには手で消します。
+                            """),
                         level: .warning)
                 ]
             case "Failed":
                 return [
                     TraceNote(
-                        text: "PVC \(name) を消したあとの回収に失敗しています"
-                            + "（Failed）。実体は残っています。",
+                        text: String(localized: """
+                            PVC \(name) を消したあとの回収に失敗しています（Failed）。\
+                            実体は残っています。
+                            """),
                         level: .serious)
                 ]
             default:
@@ -551,8 +565,10 @@ enum PlacementTrace {
                 // 在るので、取得の範囲外にあるだけ。
                 return [
                     TraceNote(
-                        text: "束ねている PVC \(name) は、いま取得している範囲に"
-                            + "ありません（Namespace の絞り込みを外すと出ます）。",
+                        text: String(localized: """
+                            束ねている PVC \(name) は、いま取得している範囲にありません\
+                            （Namespace の絞り込みを外すと出ます）。
+                            """),
                         level: .neutral)
                 ]
             }
@@ -560,7 +576,8 @@ enum PlacementTrace {
         guard pods.isEmpty else { return [] }
         return [
             TraceNote(
-                text: "PVC \(name) は在りますが、それを使っている Pod はありません。",
+                text: String(
+                    localized: "PVC \(name) は在りますが、それを使っている Pod はありません。"),
                 level: .warning)
         ]
     }

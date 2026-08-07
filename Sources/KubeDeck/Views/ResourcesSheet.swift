@@ -55,7 +55,8 @@ struct ResourcesSheet: View {
                     ForEach(containers) { container in
                         // **初期化コンテナを見分けられるようにする。**
                         // 同じ名前で並ぶことがあるし、効く場面が違う。
-                        Text(container.isInit ? "\(container.name)（初期化）" : container.name)
+                        Text(container.isInit
+                    ? String(localized: "\(container.name)（初期化）") : container.name)
                             .tag(ContainerResources.ID?.some(container.id))
                     }
                 }
@@ -131,7 +132,7 @@ struct ResourcesSheet: View {
     }
 
     private func row(
-        title: String, request: Binding<String>, limit: Binding<String>,
+        title: LocalizedStringResource, request: Binding<String>, limit: Binding<String>,
         placeholder: String, observed: Double?, format: (Double) -> String
     ) -> some View {
         GridRow {
@@ -224,16 +225,20 @@ struct ResourcesSheet: View {
         let memoryPeak = samples.map(\.memoryBytes).max() ?? 0
         if let limit = Quantity.parse(memoryLimit.trimmingCharacters(in: .whitespaces)),
            limit > 0, memoryPeak > limit {
-            return "メモリの上限が、いま使っている量"
-                + "（\(Quantity.formatMemory(bytes: memoryPeak))）を下回ります。"
-                + "このまま当てると OOMKilled になります。"
+            return String(localized: """
+                メモリの上限が、いま使っている量\
+                （\(Quantity.formatMemory(bytes: memoryPeak))）を下回ります。\
+                このまま当てると OOMKilled になります。
+                """)
         }
         let cpuPeak = samples.map(\.cpuCores).max() ?? 0
         if let limit = Quantity.parse(cpuLimit.trimmingCharacters(in: .whitespaces)),
            limit > 0, cpuPeak > limit {
-            return "CPU の上限が、いま使っている量"
-                + "（\(Quantity.formatCPU(cores: cpuPeak))）を下回ります。"
-                + "落ちはしませんが、そのぶん遅くなります（スロットル）。"
+            return String(localized: """
+                CPU の上限が、いま使っている量\
+                （\(Quantity.formatCPU(cores: cpuPeak))）を下回ります。\
+                落ちはしませんが、そのぶん遅くなります（スロットル）。
+                """)
         }
         return nil
     }

@@ -184,7 +184,7 @@ struct AutoscalerTests {
         #expect(hpa.spec?["minReplicas"]?.intValue == nil)
         let columns = ResourceTable.columns(
             for: .horizontalPodAutoscaler, showNamespace: false)
-        let minimum = columns.first { $0.title == "最小" }
+        let minimum = columns.first { $0.key == "最小" }
         #expect(minimum?.value(hpa).text == "1")
     }
 }

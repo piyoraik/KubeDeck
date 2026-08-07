@@ -59,7 +59,8 @@ struct ExecSheet: View {
             if containers.count > 1 {
                 Picker("コンテナ", selection: $container) {
                     ForEach(containers, id: \.name) { entry in
-                        Text(entry.isInit ? "\(entry.name)（初期化）" : entry.name)
+                        Text(entry.isInit
+                    ? String(localized: "\(entry.name)（初期化）") : entry.name)
                             .tag(entry.name)
                     }
                 }
@@ -71,8 +72,7 @@ struct ExecSheet: View {
                     .font(.system(size: 12, design: .monospaced))
                     // YAML の欄と同じ理由。勝手に置き換えられると別のコマンドになる。
                     .autocorrectionDisabled()
-                Text("そのままなら bash（無ければ sh）で入ります。"
-                     + "`psql` や `sh -c 'ls /etc'` のように書き換えても構いません。")
+                Text("そのままなら bash（無ければ sh）で入ります。`psql` や `sh -c 'ls /etc'` のように書き換えても構いません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -149,7 +149,8 @@ struct ExecSheet: View {
             NSWorkspace.shared.open(url)
             dismiss()
         } catch {
-            failure = "ターミナルに渡せませんでした: \(error.localizedDescription)"
+            failure = String(
+                localized: "ターミナルに渡せませんでした: \(error.localizedDescription)")
         }
     }
 }

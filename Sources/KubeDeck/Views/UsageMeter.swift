@@ -47,7 +47,7 @@ struct UsageBar: View {
 /// 割合を長さで、しきい値超えを色で示す。色だけに意味を持たせないよう、
 /// 実測値と割合を必ず文字でも出す。
 struct UsageMeter: View {
-    let title: String
+    let title: LocalizedStringResource
     let used: String
     let total: String
     /// 0...1。分母が取れないときは nil で、そのときは棒を出さない。
@@ -64,7 +64,7 @@ struct UsageMeter: View {
     var marker: Double?
 
     init(
-        title: String, used: String, total: String, ratio: Double?,
+        title: LocalizedStringResource, used: String, total: String, ratio: Double?,
         note: String? = nil, noteLevel: StatusLevel? = nil, marker: Double? = nil
     ) {
         self.title = title
@@ -153,7 +153,9 @@ struct ClusterUsageCard: View {
                     title: "CPU",
                     used: Quantity.formatCPU(cores: usage.cpuCores),
                     total: allocatable.cpuCores > 0
-                        ? "\(Quantity.formatCPU(cores: allocatable.cpuCores)) コア" : "",
+                        ? String(
+                            localized: "\(Quantity.formatCPU(cores: allocatable.cpuCores)) コア")
+                        : "",
                     ratio: Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores),
                     series: store.clusterHistory.cpu,
                     tint: Palette.seriesCPU,
@@ -185,7 +187,7 @@ struct ClusterUsageCard: View {
     /// 推移が取れるならそちらを出し、無ければ割合の棒を出す。
     @ViewBuilder
     private func metric(
-        title: String, used: String, total: String, ratio: Double?,
+        title: LocalizedStringResource, used: String, total: String, ratio: Double?,
         series: TimeSeries, tint: Color, format: @escaping (Double) -> String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -224,17 +226,19 @@ struct ClusterUsageCard: View {
     }
 
     private var sourceLabel: String {
-        if store.metricsServerAvailable == nil && store.prometheus == nil { return "確認中" }
+        if store.metricsServerAvailable == nil && store.prometheus == nil {
+            return String(localized: "確認中")
+        }
         var parts: [String] = []
         if store.activeMetricsSource.isAvailable { parts.append(store.activeMetricsSource.label) }
         if store.prometheus != nil, !store.clusterHistory.cpu.isEmpty {
             // **「30 分」と直に書かない。** 範囲は設定で変えられる。
-            parts.append("推移 \(Preferences.shared.historyWindowLabel)")
+            parts.append(String(localized: "推移 \(Preferences.shared.historyWindowLabel)"))
         } else if store.activeMetricsSource.isAvailable {
             // **見せ方が変わる理由を黙らない。** 履歴が取れるクラスタでは
             // 折れ線、取れないクラスタでは割合の棒になる（同じことを描く図を
             // 2 つ並べないため）。断りが無いと、環境ごとに作りが違うように見える。
-            parts.append("現在値のみ")
+            parts.append(String(localized: "現在値のみ"))
         }
         return parts.joined(separator: " · ")
     }
@@ -242,24 +246,35 @@ struct ClusterUsageCard: View {
     /// 添え書きの補足。折れ線が出ない理由をここで言う。
     private var sourceHelp: String {
         store.prometheus == nil
-            ? "推移（折れ線）は Prometheus からしか出せません。見つからないクラスタでは、いまの割合を棒で出します。"
-            : "推移は Prometheus から、いまの値は \(store.activeMetricsSource.label) から取っています。"
+            ? String(localized: """
+                推移（折れ線）は Prometheus からしか出せません。\
+                見つからないクラスタでは、いまの割合を棒で出します。
+                """)
+            : String(localized: """
+                推移は Prometheus から、いまの値は \
+                \(store.activeMetricsSource.label) から取っています。
+                """)
     }
 
     private var unavailableReason: String {
         if let problem = store.metricsSourceProblem { return problem }
-        if store.metricsServerAvailable == nil { return "取得元を確認しています。" }
+        if store.metricsServerAvailable == nil {
+            return String(localized: "取得元を確認しています。")
+        }
         // **取得元が無いことにしない。** 取得元はあるのにノードの使用量だけ
         // 引けないことがある（GKE の Warden など、管理されたクラスタは
         // ノードの指標を拒みつつ Pod の指標は通す）。そこで「見つかりません」と
         // 書くと、入れれば直ると読めてしまう。
         if store.activeMetricsSource.isAvailable {
-            return "取得元は \(store.activeMetricsSource.label) です。"
-                + "ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。"
-                + "管理されたクラスタでは、ノードの指標だけ拒まれることがあります。"
-                + "Pod ごとの使用量は一覧の列に出ます。"
+            return String(localized: "取得元は \(store.activeMetricsSource.label) です。")
+                + """
+                    ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。\
+                    管理されたクラスタでは、ノードの指標だけ拒まれることがあります。\
+                    Pod ごとの使用量は一覧の列に出ます。
+                    """
         }
-        return "このクラスタには metrics-server も Prometheus も見つかりません。どちらかを入れると CPU とメモリの使用量が出ます。"
+        
+            return String(localized: "このクラスタには metrics-server も Prometheus も見つかりません。どちらかを入れると CPU とメモリの使用量が出ます。")
     }
 
     /// 取れない理由を書く。空欄にすると、値が 0 なのか

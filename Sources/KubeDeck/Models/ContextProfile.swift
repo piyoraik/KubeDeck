@@ -40,14 +40,14 @@ enum ContextTint: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .none: return "なし"
-        case .red: return "赤"
-        case .orange: return "橙"
-        case .yellow: return "黄"
-        case .green: return "緑"
-        case .blue: return "青"
-        case .purple: return "紫"
-        case .gray: return "灰"
+        case .none: return String(localized: "なし")
+        case .red: return String(localized: "赤")
+        case .orange: return String(localized: "橙")
+        case .yellow: return String(localized: "黄")
+        case .green: return String(localized: "緑")
+        case .blue: return String(localized: "青")
+        case .purple: return String(localized: "紫")
+        case .gray: return String(localized: "灰")
         }
     }
 }
@@ -63,6 +63,9 @@ struct ReadOnlyError: LocalizedError {
     let context: String
 
     var errorDescription: String? {
-        "\(context) は読み取り専用に設定されています。設定の「コンテキスト」で解除できます。"
+        String(localized: """
+            \(context) は読み取り専用に設定されています。\
+            設定の「コンテキスト」で解除できます。
+            """)
     }
 }
