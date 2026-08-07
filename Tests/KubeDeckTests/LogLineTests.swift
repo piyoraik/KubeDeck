@@ -149,13 +149,19 @@ struct LogLineTests {
         #expect(before!.stamp.dayKey + 1 == after!.stamp.dayKey)
 
         // 印は直前の行と比べて立てる。
-        let head = LogLine(id: 0, text: "2026-08-02T14:59:59.000Z x")
+        //
+        // **時間帯をマシンに任せない。** ここが見ているのは「現地の日付が
+        // 変わったか」なので、渡さないと走らせた場所の設定で結果が変わる。
+        // 実際、JST の手元では通って **UTC の CI ランナーでだけ落ちた**
+        // （`14:59:59Z` と `15:00:00Z` は JST では日をまたぐが UTC では同じ日）。
+        let head = LogLine(
+            id: 0, text: "2026-08-02T14:59:59.000Z x", offsetFromUTC: offset)
         let next = LogLine(
             id: 1, text: "2026-08-02T15:00:00.000Z y",
-            previousDayKey: head.timestamp?.dayKey)
+            previousDayKey: head.timestamp?.dayKey, offsetFromUTC: offset)
         let same = LogLine(
             id: 2, text: "2026-08-02T15:00:01.000Z z",
-            previousDayKey: next.timestamp?.dayKey)
+            previousDayKey: next.timestamp?.dayKey, offsetFromUTC: offset)
         #expect(head.startsNewDay == false)
         #expect(next.startsNewDay)
         #expect(same.startsNewDay == false)

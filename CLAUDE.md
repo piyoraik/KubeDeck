@@ -176,6 +176,17 @@ CI ランナーでだけ落ちる**ので、スキームの test action に `lan
 （未訳は日本語のまま出るだけで、どこも失敗しない ——「無い」と「取れていない」を
 混ぜないのと同じで、**気付く手立てを別に置く**）。
 
+**言語を固定しても時間帯は固定されない。** スキームの `region: JP` はロケールの
+地域で、`TimeZone.current` は動かない。CI ランナーは UTC なので、現地時刻に
+依存するテストは**手元では通って CI でだけ落ちる**。実際
+`LogLineTests.dayBoundary` がこれで落ちた —— `14:59:59Z` と `15:00:00Z` は
+JST では日をまたぐが UTC では同じ日で、`startsNewDay` が立たない。
+
+現地時刻を扱う型には**オフセットの継ぎ目を開けておく**
+（`LogTimestamp.parse(_:offsetFromUTC:)` と `LogLine.init(…offsetFromUTC:)`。
+既定は nil ＝ このマシン）。テストは必ず明示で渡す。手元で CI を再現するには
+`TZ=UTC` を付けて `xcodebuild test` を走らせる。
+
 ### 言語はアプリ内でも選べる（`AppLanguage`）
 
 設定の「一般 › 表示 › 言語」で `システムに従う` / `日本語` / `English`。

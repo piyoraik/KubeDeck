@@ -24,9 +24,16 @@ struct LogLine: Identifiable, Sendable, Hashable {
     ///     本文を出どころと読み違える。
     ///   - previousDayKey: 直前の行の `LogTimestamp.dayKey`。日付が変わった
     ///     行を見つけるためだけに使う。
+    ///   - offsetFromUTC: 現地時刻の差。nil ならこのマシンの設定
+    ///     （`LogTimestamp.parse` と同じ継ぎ目）。
+    ///
+    /// **この継ぎ目を塞がない。** `startsNewDay` は**現地の**日付が変わったかで
+    /// 決まるので、渡せないとテストが走らせたマシンの時間帯に依存する。実際、
+    /// JST の手元では通って **UTC の CI ランナーでだけ落ちた**（`14:59:59Z` と
+    /// `15:00:00Z` は JST では日をまたぐが UTC では同じ日）。
     init(
         id: Int, text raw: String, strippingPrefix: Bool = false,
-        previousDayKey: Int? = nil
+        previousDayKey: Int? = nil, offsetFromUTC: Int? = nil
     ) {
         let (source, afterPrefix) = strippingPrefix
             ? LogLine.splitPrefix(raw)
@@ -36,7 +43,7 @@ struct LogLine: Identifiable, Sendable, Hashable {
         // 行の絞り込みが時刻にも当たるし、深刻度の判定も行頭が時刻になって
         // ずれる（klog の `E0802` は行頭にしか現れないので、`--timestamps` を
         // 付けているあいだ判定が丸ごと効かなかった）。
-        let parsed = LogTimestamp.parse(afterPrefix)
+        let parsed = LogTimestamp.parse(afterPrefix, offsetFromUTC: offsetFromUTC)
 
         self.id = id
         self.text = parsed.map { String(afterPrefix[$0.bodyStart...]) } ?? afterPrefix
