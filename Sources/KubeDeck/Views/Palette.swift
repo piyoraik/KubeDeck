@@ -80,6 +80,36 @@ enum Palette {
     static let seriesCPU = Color.adaptive(light: 0x2A_78_D6, dark: 0x39_87_E5)
     static let seriesMemory = Color.adaptive(light: 0xEB_68_34, dark: 0xD9_59_26)
 
+    /// ログの出どころ（`pod/container`）を見分けるための色。
+    ///
+    /// **状態の 4 色と混ぜない。** 行の帯と下地は深刻度が持っている場所なので、
+    /// 隣で同じ色系統が動くと、どちらが状態なのか分からなくなる（以前
+    /// 「Pod ごとに色を塗らない」と決めたのはこの理由）。緑・黄・橙・赤を
+    /// 1 つも使わない寒色だけで組み、**出どころの列の文字にだけ**掛ける
+    /// （帯・下地・本文の色は深刻度のまま）。
+    ///
+    /// **色だけに意味を持たせない。** 色を付ける当の列に名前が出ているので、
+    /// 色は見分けを速くするだけの添え物。
+    ///
+    /// **7 色で足りることにする。** これ以上増やしても隣り合う色の区別が
+    /// 付かない。掴んでいる Pod が 7 を超えると色は一周するが、名前が
+    /// 出ている以上それで別物になるわけではない。
+    static let logSources: [Color] = [
+        .adaptive(light: 0x2A_6F_D1, dark: 0x5F_A5_F2),  // 青
+        .adaptive(light: 0x7A_4B_C4, dark: 0xB4_90_EC),  // 紫
+        .adaptive(light: 0x0E_74_80, dark: 0x45_C0_CD),  // 青緑
+        .adaptive(light: 0xB0_3F_7E, dark: 0xEC_82_B8),  // 桃
+        .adaptive(light: 0x3F_4F_B5, dark: 0x93_9E_F2),  // 藍
+        .adaptive(light: 0x5B_6B_7B, dark: 0xA6_B6_C6),  // 鈍色
+        .adaptive(light: 0x8A_4F_9E, dark: 0xC9_92_DA),  // 藤
+    ]
+
+    /// 現れた順の番号から色を選ぶ。**名前のハッシュから決めない** ——
+    /// 一周ぶんに満たない少数の Pod でも、隣り合う 2 つが似た色になりうる。
+    static func logSource(at index: Int) -> Color {
+        logSources[((index % logSources.count) + logSources.count) % logSources.count]
+    }
+
     /// 図の器と囲みの色（Kubernetes の構成図でおなじみの青）。
     ///
     /// **`Color.accentColor` に預けない。** SwiftUI の accent は窓が前面に

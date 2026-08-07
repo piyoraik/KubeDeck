@@ -57,6 +57,9 @@ struct LogContent: View {
     /// 遡って読もうとする場面がまさにそこなので、いちばん困る消え方だった。
     @State private var autoScroll = Preferences.shared.logFollowsByDefault
     @State private var timestamps = Preferences.shared.logShowsTimestamps
+    /// 出どころ（`pod/container`）を色で分けるか。**見え方だけの話**なので
+    /// `reloadKey` には入れない。
+    @State private var colorsSources = Preferences.shared.logColorsSources
     @State private var previous = false
     /// 折り返すか。切ると横スクロールになる。
     @State private var wraps = Preferences.shared.logWrapsByDefault
@@ -73,11 +76,28 @@ struct LogContent: View {
     /// 舐めることになる（`visibleLines` を 1 度だけ作るのと同じ話）。
     /// 取り込みのときに足す。
     @State private var observedPods: [String] = []
+    /// 出どころ（`pod/container`）に割り当てた色の番号。**現れた順**で振る。
+    ///
+    /// **名前のハッシュで決めない。** 2〜3 個しか無いときでも隣り合う色に
+    /// なりうる。現れた順なら、いま画面に出ている数だけ最も離れた色が当たる。
+    /// **`observedPods` と兼ねない** —— あちらは Pod の絞り込みに並べる名前で、
+    /// 色はコンテナまで含めた出どころに付く（同じ Pod の本体とサイドカーを
+    /// 見分けるのがここの目的）。
+    @State private var sourceOrder: [String: Int] = [:]
+    /// 届いた行の現地日付の幅（`spansDays` の元）。
+    @State private var dayKeyRange: ClosedRange<Int>?
     /// 何番目の取得か。待っているあいだに対象が変わったかの判定に使う。
     @State private var generation = 0
 
     /// 行数の上限。追従したままにすると際限なく積み上がる。設定で変えられる。
     private var maximumLines: Int { Preferences.shared.logBufferLines }
+
+    /// 1 描画のあいだ変わらない列の作り。**行ごとに数え直さない。**
+    private struct Columns {
+        var showsTimestamp: Bool
+        var showsSource: Bool
+        var spansDays: Bool
+    }
 
     var body: some View {
         // **1 度だけ絞り込む。** 本文・空の判定・件数の 3 か所がそれぞれ
@@ -85,10 +105,22 @@ struct LogContent: View {
         // 全行を 3 度舐めていた。
         let visible = visibleLines
 
+        // **列の作りも body の先頭で 1 度だけ決める。** `showsSource` は
+        // 引数を組み立て直して判定するし、日付をまたぐかは行を舐める。
+        // どちらも行ごとに呼ぶと、1 描画で行数ぶん走る（一覧の列定義を
+        // `row(for:)` の中から呼んで踏んだのと同じ話）。
+        let columns = Columns(
+            showsTimestamp: timestamps,
+            showsSource: showsSource,
+            // 日付の枠を取るのはまたぐときだけ（毎行に `MM-dd ` を並べると、
+            // 狭いパネルで本文が 6 文字ぶん削れる）。時刻を出していないときは
+            // 走らせない —— 1 行も時刻を持たないので、端から端まで舐めるだけ。
+            spansDays: timestamps && spansDays)
+
         return VStack(spacing: 0) {
             controls
             Divider()
-            output(visible)
+            output(visible, columns: columns)
             Divider()
             status(visible)
         }
@@ -146,7 +178,13 @@ struct LogContent: View {
 
             // Service にはテンプレートが無く、どのコンテナが並ぶかは開くまで
             // 分からない。選べる中身が無い Picker は出さない（全部読む）。
-            if request.isGroup, !request.containers.isEmpty {
+            //
+            // **単一の Pod でも「すべてのコンテナ」を出す。** 以前は 1 つ選ぶ
+            // ことしかできず、サイドカーの立った Pod で本体と proxy を突き
+            // 合わせるには、コンテナを切り替えては読み直すしかなかった
+            // （まとめ読みの既定を「すべて」にしたのと同じ理由が、Pod 1 つの
+            // ときにも当てはまる）。
+            if showsContainerPicker {
                 Picker("コンテナ", selection: $container) {
                     Text("すべてのコンテナ").tag("")
                     Divider()
@@ -156,15 +194,9 @@ struct LogContent: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 200)
-                .help("読むコンテナを絞る。こちらは取得そのものが変わる")
-            } else if request.containers.count > 1 {
-                Picker("コンテナ", selection: $container) {
-                    ForEach(request.containers, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 200)
+                .help("読むコンテナを絞る。こちらは取得そのものが変わる。"
+                    + "「すべてのコンテナ」にすると混ぜて読み、"
+                    + "行頭にコンテナ名が付く")
             }
 
             // **取得と見え方を別のトグルにする。** 「末尾へ送る」を切るのは
@@ -188,6 +220,10 @@ struct LogContent: View {
 
             Menu {
                 Toggle("時刻を出す", isOn: $timestamps)
+                // 出どころの列そのものが無いときは、切っても何も起きない。
+                if showsSource {
+                    Toggle("出どころを色で分ける", isOn: $colorsSources)
+                }
                 Toggle("前回の起動のログ", isOn: $previous)
                 Divider()
                 Button("表示中の行をコピー") { copyVisible() }
@@ -211,12 +247,12 @@ struct LogContent: View {
 
     // MARK: - 本文
 
-    private func output(_ visible: [LogLine]) -> some View {
+    private func output(_ visible: [LogLine], columns: Columns) -> some View {
         ScrollViewReader { proxy in
             ScrollView(wraps ? .vertical : [.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(visible) { line in
-                        row(line)
+                        row(line, columns: columns)
                     }
                     Color.clear.frame(height: 1).id(-1)
                 }
@@ -236,11 +272,11 @@ struct LogContent: View {
         }
     }
 
-    /// 1 行。左に深刻度の帯、次に行番号、そして本文。
+    /// 1 行。左に深刻度の帯、次に行番号・時刻・出どころ、そして本文。
     ///
     /// **本文の色は変えない。** 何百行も並ぶ場所で文字色を振ると、
     /// 読むこと自体が疲れる。目を引かせるのは細い帯とごく薄い下地だけにする。
-    private func row(_ line: LogLine) -> some View {
+    private func row(_ line: LogLine, columns: Columns) -> some View {
         HStack(alignment: .top, spacing: 0) {
             Rectangle()
                 .fill(accent(for: line.level) ?? .clear)
@@ -255,20 +291,25 @@ struct LogContent: View {
                 // 行番号は選択に含めない。コピーしたときに紛れ込む。
                 .textSelection(.disabled)
 
+            if columns.showsTimestamp {
+                timestampCell(line, spansDays: columns.spansDays)
+            }
+
             // **出どころは列にする。** 本文に混ぜたままだと、行の絞り込みが
             // Pod 名にも当たるし、深刻度の判定も先頭が prefix になってずれる
             // （`LogLine.splitPrefix` が剥がしている）。
             //
-            // **色を付けない。** Pod ごとに塗り分けると読みやすそうに見えるが、
-            // ログの帯は深刻度（状態の 4 色）が持っている場所なので、隣で別の
-            // 意味の色が動くと、どちらが状態なのか分からなくなる。
-            if showsSource {
-                Text(line.sourceLabel ?? "—")
+            // **色は出どころの文字にだけ掛ける。** 帯・下地・本文は深刻度の
+            // ままにする（状態の 4 色を使わない `Palette.logSources`）。
+            // ここを塗り分けないと、混ぜて読んでいるあいだ「どの Pod の行か」
+            // を毎行読み下すことになる。
+            if columns.showsSource {
+                Text(sourceText(line) ?? "—")
                     .font(.system(size: fontSize - 1, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(sourceColor(line))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(width: isCompact ? 104 : 132, alignment: .leading)
+                    .frame(width: sourceWidth, alignment: .leading)
                     .padding(.trailing, 8)
                     .textSelection(.disabled)
                     .help(line.source ?? "出どころが付いていない行"
@@ -289,7 +330,92 @@ struct LogContent: View {
         .id(line.id)
     }
 
+    /// 時刻の列。
+    ///
+    /// **原文をそのまま並べない。** kubectl が出すのは
+    /// `2026-08-07T04:12:33.123456789Z` の 30 文字で、狭いパネルでは本文が
+    /// その半分を持っていかれるうえ、UTC のまま並ぶので手元の時計と
+    /// 突き合わせられない。列には現地時刻を、原文はツールチップと
+    /// コピーに残す（「元の文言を捨てない」と同じ話）。
+    ///
+    /// **日付は日付が変わった行にだけ。** 枠は取っておくので、時刻の桁は
+    /// どの行でも揃う。
+    private func timestampCell(_ line: LogLine, spansDays: Bool) -> some View {
+        HStack(spacing: 0) {
+            if spansDays {
+                Text(line.startsNewDay ? (line.timestamp?.day ?? "") : "")
+                    .frame(width: dayWidth, alignment: .leading)
+            }
+            // 時刻の付いていない行（kubectl 自身の文言）を空欄にしない。
+            // 空欄だと、時刻を出す設定が効いていないように見える。
+            Text(line.timestamp?.time ?? "—")
+                .frame(width: timeWidth, alignment: .leading)
+        }
+        .font(.system(size: fontSize - 1, design: .monospaced))
+        .monospacedDigit()
+        .foregroundStyle(.tertiary)
+        .padding(.trailing, 8)
+        .textSelection(.disabled)
+        .help(line.timestamp.map { "\($0.raw)（原文・UTC）" }
+            ?? "この行には時刻が付いていません（kubectl 自身の文言など）")
+    }
+
     private var fontSize: CGFloat { isCompact ? 10.5 : 11 }
+
+    /// 時刻の列の幅。**目分量で決めない。**
+    /// `NSFont.monospacedSystemFont` で実測した `00:00:00.000` の幅は
+    /// 9.5pt で **70.5pt**、10.0pt で **74.2pt**。最初どちらも 74 にしていたら、
+    /// 別ウインドウ（本文 11pt ＝ 列 10pt）で **0.2pt 足りずに切れる**ところだった。
+    private var timeWidth: CGFloat { isCompact ? 73 : 77 }
+
+    /// `08-02` は同じ実測で 29.4 / 30.9pt。
+    private var dayWidth: CGFloat { isCompact ? 34 : 36 }
+
+    /// 出どころの列に出す文字。
+    ///
+    /// 1 つの Pod を全コンテナで読んでいるときは Pod 名がどの行も同じなので、
+    /// コンテナ名だけにする（同じ値を全行に並べても、狭い列でコンテナ名が
+    /// 削れるだけ）。
+    private func sourceText(_ line: LogLine) -> String? {
+        request.isGroup ? line.sourceLabel : line.sourceContainer
+    }
+
+    private var sourceWidth: CGFloat {
+        // コンテナ名だけなら Pod 名のぶんは要らない。
+        if !request.isGroup { return isCompact ? 76 : 96 }
+        return isCompact ? 104 : 132
+    }
+
+    /// 出どころに割り当てた色。切っているとき、出どころが無い行、
+    /// まだ番号を振っていない行は、これまでどおり灰色。
+    private func sourceColor(_ line: LogLine) -> Color {
+        guard colorsSources, let source = line.source,
+              let index = sourceOrder[source]
+        else { return .secondary }
+        return Palette.logSource(at: index)
+    }
+
+    /// 読み込んだ範囲が現地の日付をまたぐか。
+    ///
+    /// **端の 2 行で決めない。** 一度そう書いたが、**行は時系列に並ばない**
+    /// —— 実測（kubectl v1.32.13、`logs -l --prefix`）で、最初に流れてくる
+    /// `--tail` のぶんは**時刻順に混ざらず Pod ごとに固まって**出た。
+    ///
+    /// ```
+    /// 1 14:37:59.118 demo-proxy…mhhk/proxy …   ← 新しいほうが先
+    /// 5 14:37:55.895 demo-proxy…slx8/proxy …   ← 4 秒前に戻る
+    /// ```
+    ///
+    /// **全行を舐めもしない** —— 追従中は毎フレーム 5,000 行を歩くことになる。
+    /// 取り込みのときに幅だけ覚える（深刻度の判定や出どころの数え上げと同じ）。
+    ///
+    /// 上限を超えて古い行を捨てても狭め直さない。**残るのは日付の枠が
+    /// 空のまま出ること**で、害はそれだけ（逆に狭めるには捨てるたびに
+    /// 全行を数え直すことになる）。
+    private var spansDays: Bool {
+        guard let range = dayKeyRange else { return false }
+        return range.lowerBound != range.upperBound
+    }
 
     private func accent(for level: LogLevel) -> Color? {
         level.statusLevel.map { Palette.color(for: $0) }
@@ -300,14 +426,12 @@ struct LogContent: View {
         return Palette.color(for: status).opacity(0.07)
     }
 
-    /// 時刻は控えめに、絞り込みに一致した部分は目立たせる。
+    /// 絞り込みに一致した部分は目立たせる。
+    ///
+    /// 時刻はここでは触らない —— `LogLine` が本文から剥がして、専用の列が
+    /// 持っている。
     private func attributed(_ line: LogLine) -> AttributedString {
         var text = AttributedString(line.text)
-
-        if line.timestampLength > 0, line.timestampLength < line.text.count {
-            let end = text.index(text.startIndex, offsetByCharacters: line.timestampLength)
-            text[text.startIndex..<end].foregroundColor = .secondary
-        }
 
         let needle = filter.trimmingCharacters(in: .whitespaces)
         if !needle.isEmpty {
@@ -472,13 +596,15 @@ struct LogContent: View {
             // （「無い」と「取れていない」を混ぜない、と同じ話）。
             if let excess = excessPodCount {
                 Label(
-                    "· \(excess.total) 個中 \(excess.limit) 個までしか追いかけられません",
+                    "· 追いかけられません（Pod が \(excess.total) 個、上限は \(excess.limit) 個）",
                     systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .warning))
                     .lineLimit(1)
-                    .help("kubectl の --max-log-requests の上限。"
-                        + "Pod を絞るか、個々の Pod を開いてください")
+                    .help("kubectl の --max-log-requests の上限を超えています。"
+                        + "超えると kubectl は 1 行も出しません（実測）。"
+                        + "「追いかける」を切れば上限は効かないので全部読めます。"
+                        + "Pod を絞る／個々の Pod を開くのでも構いません")
             }
             Spacer(minLength: 0)
         }
@@ -489,11 +615,19 @@ struct LogContent: View {
 
     /// 掴んでいる Pod が `--max-log-requests` を超えているとき、その内訳。
     ///
-    /// **kubectl の文言を待たずに言う。** 超えたときの断りは stderr に出て
-    /// 本文へ混ざるが、追いかけていないときは kubectl が黙ることもある
-    /// （実測していない）。数は先に分かっているので、こちらから書く。
+    /// **追いかけているときだけ。** 実測（kubectl v1.32.13）で、この上限が
+    /// 効くのは `--follow` のときだけだった —— 付けなければ 2 Pod / 上限 1 でも
+    /// 両方とも出る（exit=0）。切っている人に上限の話をしない。
+    ///
+    /// **「上限までは読める」と書かない。** 超えたときの kubectl は
+    /// **1 行も出さない**（実測。exit=1、標準出力 0 バイト、stderr に
+    /// `you are attempting to follow 2 log streams, but maximum allowed
+    /// concurrency is 1` だけ）。「N 個中 30 個まで」と書いていたので、
+    /// **30 個ぶんは出ていると読める嘘**になっていた。
     private var excessPodCount: (total: Int, limit: Int)? {
-        guard request.isGroup, case .resolved(let choices) = resolution else { return nil }
+        guard streams, request.isGroup,
+              case .resolved(let choices) = resolution
+        else { return nil }
         let limit = Kubectl.LogOptions.defaultMaxLogRequests
         guard choices.count > limit else { return nil }
         return (choices.count, limit)
@@ -504,8 +638,24 @@ struct LogContent: View {
         return visible.count == total ? "\(total) 行" : "\(visible.count) / \(total) 行"
     }
 
-    /// 出どころの列を出すか。まとめ読みのときだけ。
-    private var showsSource: Bool { request.isGroup }
+    /// 出どころの列を出すか。
+    ///
+    /// **`isGroup` で判定しない。** 1 つの Pod を全コンテナで読むときも
+    /// kubectl は行頭に出どころを書く。判定は `Kubectl` の 1 か所に任せる
+    /// —— 剥がす側とずれると、prefix が本文に残るか、本文の先頭が黙って
+    /// 消える。
+    private var showsSource: Bool {
+        Kubectl.logsArePrefixed(target: logTarget, options: logOptions)
+    }
+
+    /// コンテナの Picker を出すか。
+    ///
+    /// まとめ読みは 1 つしかコンテナが無くても「すべて」と選べるようにする
+    /// （Service にはテンプレートが無く、一覧そのものが空のことがある）。
+    /// 1 つの Pod では、コンテナが 1 つなら選ぶものが無い。
+    private var showsContainerPicker: Bool {
+        request.isGroup ? !request.containers.isEmpty : request.containers.count > 1
+    }
 
     /// 絞り込みに並べる Pod。
     ///
@@ -531,12 +681,21 @@ struct LogContent: View {
         }
     }
 
-    /// **出どころも一緒にコピーする。** 混ぜて読んでいるので、貼った先で
+    /// **出どころと時刻も一緒にコピーする。** 混ぜて読んでいるので、貼った先で
     /// 「どの Pod の行か」が落ちると、まとめ読みの結果としては使えない。
     /// ここは幅の制約が無いので、種別の段も落とさず原文のまま出す。
+    ///
+    /// **時刻は現地に直したほうではなく原文（UTC）を貼る。** 貼る相手は
+    /// 別の時間帯にいることも、他所のログと突き合わせることもある。
     private func copyVisible() {
         let text = visibleLines
-            .map { showsSource ? "[\($0.source ?? "-")] \($0.text)" : $0.text }
+            .map { line -> String in
+                var parts: [String] = []
+                if showsSource { parts.append("[\(line.source ?? "-")]") }
+                if let raw = line.timestamp?.raw { parts.append(raw) }
+                parts.append(line.text)
+                return parts.joined(separator: " ")
+            }
             .joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -605,6 +764,30 @@ struct LogContent: View {
         }
     }
 
+    /// いまの指定で kubectl に何を読ませるか。
+    ///
+    /// **取得と表示で別々に組み立てない。** 出どころの列を出すかどうかは、
+    /// 実際に渡す引数から決まる（`Kubectl.logsArePrefixed`）。
+    private var logTarget: Kubectl.LogTarget {
+        request.isGroup ? .selector(request.selector) : .pod(pod)
+    }
+
+    private var logOptions: Kubectl.LogOptions {
+        var options = Kubectl.LogOptions()
+        options.container = container.isEmpty ? nil : container
+        options.follow = streams
+        options.timestamps = timestamps
+        options.previous = previous
+        options.tailLines = Preferences.shared.logTailLines
+        // コンテナを選んでいなければ全部読む。**まとめ読みだけの話にしない**
+        // —— サイドカーの立った 1 つの Pod でも「すべてのコンテナ」を選べる。
+        // **選びようが無いときは付けない** —— コンテナが 1 つしか無い Pod で
+        // 付けても読むものは同じで、要らない出どころの列が増えるだけ。
+        options.allContainers = container.isEmpty
+            && (request.isGroup || request.containers.count > 1)
+        return options
+    }
+
     private func restart() async {
         stop()
         generation += 1
@@ -612,33 +795,22 @@ struct LogContent: View {
         lines = []
         didTruncate = false
         observedPods = []
+        // **色の割り当ても捨てる。** 持ち越すと、対象を切り替えたあとの
+        // 1 つ目の Pod が前の対象で使った色の続きから始まる。
+        sourceOrder = [:]
+        dayKeyRange = nil
         // 対象が変わったらコンテナの選択も入れ直す。まとめ読みの「すべて」
         // （空文字）はどの種別でも有効なので、そこへ落とす。
         if !container.isEmpty, !request.containers.contains(container) {
             container = request.isGroup ? "" : (request.containers.first ?? "")
         }
 
-        let target: Kubectl.LogTarget
-        if request.isGroup {
-            target = .selector(request.selector)
-        } else {
-            // Pod が決まるまでは何も起こさない。決まった時点で `reloadKey` が
-            // 変わり、ここへもう一度来る。
-            guard !pod.isEmpty else { return }
-            target = .pod(pod)
-        }
-
-        var options = Kubectl.LogOptions()
-        options.container = container.isEmpty ? nil : container
-        options.follow = streams
-        options.timestamps = timestamps
-        options.previous = previous
-        options.tailLines = Preferences.shared.logTailLines
-        // コンテナを選んでいないまとめ読みは全部のコンテナを読む。
-        options.allContainers = request.isGroup && container.isEmpty
+        // Pod が決まるまでは何も起こさない。決まった時点で `reloadKey` が
+        // 変わり、ここへもう一度来る。
+        if !request.isGroup, pod.isEmpty { return }
 
         switch await store.logStream(
-            namespace: request.namespace, target: target, options: options)
+            namespace: request.namespace, target: logTarget, options: logOptions)
         {
         case .failure(let error):
             guard token == generation else { return }
@@ -670,8 +842,9 @@ struct LogContent: View {
     /// いるので、ばらさずに受ければよい（`ProcessRunner.stream`）。
     private func consume(_ stream: AsyncStream<[String]>, token: Int) async {
         // **`--prefix` を付けたときだけ剥がす。** 付けていない行から剥がすと、
-        // `[ERROR] ...` のような本文を出どころと読み違える。
-        let strips = request.isGroup
+        // `[ERROR] ...` のような本文を出どころと読み違える。判定は引数を
+        // 組み立てた側と同じ 1 か所から取る。
+        let strips = showsSource
 
         for await chunk in stream {
             guard !Task.isCancelled, token == generation else { break }
@@ -680,17 +853,33 @@ struct LogContent: View {
             var next = lines
             next.reserveCapacity(next.count + chunk.count)
             var index = (next.last?.id ?? -1) + 1
+            var previousDayKey = next.last?.timestamp?.dayKey
             var seen = observedPods
+            var order = sourceOrder
+            var days = dayKeyRange
             for text in chunk {
-                let line = LogLine(id: index, text: text, strippingPrefix: strips)
+                let line = LogLine(
+                    id: index, text: text, strippingPrefix: strips,
+                    previousDayKey: previousDayKey)
                 // 出どころは取り込みのときに数える。body から `lines` を
                 // 舐め直すと、5,000 行を毎フレーム歩くことになる。
                 if let name = line.sourcePod, !seen.contains(name) {
                     seen.append(name)
                 }
+                // 色の番号も同じ理由でここで振る。**現れた順**。
+                if let source = line.source, order[source] == nil {
+                    order[source] = order.count
+                }
+                if let key = line.timestamp?.dayKey {
+                    previousDayKey = key
+                    days = days.map { min($0.lowerBound, key)...max($0.upperBound, key) }
+                        ?? key...key
+                }
                 next.append(line)
                 index += 1
             }
+            if order.count != sourceOrder.count { sourceOrder = order }
+            if days != dayKeyRange { dayKeyRange = days }
             if seen.count != observedPods.count { observedPods = seen }
             // 溢れたぶんは 1 度で落とす。1 行ごとの `removeFirst` をやめる。
             if next.count > maximumLines {

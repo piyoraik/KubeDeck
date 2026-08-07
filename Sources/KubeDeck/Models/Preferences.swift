@@ -40,6 +40,7 @@ final class Preferences {
         static let logFollowsByDefault = "logFollowsByDefault"
         static let logWrapsByDefault = "logWrapsByDefault"
         static let logShowsTimestamps = "logShowsTimestamps"
+        static let logColorsSources = "logColorsSources"
         static let followsSelectionForLogs = "followsSelectionForLogs"
 
         static let metricsPreference = "metricsPreference"
@@ -175,6 +176,15 @@ final class Preferences {
 
     var logShowsTimestamps: Bool {
         didSet { store.set(logShowsTimestamps, forKey: Key.logShowsTimestamps) }
+    }
+
+    /// 混ぜて読んでいるときに、出どころ（`pod/container`）を色で分けるか。
+    ///
+    /// **色が付くのは出どころの列だけ。** 帯・下地・本文は深刻度のまま
+    /// （`Palette.logSources`）。切れるようにしてあるのは、色が増えること
+    /// 自体を嫌う場面があるため。
+    var logColorsSources: Bool {
+        didSet { store.set(logColorsSources, forKey: Key.logColorsSources) }
     }
 
     /// Pod を選んだらログも切り替えるか。
@@ -382,6 +392,7 @@ final class Preferences {
         logFollowsByDefault = store.object(forKey: Key.logFollowsByDefault) as? Bool ?? true
         logWrapsByDefault = store.object(forKey: Key.logWrapsByDefault) as? Bool ?? true
         logShowsTimestamps = store.object(forKey: Key.logShowsTimestamps) as? Bool ?? false
+        logColorsSources = store.object(forKey: Key.logColorsSources) as? Bool ?? true
         followsSelectionForLogs =
             store.object(forKey: Key.followsSelectionForLogs) as? Bool ?? true
 
@@ -454,6 +465,7 @@ final class Preferences {
         logFollowsByDefault = true
         logWrapsByDefault = true
         logShowsTimestamps = false
+        logColorsSources = true
         followsSelectionForLogs = true
         metricsPreference = .automatic
         historyWindowMinutes = 30

@@ -55,21 +55,130 @@ struct LogLineTests {
     // MARK: - 時刻の先頭
 
     /// `--timestamps` は RFC3339 + 空白を先頭に足す。
-    /// **日付らしい形のときだけ**時刻とみなす（本文を食わない）。
-    @Test("--timestamps の時刻だけを先頭として測る")
+    /// **本文から剥がして列に出す** —— 残すと絞り込みが時刻にも当たり、
+    /// 深刻度の判定も行頭でずれる（出どころの prefix と同じ扱い）。
+    @Test("--timestamps の時刻を本文から剥がす")
     func timestampPrefix() {
         let stamped = LogLine(id: 0, text: "2026-08-02T01:23:45.123456789Z hello world")
-        #expect(stamped.timestampLength == 30)
+        #expect(stamped.timestamp?.raw == "2026-08-02T01:23:45.123456789Z")
+        #expect(stamped.text == "hello world")
 
         let plain = LogLine(id: 0, text: "hello world")
-        #expect(plain.timestampLength == 0)
+        #expect(plain.timestamp == nil)
+        #expect(plain.text == "hello world")
     }
 
     @Test("日付に見えない行の先頭を時刻と誤認しない")
     func notATimestamp() {
-        // 数字で始まるが日付の形ではない。
-        #expect(LogLine(id: 0, text: "12345 request accepted here").timestampLength == 0)
-        #expect(LogLine(id: 0, text: "2026/08/02 01:23:45 hello").timestampLength == 0)
+        // 数字で始まるが日付の形ではない。**本文を食わないこと。**
+        for text in [
+            "12345 request accepted here",
+            "2026/08/02 01:23:45 hello",
+            // 時刻の形だが、そのあとが空白でない（本文の一部）。
+            "2026-08-02T01:23:45.123Zhello",
+            // 小数点のあとに数字が無い。
+            "2026-08-02T01:23:45. hello",
+            // 時間帯が無い。
+            "2026-08-02T01:23:45 hello",
+        ] {
+            let line = LogLine(id: 0, text: text)
+            #expect(line.timestamp == nil, "\(text)")
+            #expect(line.text == text, "\(text)")
+        }
+    }
+
+    /// **時刻を剥がしたあとの本文で深刻度を見る。** 剥がす前は行頭が日付に
+    /// なるので、klog の判定（`E0802`）が `--timestamps` を付けているあいだ
+    /// 丸ごと効かなかった。
+    @Test("時刻を剥がしたあとで klog の深刻度が効く")
+    func levelAfterTimestamp() {
+        let line = LogLine(id: 0, text: "2026-08-02T01:23:45.123456789Z E0802 01:23:45 lost")
+        #expect(line.level == .error)
+    }
+
+    /// 現地時刻に直して列に出す。**原文は捨てない**（コピーとツールチップ）。
+    @Test("現地時刻の列と原文の両方を持つ")
+    func localTime() {
+        // JST（UTC+9）で固定して確かめる。
+        let parsed = LogTimestamp.parse(
+            "2026-08-02T01:23:45.123456789Z body", offsetFromUTC: 9 * 3_600)
+        #expect(parsed?.stamp.time == "10:23:45.123")
+        #expect(parsed?.stamp.day == "08-02")
+        #expect(parsed?.stamp.raw == "2026-08-02T01:23:45.123456789Z")
+    }
+
+    /// **小数秒の桁数に寄りかからない。** kubelet は 9 桁で出すが、
+    /// 桁が少ない版も、小数秒そのものが無い行もある
+    /// （`ISO8601DateFormatter` は有無で読める形が排他になる。`K8sObject.date`
+    /// で踏んだのと同じ話）。
+    @Test(
+        "小数秒は桁数を問わない",
+        arguments: [
+            ("2026-08-02T01:23:45Z x", "10:23:45.000"),
+            ("2026-08-02T01:23:45.1Z x", "10:23:45.100"),
+            ("2026-08-02T01:23:45.12Z x", "10:23:45.120"),
+            ("2026-08-02T01:23:45.123Z x", "10:23:45.123"),
+            ("2026-08-02T01:23:45.123456789Z x", "10:23:45.123"),
+        ])
+    func fractionalSeconds(_ text: String, _ time: String) {
+        #expect(LogTimestamp.parse(text, offsetFromUTC: 9 * 3_600)?.stamp.time == time)
+    }
+
+    /// 時間帯付きで来た行も読む（kubectl は `Z` で出すが、他所から
+    /// 流れ込む行もある）。
+    @Test("Z 以外の時間帯も読む")
+    func explicitZone() {
+        // +09:00 の 10:23:45 は UTC の 01:23:45。JST に直すと元に戻る。
+        let parsed = LogTimestamp.parse(
+            "2026-08-02T10:23:45.000+09:00 x", offsetFromUTC: 9 * 3_600)
+        #expect(parsed?.stamp.time == "10:23:45.000")
+        #expect(parsed?.stamp.day == "08-02")
+    }
+
+    /// **日付をまたぐ行を見つけられること。** ここが狂うと、列の日付が
+    /// 出ないか、毎行に出る。
+    @Test("現地の日付が変わると dayKey が動く")
+    func dayBoundary() {
+        let offset = 9 * 3_600
+        // UTC 14:59:59 は JST 23:59:59、UTC 15:00:00 は翌日の 00:00:00。
+        let before = LogTimestamp.parse("2026-08-02T14:59:59.000Z x", offsetFromUTC: offset)
+        let after = LogTimestamp.parse("2026-08-02T15:00:00.000Z x", offsetFromUTC: offset)
+        #expect(before?.stamp.time == "23:59:59.000")
+        #expect(after?.stamp.time == "00:00:00.000")
+        #expect(after?.stamp.day == "08-03")
+        #expect(before!.stamp.dayKey + 1 == after!.stamp.dayKey)
+
+        // 印は直前の行と比べて立てる。
+        let head = LogLine(id: 0, text: "2026-08-02T14:59:59.000Z x")
+        let next = LogLine(
+            id: 1, text: "2026-08-02T15:00:00.000Z y",
+            previousDayKey: head.timestamp?.dayKey)
+        let same = LogLine(
+            id: 2, text: "2026-08-02T15:00:01.000Z z",
+            previousDayKey: next.timestamp?.dayKey)
+        #expect(head.startsNewDay == false)
+        #expect(next.startsNewDay)
+        #expect(same.startsNewDay == false)
+    }
+
+    /// 出どころを剥がしたあとに時刻を読む。kubectl は
+    /// `[pod/<Pod>/<コンテナ>] <時刻> <本文>` の順で書く。
+    @Test("prefix の内側の時刻も剥がす")
+    func timestampInsidePrefix() {
+        let line = LogLine(
+            id: 0, text: "[pod/web-7d9f/app] 2026-08-02T01:23:45.123456789Z hello",
+            strippingPrefix: true)
+        #expect(line.source == "pod/web-7d9f/app")
+        #expect(line.timestamp?.raw == "2026-08-02T01:23:45.123456789Z")
+        #expect(line.text == "hello")
+    }
+
+    /// 列に出すのはコンテナ名（1 つの Pod を全コンテナで読むとき）。
+    @Test("出どころのコンテナ名はいちばん後ろの段")
+    func containerFromSource() {
+        let line = LogLine(id: 0, text: "[pod/web-7d9f/istio-proxy] x", strippingPrefix: true)
+        #expect(line.sourceContainer == "istio-proxy")
+        #expect(LogLine(id: 0, text: "plain").sourceContainer == nil)
     }
 
     // MARK: - まとめ読みの出どころ（--prefix）
@@ -131,7 +240,8 @@ struct LogLineTests {
         let stamped = LogLine(
             id: 0, text: "[web-7d9f/app] 2026-08-02T01:23:45.123456789Z hello",
             strippingPrefix: true)
-        #expect(stamped.timestampLength == 30)
+        #expect(stamped.timestamp?.raw == "2026-08-02T01:23:45.123456789Z")
+        #expect(stamped.text == "hello")
     }
 
     /// **`--prefix` を付けていない行から剥がさない。** これを忘れると

@@ -344,18 +344,53 @@ struct KubectlTests {
         #expect(arguments.contains("--selector=app=web,tier=front"))
     }
 
-    /// **`--prefix` はセレクタのときだけ。** どの Pod の行かが分からないと
-    /// まとめて読む意味が無い。逆に Pod 1 つのときに付けると、
-    /// `LogLine` が剥がす側と食い違う。
-    @Test("--prefix と --max-log-requests はセレクタのときだけ")
-    func prefixOnlyForSelector() {
+    /// **`--prefix` が付くのは、行が混ざるときだけ。** セレクタ（複数の Pod）と、
+    /// 1 つの Pod の全コンテナ。どちらでもないのに付けると、`LogLine` が
+    /// 剥がす側と食い違って本文の先頭が消える。
+    ///
+    /// `--max-log-requests` はセレクタのときだけ（Pod 1 つに同時接続の上限は
+    /// 要らない）。
+    @Test("--prefix は行が混ざるときだけ。--max-log-requests はセレクタだけ")
+    func prefixWhenLinesAreMixed() {
         let grouped = logArguments(target: .selector(["app": "web"]))
         #expect(grouped.contains("--prefix"))
         #expect(grouped.contains("--max-log-requests=30"))
 
-        let single = logArguments(target: .pod("web-0"))
+        let single = logArguments(target: .pod("web-0"), container: "app")
         #expect(!single.contains("--prefix"))
         #expect(!single.contains(where: { $0.hasPrefix("--max-log-requests") }))
+
+        // 1 つの Pod でも、全コンテナを読めばどのコンテナの行か分からなくなる。
+        // **`--all-containers` の暗黙の prefix に任せない** —— 明示する。
+        let allContainers = logArguments(target: .pod("web-0"), allContainers: true)
+        #expect(allContainers.contains("--prefix"))
+        #expect(allContainers.contains("--all-containers=true"))
+        #expect(!allContainers.contains(where: { $0.hasPrefix("--max-log-requests") }))
+    }
+
+    /// 剥がす側（`LogLine`）と組み立てる側が同じ 1 か所を見ること。
+    /// ここがずれると、prefix が本文に残るか、本文の先頭が黙って消える。
+    @Test("logsArePrefixed は実際に渡す引数と一致する")
+    func prefixDecisionMatchesArguments() {
+        let cases: [(Kubectl.LogTarget, String?, Bool)] = [
+            (.selector(["app": "web"]), nil, false),
+            (.selector(["app": "web"]), "app", false),
+            (.pod("web-0"), "app", false),
+            (.pod("web-0"), nil, true),
+            (.pod("web-0"), "", true),
+            (.pod("web-0"), "app", true),
+        ]
+        for (target, container, allContainers) in cases {
+            var options = Kubectl.LogOptions()
+            options.container = container
+            options.allContainers = allContainers
+            let arguments = Kubectl.logArguments(
+                namespace: "default", target: target, options: options, context: "ctx")
+            #expect(
+                arguments.contains("--prefix")
+                    == Kubectl.logsArePrefixed(target: target, options: options),
+                "\(target) container=\(container ?? "nil") all=\(allContainers)")
+        }
     }
 
     /// コンテナを選んでいれば全部読まない。選んでいなければ全部。

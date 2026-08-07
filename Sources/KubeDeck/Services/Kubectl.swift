@@ -1480,9 +1480,6 @@ actor Kubectl {
                 .map { "\($0.key)=\($0.value)" }
                 .sorted()
                 .joined(separator: ","))
-            // **`--prefix` を必ず付ける。** どの Pod の行かが分からないと、
-            // まとめて読む意味そのものが無い。
-            arguments.append("--prefix")
             arguments.append("--max-log-requests=\(options.maxLogRequests)")
         }
 
@@ -1491,10 +1488,15 @@ actor Kubectl {
         if let container = options.container, !container.isEmpty {
             arguments += ["-c", container]
         } else if options.allContainers {
-            // **これも prefix を立てる**（kubectl のヘルプに
-            // `Sets prefix to true` と明記されている）。Pod 1 つでも
-            // コンテナ名が行頭に付くので、剥がす側は同じ経路でよい。
             arguments.append("--all-containers=true")
+        }
+
+        // **`--prefix` は自分で付ける。** `--all-containers` にも
+        // 「Sets prefix to true」とヘルプに書いてあるが、暗黙に任せると
+        // 版で変わったときに**剥がす側だけがずれる**（本文の先頭が黙って
+        // 消えるか、prefix が本文に残る）。明示すれば同じことが 1 か所で決まる。
+        if logsArePrefixed(target: target, options: options) {
+            arguments.append("--prefix")
         }
 
         // **`--tail` は必ず明示する。** セレクタを付けたときの kubectl の既定は
@@ -1505,5 +1507,19 @@ actor Kubectl {
         if options.previous { arguments.append("--previous") }
         if options.timestamps { arguments.append("--timestamps") }
         return arguments
+    }
+
+    /// この指定で kubectl が行頭に出どころ（`[pod/<Pod>/<コンテナ>] `）を
+    /// 書くか。
+    ///
+    /// **`logArguments` と別に判断しない。** 剥がす側（`LogLine`）と
+    /// 食い違うと、本文の先頭が黙って消えるか、prefix が本文に残って
+    /// 絞り込みと深刻度の判定を狂わせる。両方がこの 1 つを見る。
+    ///
+    /// - セレクタ: どの Pod の行かが分からないとまとめて読む意味が無いので必ず。
+    /// - 全コンテナ: Pod 1 つでも、どのコンテナの行かが分からなくなる。
+    static func logsArePrefixed(target: LogTarget, options: LogOptions) -> Bool {
+        if case .selector = target { return true }
+        return options.allContainers && (options.container ?? "").isEmpty
     }
 }

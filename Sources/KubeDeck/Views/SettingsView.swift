@@ -179,10 +179,11 @@ private struct LogSettings: View {
                 Toggle("追いかける・末尾へ送る", isOn: $preferences.logFollowsByDefault)
                 Toggle("長い行を折り返す", isOn: $preferences.logWrapsByDefault)
                 Toggle("時刻を出す", isOn: $preferences.logShowsTimestamps)
+                Toggle("出どころを色で分ける", isOn: $preferences.logColorsSources)
             } header: {
                 Text("開いたときの既定")
             } footer: {
-                Text("ログの画面では「追いかける」（kubectl logs --follow で新しい行を受け取り続ける）と「末尾へ送る」（新しい行が来たら末尾までスクロールする）を別々に切れます。遡って読むときに切るのは後者で、切っても取得は続くので行は消えません。")
+                Text("ログの画面では「追いかける」（kubectl logs --follow で新しい行を受け取り続ける）と「末尾へ送る」（新しい行が来たら末尾までスクロールする）を別々に切れます。遡って読むときに切るのは後者で、切っても取得は続くので行は消えません。\n\n時刻は現地時刻の列に出します（原文の UTC はツールチップとコピーに残ります）。色が付くのは出どころ（pod/コンテナ）の列だけで、行頭の帯と下地は深刻度のままです。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
