@@ -33,13 +33,14 @@ struct Sparkline: View {
         .chartYScale(domain: 0...max(series.maximum * 1.15, .leastNonzeroMagnitude))
         .chartLegend(.hidden)
         .accessibilityLabel(Text("時系列"))
-        .accessibilityValue(Text(series.latest.map(format) ?? "データなし"))
+        .accessibilityValue(
+                Text(series.latest.map(format) ?? String(localized: "データなし")))
     }
 }
 
 /// スパークライン 1 枚分。見出し・現在値・折れ線をまとめる。
 struct MetricsHistoryRow: View {
-    let title: String
+    let title: LocalizedStringResource
     let series: TimeSeries
     let tint: Color
     let format: (Double) -> String

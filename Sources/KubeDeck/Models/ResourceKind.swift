@@ -15,11 +15,11 @@ enum ResourceCategory: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .workloads: return "ワークロード"
-        case .network: return "ネットワーク"
-        case .config: return "設定と保存"
-        case .access: return "アクセス制御"
-        case .cluster: return "クラスタ"
+        case .workloads: return String(localized: "ワークロード")
+        case .network: return String(localized: "ネットワーク")
+        case .config: return String(localized: "設定と保存")
+        case .access: return String(localized: "アクセス制御")
+        case .cluster: return String(localized: "クラスタ")
         }
     }
 }
@@ -210,7 +210,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .apiService: return "APIService"
         case .node: return "Node"
         case .namespace: return "Namespace"
-        case .event: return "イベント"
+        case .event: return String(localized: "イベント")
         }
     }
 

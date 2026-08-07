@@ -172,8 +172,7 @@ struct LogContent: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 260)
-                .help("表示する Pod を絞る。取得は続いているので、"
-                    + "「すべての Pod」に戻せば絞っていたあいだの行も出る")
+                .help("表示する Pod を絞る。取得は続いているので、「すべての Pod」に戻せば絞っていたあいだの行も出る")
             }
 
             // Service にはテンプレートが無く、どのコンテナが並ぶかは開くまで
@@ -194,9 +193,12 @@ struct LogContent: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 200)
-                .help("読むコンテナを絞る。こちらは取得そのものが変わる。"
-                    + "「すべてのコンテナ」にすると混ぜて読み、"
-                    + "行頭にコンテナ名が付く")
+                // **継ぎ足しで組まない。** 断片ごとに鍵ができて、訳す側が
+                // 語順を変えられない（「表示文言は String Catalog に集める」）。
+                .help("""
+                    読むコンテナを絞る。こちらは取得そのものが変わる。\
+                    「すべてのコンテナ」にすると混ぜて読み、行頭にコンテナ名が付く
+                    """)
             }
 
             // **取得と見え方を別のトグルにする。** 「末尾へ送る」を切るのは
@@ -204,14 +206,12 @@ struct LogContent: View {
             Toggle(isOn: $streams) {
                 Label("追いかける", systemImage: "dot.radiowaves.left.and.right")
             }
-            .help("kubectl logs --follow を付けて、新しい行を受け取り続ける。"
-                + "切ると、いま出ている範囲まで読んで終わる")
+            .help("kubectl logs --follow を付けて、新しい行を受け取り続ける。切ると、いま出ている範囲まで読んで終わる")
 
             Toggle(isOn: $autoScroll) {
                 Label("末尾へ送る", systemImage: "arrow.down.to.line")
             }
-            .help("新しい行が来たら末尾までスクロールする。"
-                + "切っても取得は続くので、遡って読んでも行は消えない")
+            .help("新しい行が来たら末尾までスクロールする。切っても取得は続くので、遡って読んでも行は消えない")
 
             Toggle(isOn: $wraps) {
                 Label("折り返し", systemImage: "text.append")
@@ -312,8 +312,8 @@ struct LogContent: View {
                     .frame(width: sourceWidth, alignment: .leading)
                     .padding(.trailing, 8)
                     .textSelection(.disabled)
-                    .help(line.source ?? "出どころが付いていない行"
-                        + "（kubectl 自身の文言はここが空になる）")
+                    .help(line.source
+                    ?? String(localized: "出どころが付いていない行（kubectl 自身の文言はここが空になる）"))
             }
 
             Text(attributed(line))
@@ -477,19 +477,23 @@ struct LogContent: View {
             ContentUnavailableView(
                 "掴んでいる Pod がありません",
                 systemImage: "questionmark.circle",
-                description: Text("\(selectorText) に一致する Pod は"
-                    + "\(request.namespace) にありません。"
-                    + "レプリカが 0 か、ラベルが食い違っています。"))
+                description: Text("""
+                    \(selectorText) に一致する Pod は\
+                    \(request.namespace) にありません。\
+                    レプリカが 0 か、ラベルが食い違っています。
+                    """))
         } else if case .failed(let message) = resolution {
             // Pod の一覧は引けなかったが、ログの取得は終わっている。
             // **どちらの話なのかを分ける。**
             ContentUnavailableView(
                 "ログがありません",
                 systemImage: "text.alignleft",
-                description: Text("行は 1 つも届きませんでした。"
-                    + "掴んでいる Pod の一覧は引けていないので、"
-                    + "Pod が無いのか、あるが何も出していないのかは分かりません。"
-                    + "\n\n\(message)"))
+                description: Text("""
+                    行は 1 つも届きませんでした。\
+                    掴んでいる Pod の一覧は引けていないので、\
+                    Pod が無いのか、あるが何も出していないのかは分かりません。\
+                    \n\n\(message)
+                    """))
         } else {
             ContentUnavailableView(
                 "ログがありません",
@@ -502,12 +506,14 @@ struct LogContent: View {
         let needle = filter.trimmingCharacters(in: .whitespaces)
         switch (needle.isEmpty, sourceFilter.isEmpty) {
         case (false, false):
-            return "「\(needle)」を含む \(sourceFilter) の行は、"
-                + "いま読み込んでいる範囲にありません。"
+            return String(localized: """
+                「\(needle)」を含む \(sourceFilter) の行は、\
+                いま読み込んでいる範囲にありません。
+                """)
         case (false, true):
-            return "「\(needle)」を含む行は、いま読み込んでいる範囲にありません。"
+            return String(localized: "「\(needle)」を含む行は、いま読み込んでいる範囲にありません。")
         default:
-            return "\(sourceFilter) の行は、いま読み込んでいる範囲にありません。"
+            return String(localized: "\(sourceFilter) の行は、いま読み込んでいる範囲にありません。")
         }
     }
 
@@ -528,15 +534,19 @@ struct LogContent: View {
                 systemImage: "exclamationmark.triangle",
                 // 「ログがありません」と書かない。引けていないので、
                 // ログがあるかどうかはまだ分かっていない。
-                description: Text("この Job が掴んでいる Pod を引けませんでした。"
-                    + "ログが残っているかどうかは分かりません。\n\n\(message)"))
+                description: Text("""
+                    この Job が掴んでいる Pod を引けませんでした。\
+                    ログが残っているかどうかは分かりません。\n\n\(message)
+                    """))
         } else if pod.isEmpty {
             ContentUnavailableView(
                 "Pod が残っていません",
                 systemImage: "clock.arrow.circlepath",
-                description: Text("この Job の Pod は見つかりませんでした。"
-                    + "完了した Job の Pod は ttlSecondsAfterFinished や"
-                    + " Pod のガベージコレクションで消え、ログも一緒に消えます。"))
+                description: Text("""
+                    この Job の Pod は見つかりませんでした。\
+                    完了した Job の Pod は ttlSecondsAfterFinished や\
+                     Pod のガベージコレクションで消え、ログも一緒に消えます。
+                    """))
         } else if !lines.isEmpty {
             ContentUnavailableView(
                 "一致する行がありません",
@@ -601,10 +611,15 @@ struct LogContent: View {
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .warning))
                     .lineLimit(1)
-                    .help("kubectl の --max-log-requests の上限を超えています。"
-                        + "超えると kubectl は 1 行も出しません（実測）。"
-                        + "「追いかける」を切れば上限は効かないので全部読めます。"
-                        + "Pod を絞る／個々の Pod を開くのでも構いません")
+                    // 文言は新しいほう（実測で「超えると 1 行も出さない」と
+                    // 分かったもの）を採る。**継ぎ足しでは組まない** ——
+                    // 断片ごとに鍵ができて、訳す側が語順を変えられない。
+                    .help("""
+                        kubectl の --max-log-requests の上限を超えています。\
+                        超えると kubectl は 1 行も出しません（実測）。\
+                        「追いかける」を切れば上限は効かないので全部読めます。\
+                        Pod を絞る／個々の Pod を開くのでも構いません
+                        """)
             }
             Spacer(minLength: 0)
         }
@@ -635,7 +650,9 @@ struct LogContent: View {
 
     private func countText(_ visible: [LogLine]) -> String {
         let total = lines.count
-        return visible.count == total ? "\(total) 行" : "\(visible.count) / \(total) 行"
+        return visible.count == total
+            ? String(localized: "\(total) 行")
+            : String(localized: "\(visible.count) / \(total) 行")
     }
 
     /// 出どころの列を出すか。

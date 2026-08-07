@@ -55,10 +55,10 @@ struct FilteringTests {
     func sortIsReflected() {
         let store = self.store()
 
-        store.sortDescriptor = ResourceSort(columnTitle: "名前", ascending: true)
+        store.sortDescriptor = ResourceSort(columnKey: "名前", ascending: true)
         #expect(store.filteredObjects.map(\.name) == ["cache-0", "web-0", "web-1"])
 
-        store.sortDescriptor = ResourceSort(columnTitle: "名前", ascending: false)
+        store.sortDescriptor = ResourceSort(columnKey: "名前", ascending: false)
         #expect(store.filteredObjects.map(\.name) == ["web-1", "web-0", "cache-0"])
     }
 

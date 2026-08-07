@@ -104,8 +104,7 @@ struct InspectorLogPane: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .help("詳細パネルを下に置く（設定 › 一般）か、"
-                        + "別ウインドウで開くと 1 行が収まります")
+                    .help("詳細パネルを下に置く（設定 › 一般）か、別ウインドウで開くと 1 行が収まります")
             }
 
             Spacer(minLength: 4)
@@ -119,8 +118,7 @@ struct InspectorLogPane: View {
             .buttonStyle(.borderless)
             .controlSize(.small)
             .layoutPriority(1)
-            .help("別のウインドウで開く。並べて比べたいときと、"
-                + "この幅では読みにくいとき")
+            .help("別のウインドウで開く。並べて比べたいときと、この幅では読みにくいとき")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)

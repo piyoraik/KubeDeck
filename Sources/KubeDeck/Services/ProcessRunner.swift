@@ -26,7 +26,7 @@ struct CommandError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         message.isEmpty
-            ? "\(command) が終了コード \(exitCode) で失敗しました。"
+            ? String(localized: "\(command) が終了コード \(exitCode) で失敗しました。")
             : message
     }
 }
@@ -294,7 +294,7 @@ enum ProcessRunner {
                 // 起動できなかったときは読み手が付かないので、後始末を自分でする。
                 pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.yield(
-                    ["プロセスを起動できませんでした: \(error.localizedDescription)"])
+                    [String(localized: "プロセスを起動できませんでした: \(error.localizedDescription)")])
                 continuation.finish()
             }
         }

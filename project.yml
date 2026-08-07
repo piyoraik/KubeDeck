@@ -3,10 +3,20 @@ options:
   bundleIdPrefix: com.piyoraik
   deploymentTarget:
     macOS: "14.0"
+  # 表示文言のソース言語。**en にしない。** String Catalog の鍵は日本語の
+  # 原文そのもので、訳の無い言語では鍵（＝日本語）へ落ちる。ここを en に
+  # すると「en を要求したのに日本語が出る」ことになり、未訳と取り違える。
+  # `Resources/Info.plist` の `CFBundleDevelopmentRegion` はこの値を参照する。
+  developmentLanguage: ja
 settings:
   base:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # 表示文言の抽出。コンパイラが 1 ファイルにつき 1 つ `.stringsdata` を
+    # 吐き、`Scripts/sync-strings.sh` がそれを String Catalog へ同期する。
+    # **`xcstringstool extract` だけで済ませない** —— あちらは型を見ないので
+    # 補間が `%arg` のままになり、実際の鍵（`%lld` など）と食い違う。
+    SWIFT_EMIT_LOC_STRINGS: "YES"
     # 配布は ad-hoc 署名で固定する。Automatic のままだと Apple Developer
     # アカウントを設定しているマシンで、相手のチームに ID を登録しようとして落ちる。
     CODE_SIGN_STYLE: Manual
@@ -31,6 +41,11 @@ targets:
     sources:
       - path: Sources/KubeDeck
       - path: Resources/Assets.xcassets
+      # 表示文言。ja が原文（＝鍵）、en が訳。鍵は
+      # `Scripts/sync-strings.sh` がビルドの `.stringsdata` から同期する。
+      # **手で鍵を足さない** —— コードが渡す鍵と 1 文字でも違うと、訳が
+      # 当たらずに日本語のまま出て、しかもどこも失敗しない。
+      - path: Resources/Localizable.xcstrings
     dependencies:
       - package: Sparkle
     info:
@@ -62,13 +77,14 @@ targets:
         # Hardened Runtime も外す（署名が ad-hoc のため）。
         ENABLE_HARDENED_RUNTIME: false
         SWIFT_STRICT_CONCURRENCY: complete
-    scheme:
-      testTargets:
-        - KubeDeckTests
 
   # 状態の判定・単位の換算・関係の突き合わせは、どれも純粋関数で UI に
   # 依存しない。ここが回帰すると「kubectl と表示がずれる」という、
   # このアプリで最も気付きにくい壊れ方をするので、合成 JSON で固める。
+  #
+  # **テストは ja で走らせる**（下の `schemes:` を参照）。表示文言を
+  # 断定しているテストがあるので、走らせる言語を固定しないと
+  # 「手元では通るが CI では落ちる」になる。
   KubeDeckTests:
     type: bundle.unit-test
     platform: macOS
@@ -81,3 +97,31 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.piyoraik.KubeDeckTests
         GENERATE_INFOPLIST_FILE: true
         SWIFT_STRICT_CONCURRENCY: complete
+
+# **スキームを明示で持つ。** ターゲットの `scheme: testTargets:` の略記では
+# テストを走らせる言語を指定できない。
+schemes:
+  KubeDeck:
+    build:
+      targets:
+        KubeDeck: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      # **走らせる言語を固定する。** `SafetyTests` や `PlacementTraceTests` は
+      # 「『消えています』と書くか」「『取得している範囲』と書き分けるか」まで
+      # 断定しており、それはこのリポジトリが守りたい判断そのもの（CLAUDE.md に
+      # 根拠が書いてある）。ロケール任せにすると、日本語環境の手元では通って
+      # **英語の CI ランナーでだけ落ちる**。訳のほうの網羅は
+      # `Scripts/sync-strings.sh` が別に見る。
+      language: ja
+      region: JP
+      targets:
+        - KubeDeckTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

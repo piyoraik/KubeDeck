@@ -307,8 +307,8 @@ struct RootView: View {
 
     private var title: String {
         switch store.selection {
-        case .overview: return "概要"
-        case .placement: return "配置"
+        case .overview: return String(localized: "概要")
+        case .placement: return String(localized: "配置")
         case .resource(let target): return target.displayName
         }
     }
@@ -320,23 +320,32 @@ struct RootView: View {
     /// すると隠しても枠が縦棒として残り、Menu のラベルに `ProgressView` を
     /// 入れてもツールバーでは描画されず、アイコンが空のボタンになる。
     private var subtitle: String {
-        if store.isLoading { return "読み込み中…" }
+        if store.isLoading { return String(localized: "読み込み中…") }
         // 失敗しているときに「0 件」と出さない。数えられていない。
         if store.selection == .placement {
-            if store.errorMessage != nil, store.objects.isEmpty { return "取得できません" }
-            return "\(store.placementNodes.count) ノード · "
-                + "\(store.filteredObjects.count) Pod"
+            if store.errorMessage != nil, store.objects.isEmpty {
+                return String(localized: "取得できません")
+            }
+            return String(localized: """
+                \(store.placementNodes.count) ノード · \(store.filteredObjects.count) Pod
+                """)
         }
         guard case .resource = store.selection else { return "" }
-        if store.errorMessage != nil, store.objects.isEmpty { return "取得できません" }
+        if store.errorMessage != nil, store.objects.isEmpty {
+            return String(localized: "取得できません")
+        }
         let shown = store.filteredObjects.count
         let total = store.objects.count
-        let counts = shown == total ? "\(total) 件" : "\(shown) / \(total) 件"
+        let counts = shown == total
+            ? String(localized: "\(total) 件")
+            : String(localized: "\(shown) / \(total) 件")
         // **選んでいる数はここに出す。** 件数の持ち場は副題（同じ数字を
         // 2 か所に置かない）。1 件のときは書かない — ふつうがそちらなので、
         // 常に出すと件数が読みにくくなるだけ。
         let selected = store.selectedObjectIDs.count
-        return selected > 1 ? "\(counts) · \(selected) 件選択中" : counts
+        return selected > 1
+            ? String(localized: "\(counts) · \(selected) 件選択中")
+            : counts
     }
 
     /// 絞り込み欄の文言。**画面ごとに相手が違う。** 配置の「たどる」で絞るのは
@@ -344,12 +353,13 @@ struct RootView: View {
     private var searchPrompt: String {
         switch store.selection {
         case .overview:
-            return "絞り込み"
+            return String(localized: "絞り込み")
         case .placement:
             return preferences.placementGrouping == .map
-                ? "たどる起点を絞り込む" : "Pod を絞り込む"
+                ? String(localized: "たどる起点を絞り込む")
+            : String(localized: "Pod を絞り込む")
         case .resource(let target):
-            return "\(target.displayName) を絞り込む"
+            return String(localized: "\(target.displayName) を絞り込む")
         }
     }
 
@@ -404,7 +414,8 @@ struct RootView: View {
             .labelsHidden()
         } label: {
             Label {
-                Text(store.currentContext.isEmpty ? "コンテキスト" : store.currentContext)
+                Text(store.currentContext.isEmpty
+                ? String(localized: "コンテキスト") : store.currentContext)
                     .lineLimit(1)
             } icon: {
                 Image(systemName: "cube.transparent")
@@ -608,7 +619,7 @@ private struct PanelResizeHandle: View {
     let axis: Axis
     @Binding var value: CGFloat
     let range: ClosedRange<CGFloat>
-    let label: String
+    let label: LocalizedStringResource
 
     /// ドラッグ開始時の値。translation は開始点からの差分なので、
     /// 毎回の変化量として足すと動きが加速してしまう。

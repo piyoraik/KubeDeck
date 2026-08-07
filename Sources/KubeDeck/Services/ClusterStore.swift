@@ -190,14 +190,18 @@ final class ClusterStore {
         var lines: [String] = []
         if !denied.isEmpty {
             let names = denied.map(\.displayName).joined(separator: "・")
-            lines.append("\(names) を読む権限がありません。この画面にはこれらが出ていません"
-                + "（0 件という意味ではありません）。")
+            lines.append(String(localized: """
+                \(names) を読む権限がありません。この画面にはこれらが出ていません\
+                （0 件という意味ではありません）。
+                """))
         }
         if !unknown.isEmpty {
             let names = unknown.map(\.displayName).joined(separator: "・")
-            lines.append("\(names) はクラスタに見つかりませんでした（`kubectl` がこの種別を"
-                + "解決できていません）。読めたぶんだけ出しています。"
-                + "`kubectl api-resources` に出るかを確かめてください。")
+            lines.append(String(localized: """
+                \(names) はクラスタに見つかりませんでした（`kubectl` がこの種別を\
+                解決できていません）。読めたぶんだけ出しています。\
+                `kubectl api-resources` に出るかを確かめてください。
+                """))
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
@@ -382,14 +386,14 @@ final class ClusterStore {
     /// 見出しを押したときの並べ替え。同じ見出しをもう一度押すと逆順、
     /// 3 度目で既定（異常が上）に戻す。**戻れないと、既定の並びを取り戻すのに
     /// 種別を開き直すことになる。**
-    func toggleSort(column title: String) {
+    func toggleSort(column key: String) {
         switch sortDescriptor {
-        case let current? where current.columnTitle == title && current.ascending:
-            sortDescriptor = ResourceSort(columnTitle: title, ascending: false)
-        case let current? where current.columnTitle == title:
+        case let current? where current.columnKey == key && current.ascending:
+            sortDescriptor = ResourceSort(columnKey: key, ascending: false)
+        case let current? where current.columnKey == key:
             sortDescriptor = nil
         default:
-            sortDescriptor = ResourceSort(columnTitle: title, ascending: true)
+            sortDescriptor = ResourceSort(columnKey: key, ascending: true)
         }
     }
 
@@ -506,7 +510,7 @@ final class ClusterStore {
     /// 素朴に比較関数の中で呼ぶと O(n log n) 回になる。先に 1 度だけ引く。
     private func sortedForDisplay(_ objects: [K8sObject]) -> [K8sObject] {
         guard let sort = sortDescriptor,
-              let column = currentColumns.first(where: { $0.title == sort.columnTitle })
+              let column = currentColumns.first(where: { $0.key == sort.columnKey })
         else { return objects }
 
         let keyed = objects.map { (key: column.value($0).text, object: $0) }
@@ -532,7 +536,9 @@ final class ClusterStore {
         text.isEmpty || text == "—"
     }
 
-    var namespaceLabel: String { selectedNamespace ?? "すべての Namespace" }
+    var namespaceLabel: String {
+        selectedNamespace ?? String(localized: "すべての Namespace")
+    }
 
     /// ノードの詰まり具合。CPU とメモリのうち高いほう。並べ替えに使う。
     /// 取れないときは nil（0 とみなすと「測れていない」が「空いている」になる）。
@@ -599,9 +605,11 @@ final class ClusterStore {
     var metricsSourceProblem: String? {
         switch metricsPreference {
         case .metricsServer where metricsServerAvailable == false:
-            return "metrics-server を選んでいますが、このクラスタには入っていません。"
+            return String(
+                localized: "metrics-server を選んでいますが、このクラスタには入っていません。")
         case .prometheus where prometheus == nil:
-            return "Prometheus を選んでいますが、このクラスタでは見つかりませんでした。"
+            return String(
+                localized: "Prometheus を選んでいますが、このクラスタでは見つかりませんでした。")
         default:
             return nil
         }
@@ -887,7 +895,7 @@ final class ClusterStore {
         // 「イベントはありません。」と書くのは、確かめていないことの断定になる
         // （nil のまま渡し、画面が言い分ける）。
         let eventObjects = try? await events
-        let serverVersion = (try? await version) ?? "不明"
+        let serverVersion = (try? await version) ?? String(localized: "不明")
 
         var snapshot = OverviewSnapshot()
         // ここまで来たものだけが「概要を読めた」。**サイドバーの件数を数える
@@ -1259,12 +1267,15 @@ final class ClusterStore {
     /// **画面で隠すだけにしない。** 読み取り専用のときは操作のボタンごと
     /// 出さないが、メニューの取りこぼしや、開いたままのシートから届く道が
     /// 残りうる。**実際に kubectl を起こす手前で止める**のがいちばん確実。
-    private func refuseIfReadOnly(_ what: String) -> Bool {
+    private func refuseIfReadOnly(_ what: LocalizedStringResource) -> Bool {
         guard isReadOnly else { return false }
         actionNotice = nil
         noticeTask?.cancel()
-        errorMessage = "\(contextDisplayName) は読み取り専用に設定されています。"
-            + "\(what)は行いませんでした。変更するには設定の「コンテキスト」で解除してください。"
+        errorMessage = String(localized: """
+            \(contextDisplayName) は読み取り専用に設定されています。\
+            \(String(localized: what))は行いませんでした。\
+            変更するには設定の「コンテキスト」で解除してください。
+            """)
         return true
     }
 
@@ -1362,7 +1373,8 @@ final class ClusterStore {
             } catch {
                 // **どちらが引けなかったかを言う。** 「読めません」だけだと、
                 // 出ている規則のほうまで疑うことになる。
-                let label = namespace.map { "\($0) の Role" } ?? "ClusterRole"
+                let label = namespace.map { String(localized: "\($0) の Role") }
+                    ?? String(localized: "ClusterRole")
                 result.failures.append(label)
             }
         }
@@ -1561,7 +1573,8 @@ final class ClusterStore {
     }
 
     func rollback(_ object: K8sObject, toRevision revision: Int?) async {
-        let target = revision.map { "第 \($0) 世代" } ?? "1 つ前の世代"
+        let target = revision.map { String(localized: "第 \($0) 世代") }
+            ?? String(localized: "1 つ前の世代")
         // 入れ替わるのはこれから。「戻しました」は言い過ぎ。
         await perform("\(object.name) を \(target) に戻す要求をしました") {
             try await self.kubectl.rolloutUndo(
@@ -1570,7 +1583,7 @@ final class ClusterStore {
     }
 
     func setRolloutPaused(_ object: K8sObject, paused: Bool) async {
-        let notice = paused
+        let notice: LocalizedStringResource = paused
             ? "\(object.name) の更新を止めました"
             : "\(object.name) の更新を再開しました"
         await perform(notice) {
@@ -1580,7 +1593,7 @@ final class ClusterStore {
     }
 
     func setCordon(_ node: K8sObject, unschedulable: Bool) async {
-        let notice = unschedulable
+        let notice: LocalizedStringResource = unschedulable
             ? "\(node.name) への新しい Pod の配置を止めました"
             : "\(node.name) への配置を許可しました"
         await perform(notice) {
@@ -1623,9 +1636,12 @@ final class ClusterStore {
     ///
     /// **やったことより多く言わない。** 要求を投げただけのものは「要求しました」。
     /// ここで「削除しました」と書くと、残っている行のほうが間違いに見える。
+    /// **文言は `LocalizedStringResource` で受ける。** 呼び出し側は
+    /// 「`\(object.name)` の削除を要求しました」のような日本語をそのまま書き、
+    /// 鍵はその原文になる（対象の名前は書式指定子に落ちる）。
     private func perform(
-        _ notice: String, _ action: @escaping () async throws -> Void,
-        describedAs what: String = "この操作"
+        _ notice: LocalizedStringResource, _ action: @escaping () async throws -> Void,
+        describedAs what: LocalizedStringResource = "この操作"
     ) async {
         guard !refuseIfReadOnly(what) else { return }
         do {
@@ -1646,8 +1662,8 @@ final class ClusterStore {
 
     /// 数秒で自分から消える。**閉じる操作を持たせない** — 消えるものに
     /// ✕ を付けると、押す前に消えて押し損ねる。
-    private func showNotice(_ message: String) {
-        actionNotice = message
+    private func showNotice(_ message: LocalizedStringResource) {
+        actionNotice = String(localized: message)
         noticeTask?.cancel()
         noticeTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))

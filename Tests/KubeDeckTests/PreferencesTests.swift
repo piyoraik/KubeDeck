@@ -65,9 +65,9 @@ struct ResourceSortTests {
 
     @Test("見出しで覚える（列の位置は使用量の列で途中からずれる）")
     func sortIsKeyedByTitle() {
-        let sort = ResourceSort(columnTitle: "再起動", ascending: true)
-        #expect(sort.columnTitle == "再起動")
-        #expect(sort != ResourceSort(columnTitle: "再起動", ascending: false))
+        let sort = ResourceSort(columnKey: "再起動", ascending: true)
+        #expect(sort.columnKey == "再起動")
+        #expect(sort != ResourceSort(columnKey: "再起動", ascending: false))
     }
 
     /// 表示している文字をそのまま鍵にするので、数字を含む名前は

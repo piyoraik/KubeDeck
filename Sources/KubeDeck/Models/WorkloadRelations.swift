@@ -432,7 +432,7 @@ struct StorageLink: Identifiable, Sendable {
         if volumeName == nil,
            let requested = claim.spec?.path("resources.requests.storage")?.stringValue,
            !requested.isEmpty {
-            parts.append("要求 \(requested)")
+            parts.append(String(localized: "要求 \(requested)"))
         }
         return parts.joined(separator: " · ")
     }
@@ -551,10 +551,10 @@ struct ConfigReference: Identifiable, Sendable, Hashable {
 
         var title: String {
             switch self {
-            case .volume: return "マウント"
-            case .environment: return "環境変数"
-            case .imagePull: return "イメージ取得"
-            case .ingressTLS: return "Ingress の証明書"
+            case .volume: return String(localized: "マウント")
+            case .environment: return String(localized: "環境変数")
+            case .imagePull: return String(localized: "イメージ取得")
+            case .ingressTLS: return String(localized: "Ingress の証明書")
             }
         }
     }

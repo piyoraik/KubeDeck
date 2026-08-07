@@ -73,9 +73,9 @@ struct WorkloadUsage: Sendable, Hashable {
         var baseLabel: String? {
             switch (limitPods, requestPods) {
             case (0, 0): return nil
-            case (_, 0): return "上限"
-            case (0, _): return "要求"
-            default: return "上限・要求"
+            case (_, 0): return String(localized: "上限")
+            case (0, _): return String(localized: "要求")
+            default: return String(localized: "上限・要求")
             }
         }
     }
@@ -143,7 +143,7 @@ enum MetricsSourcePreference: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .automatic: return "自動"
+        case .automatic: return String(localized: "自動")
         case .metricsServer: return "metrics-server"
         case .prometheus: return "Prometheus"
         }
@@ -152,11 +152,14 @@ enum MetricsSourcePreference: String, CaseIterable, Identifiable, Sendable {
     var explanation: String {
         switch self {
         case .automatic:
-            return "使えるものを自動で選ぶ。現在値は metrics-server を優先し、無ければ Prometheus を使う。推移は Prometheus があるときだけ出る。"
+            
+                return String(localized: "使えるものを自動で選ぶ。現在値は metrics-server を優先し、無ければ Prometheus を使う。推移は Prometheus があるときだけ出る。")
         case .metricsServer:
-            return "現在値だけを metrics-server から取る。呼び出しが軽く、いまの値が最も正確。推移は Prometheus があれば別途出る。"
+            
+                return String(localized: "現在値だけを metrics-server から取る。呼び出しが軽く、いまの値が最も正確。推移は Prometheus があれば別途出る。")
         case .prometheus:
-            return "現在値も Prometheus から取る。metrics-server が入っていないクラスタや、scrape 済みの値と表示を揃えたいときに使う。"
+            
+                return String(localized: "現在値も Prometheus から取る。metrics-server が入っていないクラスタや、scrape 済みの値と表示を揃えたいときに使う。")
         }
     }
 }

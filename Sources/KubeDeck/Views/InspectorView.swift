@@ -21,11 +21,11 @@ struct InspectorView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .summary: return "概要"
-            case .events: return "イベント"
-            case .settings: return "設定"
-            case .yaml: return "YAML"
-            case .logs: return "ログ"
+            case .summary: return String(localized: "概要")
+            case .events: return String(localized: "イベント")
+            case .settings: return String(localized: "設定")
+            case .yaml: return String(localized: "YAML")
+            case .logs: return String(localized: "ログ")
             }
         }
     }
@@ -75,8 +75,10 @@ struct InspectorView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
                         .font(.caption)
-                    Text("\(store.selectedObjectIDs.count) 件を選択中。詳細はこの 1 件で、"
-                         + "操作は \(store.selectedObjectIDs.count) 件すべてに効きます。")
+                    Text("""
+                        \(store.selectedObjectIDs.count) 件を選択中。詳細はこの 1 件で、\
+                        操作は \(store.selectedObjectIDs.count) 件すべてに効きます。
+                        """)
                         .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -227,7 +229,7 @@ private struct SummaryPane: View {
                 }
 
                 InfoSection(title: "基本") {
-                    ForEach(basicRows, id: \.0) { row in
+                    ForEach(basicRows, id: \.0.key) { row in
                         InfoRow(label: row.0, value: row.1)
                     }
                 }
@@ -312,12 +314,13 @@ private struct SummaryPane: View {
     }
 
     private func nodeMeter(
-        _ title: String, used: Double, base: Double, format: (Double) -> String
+        _ title: LocalizedStringResource, used: Double, base: Double,
+        format: (Double) -> String
     ) -> UsageMeter {
         UsageMeter(
             title: title,
             used: format(used),
-            total: base > 0 ? "割り当て可能 \(format(base))" : "",
+            total: base > 0 ? String(localized: "割り当て可能 \(format(base))") : "",
             ratio: Quantity.ratio(used, of: base))
     }
 
@@ -330,28 +333,29 @@ private struct SummaryPane: View {
     /// 上限が無いときだけ要求を分母にする。そのときは「上限 未設定」を橙で出す
     /// （ノードの空きまで伸びられる、という別の話になる）。
     private func podMeter(
-        _ title: String, used: Double, request: Double, limit: Double,
+        _ title: LocalizedStringResource, used: Double, request: Double, limit: Double,
         format: (Double) -> String
     ) -> UsageMeter {
         if limit > 0 {
             return UsageMeter(
                 title: title,
                 used: format(used),
-                total: "上限 \(format(limit))",
+                total: String(localized: "上限 \(format(limit))"),
                 ratio: Quantity.ratio(used, of: limit),
                 note: request > 0
-                    ? "要求 \(format(request))"
-                        + "（\(Quantity.formatPercent(used / request)) 使用）"
-                    : "要求 未設定（置き場所を決める根拠がありません）",
+                    ? String(localized: """
+                        要求 \(format(request))（\(Quantity.formatPercent(used / request)) 使用）
+                        """)
+                    : String(localized: "要求 未設定（置き場所を決める根拠がありません）"),
                 noteLevel: request > 0 ? nil : .warning,
                 marker: min(1, request / limit))
         }
         return UsageMeter(
             title: title,
             used: format(used),
-            total: request > 0 ? "要求 \(format(request))" : "",
+            total: request > 0 ? String(localized: "要求 \(format(request))") : "",
             ratio: Quantity.ratio(used, of: request),
-            note: "上限 未設定（ノードの空きまで使えます）",
+            note: String(localized: "上限 未設定（ノードの空きまで使えます）"),
             noteLevel: .warning)
     }
 
@@ -360,8 +364,8 @@ private struct SummaryPane: View {
         return store.metrics.containers[key]
     }
 
-    private var basicRows: [(String, String)] {
-        var rows: [(String, String)] = []
+    private var basicRows: [(LocalizedStringResource, String)] {
+        var rows: [(LocalizedStringResource, String)] = []
         if let kind = object.kind { rows.append(("種別", kind.displayName)) }
         if let namespace = object.namespace { rows.append(("Namespace", namespace)) }
         if let created = object.creationTimestamp {
@@ -462,7 +466,9 @@ private struct SummaryPane: View {
 }
 
 private struct InfoSection<Content: View>: View {
-    let title: String
+    /// **`String` で受けない。** 呼び出し側は日本語のリテラルを書くだけで
+    /// 鍵になる（`Text` に直に書いたときと同じ扱い）。
+    let title: LocalizedStringResource
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -479,7 +485,7 @@ private struct InfoSection<Content: View>: View {
 }
 
 private struct InfoRow: View {
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
@@ -691,8 +697,10 @@ private struct EventsPane: View {
             Label("イベントはありません。", systemImage: "bell.slash")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Text("イベントはしばらく（クラスタの既定で 1 時間）で消えます。"
-                 + "それより前の出来事はクラスタに残っていません。")
+            Text("""
+                イベントはしばらく（クラスタの既定で 1 時間）で消えます。\
+                それより前の出来事はクラスタに残っていません。
+                """)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -865,7 +873,7 @@ private struct ClusterSummaryPane: View {
         ScrollView {
             SectionColumns {
                 InfoSection(title: "クラスタ") {
-                    ForEach(clusterRows, id: \.0) { row in
+                    ForEach(clusterRows, id: \.0.key) { row in
                         InfoRow(label: row.0, value: row.1)
                     }
                 }
@@ -909,12 +917,14 @@ private struct ClusterSummaryPane: View {
     /// **本文と同じことを書かない。** コンテキスト名と状態は概要の見出しが、
     /// 件数はサイドバーが、Namespace はツールバーが持っている。
     /// ここに残すのは、どこにも出ていないものだけ。
-    private var clusterRows: [(String, String)] {
-        var rows: [(String, String)] = []
+    private var clusterRows: [(LocalizedStringResource, String)] {
+        var rows: [(LocalizedStringResource, String)] = []
         if !store.serverVersion.isEmpty { rows.append(("バージョン", store.serverVersion)) }
         rows.append((
             "自動更新",
-            store.autoRefresh ? "\(Int(store.refreshInterval)) 秒ごと" : "停止中"))
+            store.autoRefresh
+                ? String(localized: "\(Int(store.refreshInterval)) 秒ごと")
+                : String(localized: "停止中")))
         if let lastUpdated = store.lastUpdated {
             rows.append(("最終更新", lastUpdated.formatted(date: .omitted, time: .standard)))
         }

@@ -6,7 +6,7 @@ import SwiftUI
 /// これへ差し替えると、更新のたびに画面が消えて点滅する。中身があるときの
 /// 更新中は、ウインドウの副題に文字で出している。
 struct LoadingView: View {
-    var message: String = "読み込み中"
+    var message: LocalizedStringResource = "読み込み中"
     var detail: String?
 
     var body: some View {

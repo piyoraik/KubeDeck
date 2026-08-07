@@ -39,11 +39,11 @@ enum StatusLevel: Int, Sendable, Hashable, CaseIterable, Comparable {
 
     var label: String {
         switch self {
-        case .good: return "正常"
-        case .warning: return "処理中"
-        case .serious: return "注意"
-        case .critical: return "異常"
-        case .neutral: return "対象外"
+        case .good: return String(localized: "正常")
+        case .warning: return String(localized: "処理中")
+        case .serious: return String(localized: "注意")
+        case .critical: return String(localized: "異常")
+        case .neutral: return String(localized: "対象外")
         }
     }
 }
@@ -130,7 +130,8 @@ enum StatusResolver {
         }
         let counts = podReady(object)
         guard counts.total > 0, counts.ready < counts.total else { return status }
-        return ResourceStatus(text: "Running (未 Ready)", level: .warning)
+        return ResourceStatus(
+                text: String(localized: "Running (未 Ready)"), level: .warning)
     }
 
     // MARK: Pod

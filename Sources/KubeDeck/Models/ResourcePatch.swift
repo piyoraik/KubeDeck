@@ -90,10 +90,10 @@ enum ResourcePatch {
 
             var label: String {
                 switch self {
-                case .cpuRequest: return "CPU 要求"
-                case .memoryRequest: return "メモリ 要求"
-                case .cpuLimit: return "CPU 上限"
-                case .memoryLimit: return "メモリ 上限"
+                case .cpuRequest: return String(localized: "CPU 要求")
+                case .memoryRequest: return String(localized: "メモリ 要求")
+                case .cpuLimit: return String(localized: "CPU 上限")
+                case .memoryLimit: return String(localized: "メモリ 上限")
                 }
             }
 
@@ -110,8 +110,9 @@ enum ResourcePatch {
         var summary: String {
             switch (before, after) {
             case (let before?, let after?): return "\(field.label): \(before) → \(after)"
-            case (nil, let after?): return "\(field.label): 未設定 → \(after)"
-            case (let before?, nil): return "\(field.label): \(before) → 未設定にする"
+            case (nil, let after?): return String(localized: "\(field.label): 未設定 → \(after)")
+            case (let before?, nil): 
+                return String(localized: "\(field.label): \(before) → 未設定にする")
             case (nil, nil): return ""
             }
         }

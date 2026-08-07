@@ -39,6 +39,27 @@ struct ResourceAction: Identifiable {
     /// 読み取り専用が**穴のある約束**になる。
     var mutates = false
     let run: @MainActor (ResourceActionHost, ClusterStore) -> Void
+
+    /// **文言は `LocalizedStringResource` で受ける。** 呼び出し側は日本語の
+    /// リテラルを書くだけでよく（鍵はその原文）、`String` に解いた時点で
+    /// メニュー・ボタン・ツールチップの 3 か所が同じ文字を見る。
+    ///
+    /// **`id` は訳さない。** ⌘L の割り当て（`logs` / `logs-group`）や
+    /// ボタンから外す判定（`hiddenFromBar`）が突き合わせている値で、
+    /// 言語で変わると効かなくなる。
+    init(
+        id: String, title: LocalizedStringResource, shortTitle: LocalizedStringResource,
+        symbol: String, group: Group, mutates: Bool = false,
+        run: @escaping @MainActor (ResourceActionHost, ClusterStore) -> Void
+    ) {
+        self.id = id
+        self.title = String(localized: title)
+        self.shortTitle = String(localized: shortTitle)
+        self.symbol = symbol
+        self.group = group
+        self.mutates = mutates
+        self.run = run
+    }
 }
 
 enum ResourceActionSet {
@@ -325,7 +346,9 @@ private struct ResourceActionPresenter: ViewModifier {
                 // **どのクラスタに効くのかを、確認の文面に必ず入れる。**
                 // 操作ごとに書くと足したものだけ書き忘れるので、ここで前に置く
                 // （確認を 1 か所にまとめてあるのと同じ理由）。
-                Text("クラスタ: \(store.contextDisplayName)\n\n" + action.message)
+                Text(
+                    String(localized: "クラスタ: \(store.contextDisplayName)")
+                        + "\n\n" + action.message)
             }
             .sheet(item: Binding(
                 get: { host.pending?.requiredPhrase == nil ? nil : host.pending },
@@ -663,6 +686,24 @@ struct PendingAction: Identifiable {
     var requiredPhrase: String?
     private let action: @MainActor (ClusterStore) async -> Void
 
+    /// **`message` だけは `String` で受ける。** 対象の名前や連鎖の説明を
+    /// 継ぎ足して組むので、継ぎ足したあとの文字列は鍵にならない。
+    /// 文言そのものは呼び出し側が `String(localized:)` を通す。
+    init(
+        id: String, title: LocalizedStringResource, message: String,
+        confirmLabel: LocalizedStringResource, isDestructive: Bool,
+        requiredPhrase: String? = nil,
+        action: @escaping @MainActor (ClusterStore) async -> Void
+    ) {
+        self.id = id
+        self.title = String(localized: title)
+        self.message = message
+        self.confirmLabel = String(localized: confirmLabel)
+        self.isDestructive = isDestructive
+        self.requiredPhrase = requiredPhrase
+        self.action = action
+    }
+
     @MainActor
     func run(_ store: ClusterStore) async { await action(store) }
 
@@ -670,8 +711,8 @@ struct PendingAction: Identifiable {
         PendingAction(
             id: "delete-\(object.id)",
             title: "削除しますか？",
-            message: "\(kindName) \(object.name) を削除します。取り消せません。\n\n"
-                + cascade(for: object.kind),
+            message: String(localized: "\(kindName) \(object.name) を削除します。取り消せません。")
+                + "\n\n" + cascade(for: object.kind),
             confirmLabel: "削除",
             isDestructive: true,
             requiredPhrase: object.kind == .namespace ? object.name : nil,
@@ -687,36 +728,53 @@ struct PendingAction: Identifiable {
     ///
     /// **安心できることも書く。** 所有者のいる Pod は消えっぱなしにならない。
     /// そこを黙ると、確かめれば分かることを怖がらせるだけになる。
+    /// **文をつなぎ合わせて組まない。** 以前は行の長さに収めるために `+` で
+    /// 継いでいたが、そのままだと**断片ごとに鍵ができる**。訳す側は語順を
+    /// 変えられないと英語として組めないので、1 つの文に 1 つの鍵を当てる。
+    /// 行を折るのは複数行リテラルの `\`（改行を打ち消す）で行う。
     static func cascade(for kind: ResourceKind?) -> String {
         switch kind {
         case .namespace:
-            return "この Namespace の中にあるものが、すべて一緒に消えます"
-                + "（Pod・Service・ConfigMap・Secret・PVC など）。"
-                + "クラスタでいちばん戻せない操作です。"
+            return String(localized: """
+                この Namespace の中にあるものが、すべて一緒に消えます\
+                （Pod・Service・ConfigMap・Secret・PVC など）。\
+                クラスタでいちばん戻せない操作です。
+                """)
         case .persistentVolumeClaim:
-            return "つながっている PersistentVolume の扱いは StorageClass の"
-                + "reclaim policy で決まります。Delete なら中のデータごと消えます。"
+            return String(localized: """
+                つながっている PersistentVolume の扱いは \
+                StorageClass の reclaim policy で決まります。Delete なら中のデータごと消えます。
+                """)
         case .persistentVolume:
-            return "reclaim policy が Delete なら、実体（ディスク）ごと消えます。"
+            return String(
+                localized: "reclaim policy が Delete なら、実体（ディスク）ごと消えます。")
         case .deployment, .statefulSet, .daemonSet, .replicaSet, .job, .cronJob:
-            return "管理下の Pod も一緒に消えます。動いている処理は中断されます。"
+            return String(
+                localized: "管理下の Pod も一緒に消えます。動いている処理は中断されます。")
         case .pod:
-            return "所有者（Deployment など）があれば、すぐに作り直されます。"
-                + "そうでない Pod は消えたままになります。"
+            return String(localized: """
+                所有者（Deployment など）があれば、すぐに作り直されます。\
+                そうでない Pod は消えたままになります。
+                """)
         case .service:
-            return "この Service 宛の通信が届かなくなります"
-                + "（Pod は動き続けます）。"
+            return String(
+                localized: "この Service 宛の通信が届かなくなります（Pod は動き続けます）。")
         case .node:
-            return "クラスタからノードの登録を外すだけで、マシン自体は消えません。"
-                + "載っている Pod は行き場を失います。"
-                + "**先に drain してください**（退避せずに外すと、そのまま止まります）。"
+            return String(localized: """
+                クラスタからノードの登録を外すだけで、マシン自体は消えません。\
+                載っている Pod は行き場を失います。\
+                **先に drain してください**（退避せずに外すと、そのまま止まります）。
+                """)
         case .secret, .configMap:
-            return "参照している Pod は、動いているあいだは止まりませんが、"
-                + "次に作り直されるときに起動できなくなります。"
+            return String(localized: """
+                参照している Pod は、動いているあいだは止まりませんが、\
+                次に作り直されるときに起動できなくなります。
+                """)
         case .clusterRoleBinding, .roleBinding, .clusterRole, .role, .serviceAccount:
-            return "これに頼っている処理が、権限不足で動かなくなることがあります。"
+            return String(
+                localized: "これに頼っている処理が、権限不足で動かなくなることがあります。")
         default:
-            return "元に戻すには、同じものを作り直すことになります。"
+            return String(localized: "元に戻すには、同じものを作り直すことになります。")
         }
     }
 
@@ -728,14 +786,17 @@ struct PendingAction: Identifiable {
         return PendingAction(
             id: "delete-many-\(objects.map(\.id).joined(separator: ","))",
             title: "\(objects.count) 件を削除しますか？",
-            message: "次の \(kindName) を削除します。取り消せません。\n\n"
-                + shown + (rest > 0 ? "\n他 \(rest) 件" : "")
+            message: String(localized: "次の \(kindName) を削除します。取り消せません。")
+                + "\n\n" + shown
+                + (rest > 0 ? "\n" + String(localized: "他 \(rest) 件") : "")
                 + "\n\n" + cascade(for: objects.first?.kind),
             confirmLabel: "\(objects.count) 件を削除",
             isDestructive: true,
             // まとめて消すときは 1 つでも Namespace が混ざっていたら打たせる。
+            // **ボタンと同じ鍵を通す。** 打ち込ませる文字は画面に出ている
+            // ものと一字一句同じでなければならない。
             requiredPhrase: objects.contains { $0.kind == .namespace }
-                ? "\(objects.count) 件を削除" : nil,
+                ? String(localized: "\(objects.count) 件を削除") : nil,
             // **捕まえたものをそのまま渡す。** 以前は `deleteSelected()` を
             // 呼んでおり、上の文面に名前を並べた対象と、押した時点の選択が
             // 食い違いうる状態だった（確認と実行は同じものを指すこと）。
@@ -746,8 +807,10 @@ struct PendingAction: Identifiable {
         PendingAction(
             id: "restart-\(object.id)",
             title: "ローリング再起動しますか？",
-            message: "\(kindName) \(object.name) の Pod を順に入れ替えます。"
-                + "入れ替わっているあいだ、実行中の処理は中断されます。",
+            message: String(localized: """
+                \(kindName) \(object.name) の Pod を順に入れ替えます。\
+                入れ替わっているあいだ、実行中の処理は中断されます。
+                """),
             confirmLabel: "再起動する",
             // 消えるわけではないので赤にはしない。**危険度を段で分ける。**
             isDestructive: false,
@@ -769,12 +832,16 @@ struct PendingAction: Identifiable {
             id: "rollout-pause-\(object.id)-\(paused)",
             title: paused ? "更新を止めますか？" : "更新を再開しますか？",
             message: paused
-                ? "\(kindName) \(object.name) の更新を止めます。"
-                    + "設定を変えても Pod は入れ替わらなくなり、"
-                    + "止めているあいだは前の状態にも戻せません。"
-                    + "一覧の Ready の数は揃ったままなので、止めたことは表に出ません。"
-                : "\(kindName) \(object.name) の更新を再開します。"
-                    + "止めているあいだに変えた設定は、まとめて反映されます。",
+                ? String(localized: """
+                    \(kindName) \(object.name) の更新を止めます。\
+                    設定を変えても Pod は入れ替わらなくなり、\
+                    止めているあいだは前の状態にも戻せません。\
+                    一覧の Ready の数は揃ったままなので、止めたことは表に出ません。
+                    """)
+                : String(localized: """
+                    \(kindName) \(object.name) の更新を再開します。\
+                    止めているあいだに変えた設定は、まとめて反映されます。
+                    """),
             confirmLabel: paused ? "止める" : "再開する",
             isDestructive: false,
             action: { await $0.setRolloutPaused(object, paused: paused) })
@@ -787,9 +854,11 @@ struct PendingAction: Identifiable {
             message: unschedulable
                 // いま載っている Pod は動かない、を明記する。cordon と drain を
                 // 取り違えたまま押されると、期待した退避が起きない。
-                ? "\(node.name) に新しい Pod が置かれなくなります。"
-                    + "いま載っている Pod はそのまま動き続けます（退避は drain）。"
-                : "\(node.name) に新しい Pod が置かれるようになります。",
+                ? String(localized: """
+                    \(node.name) に新しい Pod が置かれなくなります。\
+                    いま載っている Pod はそのまま動き続けます（退避は drain）。
+                    """)
+                : String(localized: "\(node.name) に新しい Pod が置かれるようになります。"),
             confirmLabel: unschedulable ? "止める" : "許可する",
             isDestructive: false,
             action: { await $0.setCordon(node, unschedulable: unschedulable) })
@@ -914,10 +983,10 @@ struct DrainSheet: View {
             return preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 // 何も出ないのは「退避するものが無い」。空欄にすると
                 // 「調べられなかった」と見分けが付かない。
-                ? "退避する Pod はありません。"
+                ? String(localized: "退避する Pod はありません。")
                 : preview
         }
-        return "調べています…"
+        return String(localized: "調べています…")
     }
 
     /// kubectl が退避すると言った Pod の数。数え方を自分で決めない。
@@ -1017,8 +1086,7 @@ struct RollbackSheet: View {
             if revisions.count < 2 {
                 // 世代が 1 つしか無ければ戻る先が無い。**空の選択肢を出さない。**
                 Label(
-                    "この \(object.kind?.displayName ?? "ワークロード")には、"
-                        + "まだ戻れる世代がありません。",
+                    "この \(object.kind?.displayName ?? "ワークロード")には、まだ戻れる世代がありません。",
                     systemImage: StatusLevel.warning.symbol)
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: .warning))
@@ -1046,8 +1114,8 @@ struct RollbackSheet: View {
     /// よいのかが決まらない。書かれていないときは「理由なし」と書く
     /// （空欄にすると、読み込めていないのか未記入なのか分からない）。
     private func label(for revision: Kubectl.RolloutRevision) -> String {
-        let cause = revision.changeCause ?? "理由なし"
-        return "第 \(revision.revision) 世代 — \(cause)"
+        let cause = revision.changeCause ?? String(localized: "理由なし")
+        return String(localized: "第 \(revision.revision) 世代 — \(cause)")
     }
 
     @ViewBuilder
@@ -1062,7 +1130,7 @@ struct RollbackSheet: View {
             }
 
             ScrollView {
-                Text(detail ?? "選ぶと、その世代の中身が出ます。")
+                Text(detail ?? String(localized: "選ぶと、その世代の中身が出ます。"))
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1212,14 +1280,16 @@ struct ScaleSheet: View {
         case .managed(let hpas):
             VStack(alignment: .leading, spacing: 4) {
                 Label(
-                    "この \(object.kind?.displayName ?? "ワークロード")"
-                        + "は HPA が管理しています。",
+                    "この \(object.kind?.displayName ?? "ワークロード")は HPA が管理しています。",
                     systemImage: StatusLevel.serious.symbol)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Palette.textColor(for: .serious))
                 ForEach(hpas) { hpa in
-                    Text("\(hpa.name)（最小 \(hpa.spec?["minReplicas"]?.intValue ?? 1)"
-                         + " / 最大 \(hpa.spec?["maxReplicas"]?.intValue ?? 0)）")
+                    // **添字を鍵の中に書かない。** 補間の中に `"` が入ると、
+                    // 文言としての切れ目が読めなくなる（実際に壊した）。
+                    let minimum = hpa.spec?["minReplicas"]?.intValue ?? 1
+                    let maximum = hpa.spec?["maxReplicas"]?.intValue ?? 0
+                    Text("\(hpa.name)（最小 \(minimum) / 最大 \(maximum)）")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

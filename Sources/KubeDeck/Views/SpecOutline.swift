@@ -26,10 +26,15 @@ struct SpecOutline: View {
         }
         .overlay {
             if sections.isEmpty {
+                // 種別名はクラスタから来ることもある（CRD）。先に決めておく。
+                let kindName = object.kind?.displayName
+                    ?? String(localized: "リソース")
                 ContentUnavailableView(
                     "設定はありません",
                     systemImage: "doc.plaintext",
-                    description: Text("この \(object.kind?.displayName ?? "リソース") は spec を持ちません。YAML を見てください。"))
+                    description: Text("""
+                    この \(kindName) は spec を持ちません。YAML を見てください。
+                    """))
             }
         }
     }
@@ -179,8 +184,8 @@ extension JSONValue {
     /// 畳んでいるときに出す要約。開かなくても規模が分かるようにする。
     var summary: String {
         switch self {
-        case .object(let dictionary): return "\(dictionary.count) 項目"
-        case .array(let elements): return "\(elements.count) 件"
+        case .object(let dictionary): return String(localized: "\(dictionary.count) 項目")
+        case .array(let elements): return String(localized: "\(elements.count) 件")
         default: return ""
         }
     }

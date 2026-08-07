@@ -2,20 +2,40 @@ import Foundation
 
 /// 設定の 1 行。
 struct SettingRow: Identifiable, Sendable {
+    /// 言語で変わらない鍵。見出しの原文（`LocalizedStringResource.key`）か、
+    /// クラスタから来た名前そのもの。
+    ///
+    /// **訳した見出しを `id` にしない。** 別の原文が同じ訳になったとき
+    /// （`要求` と `リクエスト` がどちらも `Requests`）に `ForEach` の
+    /// 同一性が壊れ、行が入れ替わる。
+    let id: String
     let label: String
     let value: String
     /// 値が未設定のときに立てる。表示側が薄く出す。
     var isUnset = false
     var level: StatusLevel?
 
-    var id: String { label }
+    /// **画面に出る決まった文言は 1 度だけ引く。** 設定タブは行数ぶん
+    /// 作り直されるので、行ごとに引くと同じ探索を繰り返す。
+    private static let unset = String(localized: "未設定")
 
-    /// 未設定を「—」で表す。空文字をそのまま出すと、値が空なのか
+    /// 未設定を「未設定」と書く。空文字をそのまま出すと、値が空なのか
     /// 項目が無いのか区別が付かない。
-    init(_ label: String, _ value: String?, level: StatusLevel? = nil) {
+    init(_ label: LocalizedStringResource, _ value: String?, level: StatusLevel? = nil) {
+        self.init(id: label.key, label: String(localized: label), value: value, level: level)
+    }
+
+    /// 見出しがクラスタから来るもの（ボリューム名・ポート名・キー名・汚れの
+    /// キー）。**訳す先が無い。** 鍵もその名前をそのまま使う。
+    init(name: String, _ value: String?, level: StatusLevel? = nil) {
+        self.init(id: name, label: name, value: value, level: level)
+    }
+
+    private init(id: String, label: String, value: String?, level: StatusLevel?) {
+        self.id = id
         self.label = label
         let text = value?.trimmingCharacters(in: .whitespaces) ?? ""
-        self.value = text.isEmpty ? "未設定" : text
+        self.value = text.isEmpty ? Self.unset : text
         self.isUnset = text.isEmpty
         self.level = text.isEmpty ? nil : level
     }
@@ -23,12 +43,23 @@ struct SettingRow: Identifiable, Sendable {
 
 /// 設定のひとかたまり。
 struct SettingGroup: Identifiable, Sendable {
+    /// 言語で変わらない鍵（`SettingRow.id` と同じ理由）。
+    let id: String
     let title: String
     let rows: [SettingRow]
     /// コンテナのように、同じ形が複数並ぶものの副題。
+    ///
+    /// **こちらは `String` のまま。** コンテナ名のようにクラスタから来る値と、
+    /// 決まった文言の両方が入るので、決まった文言は呼び出し側で
+    /// `String(localized:)` を通してから渡す。
     var subtitle: String?
 
-    var id: String { title + (subtitle ?? "") }
+    init(title: LocalizedStringResource, rows: [SettingRow], subtitle: String? = nil) {
+        self.id = title.key + (subtitle ?? "")
+        self.title = String(localized: title)
+        self.rows = rows
+        self.subtitle = subtitle
+    }
 }
 
 /// オブジェクトから「人が読む設定」を組み立てる。
@@ -39,6 +70,22 @@ struct SettingGroup: Identifiable, Sendable {
 ///
 /// スキーマの分からない CRD だけは選びようがないので、木のまま出す。
 enum SettingsDigest {
+    // MARK: - 決まった文言
+    //
+    // **値を作る関数の中で毎回引かない。** `yesNo` や `restartPolicy` は
+    // 行ごとに呼ばれるので、決まった文言はここで 1 度だけ引く
+    // （`ResourceTable` のセルと同じ話）。
+    private static let yes = String(localized: "はい")
+    private static let no = String(localized: "いいえ")
+    private static let restartAlways = String(localized: "常に再起動")
+    private static let restartOnFailure = String(localized: "失敗したときだけ")
+    private static let restartNever = String(localized: "再起動しない")
+    private static let fromAnywhere = String(localized: "どこからでも")
+    private static let denyAll = String(localized: "1 つもありません（すべて拒否）")
+    private static let allNamespaces = String(localized: "すべての Namespace")
+    private static let allPods = String(localized: "すべての Pod")
+    private static let hasValue = String(localized: "設定あり")
+
     static func groups(for object: K8sObject) -> [SettingGroup] {
         switch object.kind {
         case .pod: return podGroups(object)
@@ -121,10 +168,10 @@ enum SettingsDigest {
             groups.append(containerGroup(container, status: pod.status))
         }
         for container in spec?["initContainers"]?.arrayValue ?? [] {
-            var group = containerGroup(container, status: pod.status)
-            group = SettingGroup(
-                title: "初期化コンテナ", rows: group.rows, subtitle: group.subtitle)
-            groups.append(group)
+            let group = containerGroup(container, status: pod.status)
+            groups.append(
+                SettingGroup(
+                    title: "初期化コンテナ", rows: group.rows, subtitle: group.subtitle))
         }
 
         let volumes = spec?["volumes"]?.arrayValue ?? []
@@ -134,7 +181,7 @@ enum SettingsDigest {
                     title: "ボリューム",
                     rows: volumes.map { volume in
                         SettingRow(
-                            volume["name"]?.stringValue ?? "?", volumeKind(volume))
+                            name: volume["name"]?.stringValue ?? "?", volumeKind(volume))
                     }))
         }
 
@@ -159,9 +206,9 @@ enum SettingsDigest {
 
         var subtitle: String?
         if requests.cpuCores == 0 && requests.memoryBytes == 0 {
-            subtitle = "requests が未設定です"
+            subtitle = String(localized: "requests が未設定です")
         } else if limits.cpuCores == 0 && limits.memoryBytes == 0 {
-            subtitle = "limits が未設定です"
+            subtitle = String(localized: "limits が未設定です")
         }
 
         return SettingGroup(
@@ -194,7 +241,8 @@ enum SettingsDigest {
 
         let envCount = (container["env"]?.arrayValue.count ?? 0)
             + (container["envFrom"]?.arrayValue.count ?? 0)
-        rows.append(SettingRow("環境変数", envCount > 0 ? "\(envCount) 件" : nil))
+        rows.append(
+            SettingRow("環境変数", envCount > 0 ? String(localized: "\(envCount) 件") : nil))
 
         let mounts = container["volumeMounts"]?.arrayValue ?? []
         rows.append(
@@ -204,10 +252,11 @@ enum SettingsDigest {
                     ? nil
                     : mounts.compactMap { $0["mountPath"]?.stringValue }.joined(separator: ", ")))
 
-        for (key, label) in [
+        let probes: [(String, LocalizedStringResource)] = [
             ("livenessProbe", "生存確認"), ("readinessProbe", "受付確認"),
             ("startupProbe", "起動確認"),
-        ] {
+        ]
+        for (key, label) in probes {
             rows.append(SettingRow(label, probeSummary(container[key])))
         }
 
@@ -218,7 +267,7 @@ enum SettingsDigest {
             let restarts = containerStatus["restartCount"]?.intValue ?? 0
             rows.append(
                 SettingRow(
-                    "再起動", "\(restarts) 回",
+                    "再起動", String(localized: "\(restarts) 回"),
                     level: restarts == 0 ? nil : (restarts >= 5 ? .critical : .warning)))
         }
 
@@ -243,7 +292,7 @@ enum SettingsDigest {
         }
         rows.append(
             SettingRow(
-                "準備完了とみなす秒数", spec?["minReadySeconds"]?.intValue.map { "\($0) 秒" }))
+                "準備完了とみなす秒数", seconds(spec?["minReadySeconds"]?.intValue)))
         rows.append(
             SettingRow("残す履歴の数", spec?["revisionHistoryLimit"]?.intValue.map(String.init)))
         groups.append(SettingGroup(title: "配備", rows: rows))
@@ -265,10 +314,10 @@ enum SettingsDigest {
                     SettingRow("再試行の上限", spec?["backoffLimit"]?.intValue.map(String.init)),
                     SettingRow(
                         "打ち切りまでの秒数",
-                        spec?["activeDeadlineSeconds"]?.intValue.map { "\($0) 秒" }),
+                        seconds(spec?["activeDeadlineSeconds"]?.intValue)),
                     SettingRow(
                         "完了後に消すまで",
-                        spec?["ttlSecondsAfterFinished"]?.intValue.map { "\($0) 秒" }),
+                        seconds(spec?["ttlSecondsAfterFinished"]?.intValue)),
                 ])
         ]
         for container in spec?.path("template.spec.containers")?.arrayValue ?? [] {
@@ -289,10 +338,10 @@ enum SettingsDigest {
                     SettingRow("重なったときの扱い", spec?["concurrencyPolicy"]?.stringValue),
                     SettingRow(
                         "成功の履歴",
-                        spec?["successfulJobsHistoryLimit"]?.intValue.map { "\($0) 件" }),
+                        count(spec?["successfulJobsHistoryLimit"]?.intValue)),
                     SettingRow(
                         "失敗の履歴",
-                        spec?["failedJobsHistoryLimit"]?.intValue.map { "\($0) 件" }),
+                        count(spec?["failedJobsHistoryLimit"]?.intValue)),
                 ])
         ]
         for container in spec?.path("jobTemplate.spec.template.spec.containers")?.arrayValue ?? [] {
@@ -412,7 +461,8 @@ enum SettingsDigest {
                 title: "指標",
                 rows: [SettingRow("使用率 / 目標", targets.text.isEmpty ? nil : targets.text)],
                 // 取れていない指標があることを、この画面でも言う。
-                subtitle: targets.hasUnknown ? "取得できていない指標があります" : nil))
+                subtitle: targets.hasUnknown
+                    ? String(localized: "取得できていない指標があります") : nil))
 
         if let behavior = spec?["behavior"] {
             groups.append(
@@ -421,12 +471,12 @@ enum SettingsDigest {
                     rows: [
                         SettingRow(
                             "増やすときの待ち",
-                            behavior.path("scaleUp.stabilizationWindowSeconds")?
-                                .intValue.map { "\($0) 秒" }),
+                            seconds(
+                                behavior.path("scaleUp.stabilizationWindowSeconds")?.intValue)),
                         SettingRow(
                             "減らすときの待ち",
-                            behavior.path("scaleDown.stabilizationWindowSeconds")?
-                                .intValue.map { "\($0) 秒" }),
+                            seconds(
+                                behavior.path("scaleDown.stabilizationWindowSeconds")?.intValue)),
                     ]))
         }
 
@@ -458,14 +508,17 @@ enum SettingsDigest {
                     rows: ports.map { port in
                         let name = port["name"]?.stringValue
                             ?? "\(port["port"]?.intValue ?? 0)"
-                        var parts = ["\(port["port"]?.intValue ?? 0)/\(port["protocol"]?.stringValue ?? "TCP")"]
+                        var parts = [
+                            "\(port["port"]?.intValue ?? 0)/"
+                                + (port["protocol"]?.stringValue ?? "TCP")
+                        ]
                         if let target = port["targetPort"]?.displayText, !target.isEmpty {
                             parts.append("→ \(target)")
                         }
                         if let nodePort = port["nodePort"]?.intValue {
-                            parts.append("ノード \(nodePort)")
+                            parts.append(String(localized: "ノード \(nodePort)"))
                         }
-                        return SettingRow(name, parts.joined(separator: " "))
+                        return SettingRow(name: name, parts.joined(separator: " "))
                     }))
         }
         return groups
@@ -499,7 +552,7 @@ enum SettingsDigest {
                         ?? service?.path("port.name")?.stringValue,
                 ]
                 .compactMap { $0 }.joined(separator: ":")
-                rules.append(SettingRow("\(host)\(route)", target))
+                rules.append(SettingRow(name: "\(host)\(route)", target))
             }
         }
         if !rules.isEmpty { groups.append(SettingGroup(title: "振り分け", rows: rules)) }
@@ -527,14 +580,13 @@ enum SettingsDigest {
 
         for direction in ["ingress", "egress"] {
             guard let rules = spec?[direction]?.arrayValue else { continue }
-            let title = direction == "ingress" ? "入ってよい先" : "出てよい先"
+            let title: LocalizedStringResource =
+                direction == "ingress" ? "入ってよい先" : "出てよい先"
             guard !rules.isEmpty else {
                 groups.append(
                     SettingGroup(
                         title: title,
-                        rows: [
-                            SettingRow("規則", "1 つもありません（すべて拒否）", level: .warning)
-                        ]))
+                        rows: [SettingRow("規則", denyAll, level: .warning)]))
                 continue
             }
             var rows: [SettingRow] = []
@@ -552,7 +604,7 @@ enum SettingsDigest {
                 rows.append(
                     SettingRow(
                         "規則 \(index + 1)",
-                        peers.isEmpty ? "どこからでも" : peers.joined(separator: ", ")))
+                        peers.isEmpty ? fromAnywhere : peers.joined(separator: ", ")))
                 if !ports.isEmpty {
                     rows.append(SettingRow("　ポート", ports.joined(separator: ", ")))
                 }
@@ -567,20 +619,27 @@ enum SettingsDigest {
         if let cidr = peer.path("ipBlock.cidr")?.stringValue {
             let except = (peer.path("ipBlock.except")?.arrayValue ?? [])
                 .compactMap(\.stringValue)
-            return except.isEmpty ? cidr : "\(cidr)（除く \(except.joined(separator: ", "))）"
+            return except.isEmpty
+                ? cidr
+                : String(localized: "\(cidr)（除く \(except.joined(separator: ", "))）")
         }
         var parts: [String] = []
         // **空のセレクタの意味が入れ子で変わる。** `namespaceSelector: {}` は
         // 「すべての Namespace」、`podSelector: {}` は「その中のすべての Pod」。
         if let namespace = peer["namespaceSelector"] {
             let labels = labelText(namespace)
-            parts.append(labels.isEmpty ? "すべての Namespace" : "Namespace \(labels)")
+            parts.append(
+                labels.isEmpty ? allNamespaces : String(localized: "Namespace \(labels)"))
         }
         if let pod = peer["podSelector"] {
             let labels = labelText(pod)
-            parts.append(labels.isEmpty ? "すべての Pod" : "Pod \(labels)")
+            parts.append(labels.isEmpty ? allPods : String(localized: "Pod \(labels)"))
         }
-        return parts.isEmpty ? "どこからでも" : parts.joined(separator: " の ")
+        // **区切りも訳す。** 「Namespace x の Pod y」は日本語の語順なので、
+        // 英語では別の繋ぎ（`in`）になる。
+        return parts.isEmpty
+            ? fromAnywhere
+            : parts.joined(separator: String(localized: " の "))
     }
 
     private static func labelText(_ selector: JSONValue) -> String {
@@ -598,7 +657,7 @@ enum SettingsDigest {
             groups.append(
                 SettingGroup(
                     title: "種類",
-                    rows: [SettingRow("type", object.raw["type"]?.stringValue)]))
+                    rows: [SettingRow(name: "type", object.raw["type"]?.stringValue)]))
         }
 
         let data = object.raw["data"]?.objectValue ?? [:]
@@ -610,7 +669,10 @@ enum SettingsDigest {
                     : data.keys.sorted().map { key in
                         // Secret の中身は出さない。大きさだけ出す。
                         let size = data[key]?.stringValue?.count ?? 0
-                        return SettingRow(key, object.kind == .secret ? "\(size) 文字" : "設定あり")
+                        return SettingRow(
+                            name: key,
+                            object.kind == .secret
+                                ? String(localized: "\(size) 文字") : hasValue)
                     }))
         return groups
     }
@@ -622,7 +684,9 @@ enum SettingsDigest {
                 rows: [
                     SettingRow("状態", claim.status?["phase"]?.stringValue),
                     SettingRow("容量", claim.status?.path("capacity.storage")?.displayText),
-                    SettingRow("要求した容量", claim.spec?.path("resources.requests.storage")?.displayText),
+                    SettingRow(
+                        "要求した容量",
+                        claim.spec?.path("resources.requests.storage")?.displayText),
                     SettingRow("アクセス", ResourceTable.accessModes(claim)),
                     SettingRow("StorageClass", claim.spec?["storageClassName"]?.stringValue),
                     SettingRow("結び付いたボリューム", claim.spec?["volumeName"]?.stringValue),
@@ -638,7 +702,9 @@ enum SettingsDigest {
                     SettingRow("状態", volume.status?["phase"]?.stringValue),
                     SettingRow("容量", volume.spec?.path("capacity.storage")?.displayText),
                     SettingRow("アクセス", ResourceTable.accessModes(volume)),
-                    SettingRow("回収の方針", volume.spec?["persistentVolumeReclaimPolicy"]?.stringValue),
+                    SettingRow(
+                        "回収の方針",
+                        volume.spec?["persistentVolumeReclaimPolicy"]?.stringValue),
                     SettingRow("StorageClass", volume.spec?["storageClassName"]?.stringValue),
                     SettingRow("使っている要求", ResourceTable.claimReference(volume)),
                     SettingRow("実体", volumeKind(volume.spec ?? .null)),
@@ -668,8 +734,11 @@ enum SettingsDigest {
             SettingGroup(
                 title: "容量",
                 rows: [
-                    SettingRow("CPU（割り当て可能）", node.status?.path("allocatable.cpu")?.displayText),
-                    SettingRow("メモリ（割り当て可能）", node.status?.path("allocatable.memory")?.displayText),
+                    SettingRow(
+                        "CPU（割り当て可能）", node.status?.path("allocatable.cpu")?.displayText),
+                    SettingRow(
+                        "メモリ（割り当て可能）",
+                        node.status?.path("allocatable.memory")?.displayText),
                     SettingRow("Pod 上限", node.status?.path("allocatable.pods")?.displayText),
                 ]),
         ]
@@ -684,7 +753,7 @@ enum SettingsDigest {
                         let value = taint["value"]?.stringValue
                         let effect = taint["effect"]?.stringValue ?? ""
                         return SettingRow(
-                            value.map { "\(key)=\($0)" } ?? key, effect)
+                            name: value.map { "\(key)=\($0)" } ?? key, effect)
                     }))
         }
         return groups
@@ -706,7 +775,18 @@ enum SettingsDigest {
     // MARK: - 値の整形
 
     private static func yesNo(_ value: Bool?) -> String? {
-        value.map { $0 ? "はい" : "いいえ" }
+        value.map { $0 ? yes : no }
+    }
+
+    /// 「N 秒」。**呼び出し側で組まない** —— 同じ言い方が 5 か所にあり、
+    /// 別々に書くと鍵も 5 つに分かれる。
+    private static func seconds(_ value: Int?) -> String? {
+        value.map { String(localized: "\($0) 秒") }
+    }
+
+    /// 「N 件」。
+    private static func count(_ value: Int?) -> String? {
+        value.map { String(localized: "\($0) 件") }
     }
 
     private static func joined(_ value: JSONValue?) -> String? {
@@ -730,9 +810,9 @@ enum SettingsDigest {
 
     private static func restartPolicy(_ value: String?) -> String? {
         switch value {
-        case "Always": return "常に再起動"
-        case "OnFailure": return "失敗したときだけ"
-        case "Never": return "再起動しない"
+        case "Always": return restartAlways
+        case "OnFailure": return restartOnFailure
+        case "Never": return restartNever
         default: return value
         }
     }
@@ -741,7 +821,9 @@ enum SettingsDigest {
         let tolerations = spec?["tolerations"]?.arrayValue ?? []
         guard !tolerations.isEmpty else { return nil }
         let keys = tolerations.compactMap { $0["key"]?.stringValue }
-        return keys.isEmpty ? "\(tolerations.count) 件" : keys.joined(separator: ", ")
+        return keys.isEmpty
+            ? String(localized: "\(tolerations.count) 件")
+            : keys.joined(separator: ", ")
     }
 
     /// affinity は入れ子が深く、そのまま出しても読めない。
@@ -749,12 +831,20 @@ enum SettingsDigest {
     private static func affinitySummary(_ spec: JSONValue?) -> String? {
         guard let affinity = spec?["affinity"] else { return nil }
         var parts: [String] = []
-        for (key, label) in [
+        let kinds: [(String, LocalizedStringResource)] = [
             ("nodeAffinity", "ノード"), ("podAffinity", "同居"), ("podAntiAffinity", "分散"),
-        ] {
+        ]
+        for (key, label) in kinds {
             guard let entry = affinity[key] else { continue }
             let required = entry["requiredDuringSchedulingIgnoredDuringExecution"] != nil
-            parts.append("\(label)\(required ? "（必須）" : "（希望）")")
+            // **「（必須）」だけを鍵にしない。** 訳す側は語順を変えられないと
+            // 英語として組めない（`Spread (preferred)`）ので、種類ごと 1 つの
+            // 文言にする。
+            let name = String(localized: label)
+            parts.append(
+                required
+                    ? String(localized: "\(name)（必須）")
+                    : String(localized: "\(name)（希望）"))
         }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
@@ -769,16 +859,17 @@ enum SettingsDigest {
         } else if let tcp = probe["tcpSocket"] {
             target = "TCP \(tcp["port"]?.displayText ?? "")"
         } else if let exec = probe["exec"] {
-            target = "実行 " + ((exec["command"]?.arrayValue ?? []).compactMap(\.stringValue)
-                .joined(separator: " "))
+            let command = (exec["command"]?.arrayValue ?? []).compactMap(\.stringValue)
+                .joined(separator: " ")
+            target = String(localized: "実行 \(command)")
         }
         let period = probe["periodSeconds"]?.intValue ?? 10
-        return "\(target) · \(period) 秒ごと"
+        return String(localized: "\(target) · \(period) 秒ごと")
     }
 
     /// ボリュームの実体。`configMap` などのキー名がそのまま種類になる。
     private static func volumeKind(_ volume: JSONValue) -> String? {
-        let known: [(String, String)] = [
+        let known: [(String, LocalizedStringResource)] = [
             ("configMap", "ConfigMap"), ("secret", "Secret"), ("emptyDir", "一時領域"),
             ("persistentVolumeClaim", "PVC"), ("hostPath", "ホストのパス"),
             ("projected", "まとめたもの"), ("downwardAPI", "Pod の情報"),
@@ -798,7 +889,8 @@ enum SettingsDigest {
                 ?? source?["secretName"]?.stringValue
                 ?? source?["claimName"]?.stringValue
                 ?? source?["path"]?.stringValue
-            return name.map { "\(label)（\($0)）" } ?? label
+            let text = String(localized: label)
+            return name.map { String(localized: "\(text)（\($0)）") } ?? text
         }
         return nil
     }
