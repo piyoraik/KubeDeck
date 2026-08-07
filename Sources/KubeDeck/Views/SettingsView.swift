@@ -32,6 +32,35 @@ private struct GeneralSettings: View {
         @Bindable var preferences = preferences
 
         Form {
+            Section {
+                Picker("言語", selection: $preferences.appLanguage) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.title).tag(language)
+                    }
+                }
+            } header: {
+                Text("表示")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("""
+                        macOS のシステム設定（一般 › 言語と地域 › アプリケーション）\
+                        からも変えられます。訳が無い言語では日本語で出ます。
+                        """)
+                        .foregroundStyle(.secondary)
+                    // **効いていないように見せない。** 起動時に解決された言語は
+                    // 作り直せないので、切り替えても画面はそのまま。断りが無いと
+                    // 設定が壊れていると読める。
+                    if preferences.languageChangeNeedsRestart {
+                        Label(
+                            "次に KubeDeck を起動したときに変わります",
+                            systemImage: "arrow.clockwise")
+                            .foregroundStyle(Palette.textColor(for: .warning))
+                    }
+                }
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("起動") {
                 Picker("開く画面", selection: $preferences.startupScreen) {
                     ForEach(StartupScreen.allCases) { screen in
@@ -149,10 +178,14 @@ private struct GeneralSettings: View {
             // **残るものを正確に書く。** 以前は `contextProfiles` も消して
             // いたのに「コンテキストは残ります」と書いており、読み取り専用の
             // 指定が黙って外れていた。いまは消さないので、そう書ける。
+            // **戻るものも名指しする。** 言語は見た目の既定値なので戻すが、
+            // 反映は次の起動からなので、そう書かないと「戻したのに英語のまま」
+            // に見える。
             Text("""
                 接続先のコンテキストや Namespace の選択は残ります。\
                 コンテキストごとの色・別名・読み取り専用の指定も残ります\
-                （消すときは「コンテキスト」タブから）。
+                （消すときは「コンテキスト」タブから）。\
+                言語は「システムに従う」に戻り、次の起動から反映されます。
                 """)
         }
     }

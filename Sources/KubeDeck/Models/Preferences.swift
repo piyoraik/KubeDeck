@@ -19,6 +19,12 @@ final class Preferences {
     private let store = UserDefaults.standard
 
     private enum Key {
+        /// **独自のキーにしない。** `AppleLanguages` は macOS 自身が見る場所で、
+        /// システム設定（一般 › 言語と地域 › アプリケーション）もここへ書く。
+        /// 別のキーに覚えると真実が 2 つになり、どちらが効いているのか
+        /// 分からなくなる（更新の設定を Sparkle 側と二重に持たないのと同じ話）。
+        static let appleLanguages = "AppleLanguages"
+
         static let startupScreen = "startupScreen"
         static let showsSidebarCounts = "showsSidebarCounts"
         static let rowDensity = "rowDensity"
@@ -61,6 +67,32 @@ final class Preferences {
     }
 
     // MARK: - 一般
+
+    /// 画面に出す言語。
+    ///
+    /// **切り替えても、その場では変わらない。** 起動時に解決されたバンドルの
+    /// 言語は作り直せないので、反映は次の起動から。断りが無いと設定が効いて
+    /// いないように見えるので、設定画面が `languageChangeNeedsRestart` を見て
+    /// そう書く。
+    var appLanguage: AppLanguage {
+        didSet {
+            if let code = appLanguage.code {
+                store.set([code], forKey: Key.appleLanguages)
+            } else {
+                // **空配列を書かない。** 消してこそ「システムに従う」になる。
+                store.removeObject(forKey: Key.appleLanguages)
+            }
+        }
+    }
+
+    /// 起動したときに効いていた言語。
+    ///
+    /// **設定の値と別に持つ。** 同じものを見ていると「切り替えたが再起動して
+    /// いない」を言い分けられない。
+    private let launchLanguage: AppLanguage
+
+    /// 次の起動を待たないと反映されない状態か。
+    var languageChangeNeedsRestart: Bool { appLanguage != launchLanguage }
 
     /// 起動したときに開く画面。
     var startupScreen: StartupScreen {
@@ -360,6 +392,9 @@ final class Preferences {
     // MARK: - 読み出し
 
     private init() {
+        let language = AppLanguage(codes: store.stringArray(forKey: Key.appleLanguages))
+        appLanguage = language
+        launchLanguage = language
         startupScreen = StartupScreen(rawValue: store.string(forKey: Key.startupScreen) ?? "")
             ?? .lastViewed
         showsSidebarCounts = store.object(forKey: Key.showsSidebarCounts) as? Bool ?? true
@@ -448,6 +483,10 @@ final class Preferences {
     /// このアプリで唯一「壊せなくする」仕組み。巻き添えにしてよいものではない。
     /// 消したいときは設定の「コンテキスト」から明示的に消す（`clearContextProfiles`）。
     func resetAll() {
+        // **言語も戻す。** 見た目の既定値の 1 つなので巻き添えにしてよい
+        // （`contextProfiles` を外に置いたのは、あれが安全側の札だから）。
+        // ただし反映は次の起動からなので、確認の文面でそう断る。
+        appLanguage = .system
         startupScreen = .lastViewed
         showsSidebarCounts = true
         rowDensity = .standard
@@ -485,6 +524,59 @@ final class Preferences {
 }
 
 /// 起動時に開く画面。
+/// 画面に出す言語。
+///
+/// **`Locale` の一覧を並べない。** 訳があるのは ja と en の 2 つだけで、
+/// 選べる中身と訳の有無が食い違うと「選んだのに変わらない」になる
+/// （押しても失敗すると分かっているものを出さない、といつもの話）。
+enum AppLanguage: String, CaseIterable, Identifiable, Sendable {
+    /// macOS のシステム設定に従う。`AppleLanguages` を消した状態。
+    case system
+    case japanese
+    case english
+
+    var id: String { rawValue }
+
+    /// `AppleLanguages` に書く言語コード。`system` は書かずに消す。
+    var code: String? {
+        switch self {
+        case .system: return nil
+        case .japanese: return "ja"
+        case .english: return "en"
+        }
+    }
+
+    /// **言語の名前は訳さない。** 英語の画面でも「日本語」、日本語の画面でも
+    /// 「English」と出す。探している人は自分の言語の綴りを探すので、訳すと
+    /// **その言語の人にだけ見つけられなくなる**（macOS 自身もそうしている）。
+    /// 訳すのは「システムに従う」だけ。
+    var title: String {
+        switch self {
+        case .system: return String(localized: "システムに従う")
+        case .japanese: return "日本語"
+        case .english: return "English"
+        }
+    }
+
+    /// 覚えている `AppleLanguages` から読む。
+    ///
+    /// **地域付きも受ける。** システム設定は `ja-JP` のように書くことがある。
+    /// 知らない言語は `system` として扱う（訳が無いので、どうせ原文が出る）。
+    init(codes: [String]?) {
+        guard let first = codes?.first?.lowercased() else {
+            self = .system
+            return
+        }
+        if first.hasPrefix("ja") {
+            self = .japanese
+        } else if first.hasPrefix("en") {
+            self = .english
+        } else {
+            self = .system
+        }
+    }
+}
+
 enum StartupScreen: String, CaseIterable, Identifiable, Sendable {
     case lastViewed
     case overview

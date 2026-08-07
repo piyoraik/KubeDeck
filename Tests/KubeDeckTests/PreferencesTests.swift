@@ -155,3 +155,54 @@ struct ListSortingTests {
         #expect(store.selectedObject?.name == "c")
     }
 }
+
+/// 覚えている `AppleLanguages` の読み取り。
+///
+/// **`UserDefaults` を触らない。** ここを実際に書くと、テストを走らせるだけで
+/// 開発機のアプリの言語が変わる（`AppleLanguages` は macOS 自身が見る場所）。
+/// 純粋な変換だけを固める。
+@Suite("言語の設定")
+struct AppLanguageTests {
+
+    /// **地域付きも受ける。** システム設定は `ja-JP` のように書くことがあり、
+    /// 完全一致で見ていると「システムに従う」に落ちて、選んだ言語が
+    /// 設定画面に出なくなる。
+    @Test(
+        "言語コードから読む",
+        arguments: [
+            (["ja"], AppLanguage.japanese),
+            (["ja-JP"], AppLanguage.japanese),
+            (["en"], AppLanguage.english),
+            (["en-US"], AppLanguage.english),
+            // 先頭だけ見る（macOS は優先順の配列で持つ）。
+            (["en", "ja"], AppLanguage.english),
+            // 訳が無い言語は「システムに従う」扱い。原文が出るので嘘にならない。
+            (["de-DE"], AppLanguage.system),
+            ([], AppLanguage.system),
+        ])
+    func fromCodes(codes: [String], expected: AppLanguage) {
+        #expect(AppLanguage(codes: codes) == expected)
+    }
+
+    /// 覚えていない（キーが無い）ときはシステムに従う。
+    @Test("未設定はシステムに従う")
+    func missing() {
+        #expect(AppLanguage(codes: nil) == .system)
+    }
+
+    /// **`system` はコードを持たない。** 空文字を書くと `AppleLanguages` に
+    /// 空の項目が残り、消したことにならない。
+    @Test("system は書き込む値を持たない")
+    func systemHasNoCode() {
+        #expect(AppLanguage.system.code == nil)
+        #expect(AppLanguage.japanese.code == "ja")
+        #expect(AppLanguage.english.code == "en")
+    }
+
+    /// **言語の名前は訳さない。** 英語の画面でも「日本語」と出す。
+    @Test("言語の名前はその言語の綴りで出す")
+    func nativeNames() {
+        #expect(AppLanguage.japanese.title == "日本語")
+        #expect(AppLanguage.english.title == "English")
+    }
+}

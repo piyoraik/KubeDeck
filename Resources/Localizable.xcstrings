@@ -2980,6 +2980,22 @@
         }
       }
     },
+    "macOS のシステム設定（一般 › 言語と地域 › アプリケーション）からも変えられます。訳が無い言語では日本語で出ます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can also change this in macOS System Settings (General › Language & Region › Applications). Languages with no translation fall back to Japanese."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS のシステム設定（一般 › 言語と地域 › アプリケーション）からも変えられます。訳が無い言語では日本語で出ます。"
+          }
+        }
+      }
+    },
     "metrics-server": {
       "localizations": {
         "en": {
@@ -5168,6 +5184,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "サーバの証明書を検証できませんでした。認証情報ではなく TLS の問題です。\nTLS を覗くプロキシの下では、その CA を信頼させる環境変数（`REQUESTS_CA_BUNDLE` や `SSL_CERT_FILE` など）が要ります。\nKubeDeck はログインシェルの環境をそのまま子プロセスへ渡すので、シェルの設定ファイルでこれらを設定していれば効きます。ターミナルでだけ通る場合は、その設定が対話シェルより後で行われていないか確かめてください。"
+          }
+        }
+      }
+    },
+    "システムに従う": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Follow the system"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムに従う"
           }
         }
       }
@@ -9508,18 +9540,18 @@
         }
       }
     },
-    "接続先のコンテキストや Namespace の選択は残ります。コンテキストごとの色・別名・読み取り専用の指定も残ります（消すときは「コンテキスト」タブから）。": {
+    "接続先のコンテキストや Namespace の選択は残ります。コンテキストごとの色・別名・読み取り専用の指定も残ります（消すときは「コンテキスト」タブから）。言語は「システムに従う」に戻り、次の起動から反映されます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The context and namespace you have selected are kept. So are per-context colours, aliases and read-only marks (clear those from the Contexts tab)."
+            "value": "The context and namespace you have selected are kept. So are per-context colours, aliases and read-only marks (clear those from the Contexts tab). The language returns to “Follow the system” and takes effect the next time you open the app."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "接続先のコンテキストや Namespace の選択は残ります。コンテキストごとの色・別名・読み取り専用の指定も残ります（消すときは「コンテキスト」タブから）。"
+            "value": "接続先のコンテキストや Namespace の選択は残ります。コンテキストごとの色・別名・読み取り専用の指定も残ります（消すときは「コンテキスト」タブから）。言語は「システムに従う」に戻り、次の起動から反映されます。"
           }
         }
       }
@@ -10368,6 +10400,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "橙"
+          }
+        }
+      }
+    },
+    "次に KubeDeck を起動したときに変わります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Takes effect the next time you open KubeDeck"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "次に KubeDeck を起動したときに変わります"
           }
         }
       }
@@ -11636,6 +11684,22 @@
         }
       }
     },
+    "表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "表示"
+          }
+        }
+      }
+    },
     "表示する Pod を絞る。取得は続いているので、「すべての Pod」に戻せば絞っていたあいだの行も出る": {
       "localizations": {
         "en": {
@@ -11856,6 +11920,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "規則 %lld"
+          }
+        }
+      }
+    },
+    "言語": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Language"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語"
           }
         }
       }
