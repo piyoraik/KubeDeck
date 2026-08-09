@@ -6164,6 +6164,22 @@
         }
       }
     },
+    "レプリカ数は %lld〜%lld の範囲で指定してください。": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "レプリカ数は %lld〜%lld の範囲で指定してください。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replicas must be between %1$lld and %2$lld."
+          }
+        }
+      }
+    },
     "レプリカ数を変える": {
       "localizations": {
         "en": {
