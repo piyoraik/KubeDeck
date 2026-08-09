@@ -21,8 +21,18 @@ struct SettingRow: Identifiable, Sendable {
 
     /// 未設定を「未設定」と書く。空文字をそのまま出すと、値が空なのか
     /// 項目が無いのか区別が付かない。
-    init(_ label: LocalizedStringResource, _ value: String?, level: StatusLevel? = nil) {
-        self.init(id: label.key, label: String(localized: label), value: value, level: level)
+    ///
+    /// - Parameter ordinal: 同じ見出しが番号違いで並ぶときの番号。
+    ///   **補間の入った見出しを、そのまま id にしない。**
+    ///   `LocalizedStringResource.key` は**書式指定子のまま**（`"規則 %lld"`）なので、
+    ///   `規則 1` も `規則 2` も**同じ鍵**になる。`ForEach` の同一性が重なると
+    ///   SwiftUI は行を取り違える（落ちる・入れ替わる）。鍵に出てこない値は
+    ///   ここで明示的に渡す。
+    init(_ label: LocalizedStringResource, _ value: String?, level: StatusLevel? = nil,
+         ordinal: Int? = nil) {
+        self.init(
+            id: label.key + (ordinal.map { "#\($0)" } ?? ""),
+            label: String(localized: label), value: value, level: level)
     }
 
     /// 見出しがクラスタから来るもの（ボリューム名・ポート名・キー名・汚れの
@@ -54,8 +64,11 @@ struct SettingGroup: Identifiable, Sendable {
     /// `String(localized:)` を通してから渡す。
     var subtitle: String?
 
-    init(title: LocalizedStringResource, rows: [SettingRow], subtitle: String? = nil) {
-        self.id = title.key + (subtitle ?? "")
+    /// - Parameter ordinal: `SettingRow` と同じ理由。補間の入った見出しは
+    ///   鍵が書式指定子のままなので、番号違いを区別できない。
+    init(title: LocalizedStringResource, rows: [SettingRow], subtitle: String? = nil,
+         ordinal: Int? = nil) {
+        self.id = title.key + (subtitle ?? "") + (ordinal.map { "#\($0)" } ?? "")
         self.title = String(localized: title)
         self.rows = rows
         self.subtitle = subtitle
@@ -387,7 +400,8 @@ enum SettingsDigest {
                     SettingRow("API グループ", apiGroups(rule["apiGroups"])),
                     SettingRow("名前を限定", list(rule["resourceNames"])),
                     SettingRow("URL", list(rule["nonResourceURLs"])),
-                ])
+                ],
+                ordinal: index)
         }
     }
 
@@ -411,10 +425,12 @@ enum SettingsDigest {
                 SettingGroup(
                     title: "対象 \(index + 1)",
                     rows: [
-                        SettingRow("種別", subject["kind"]?.stringValue),
-                        SettingRow("名前", subject["name"]?.stringValue),
-                        SettingRow("Namespace", subject["namespace"]?.stringValue),
-                    ]))
+                        SettingRow("種別", subject["kind"]?.stringValue, ordinal: index),
+                        SettingRow("名前", subject["name"]?.stringValue, ordinal: index),
+                        SettingRow(
+                            "Namespace", subject["namespace"]?.stringValue, ordinal: index),
+                    ],
+                    ordinal: index))
         }
         return groups
     }
@@ -604,9 +620,11 @@ enum SettingsDigest {
                 rows.append(
                     SettingRow(
                         "規則 \(index + 1)",
-                        peers.isEmpty ? fromAnywhere : peers.joined(separator: ", ")))
+                        peers.isEmpty ? fromAnywhere : peers.joined(separator: ", "),
+                        ordinal: index))
                 if !ports.isEmpty {
-                    rows.append(SettingRow("　ポート", ports.joined(separator: ", ")))
+                    rows.append(
+                        SettingRow("　ポート", ports.joined(separator: ", "), ordinal: index))
                 }
             }
             groups.append(SettingGroup(title: title, rows: rows))

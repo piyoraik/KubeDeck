@@ -8,6 +8,12 @@ on:
     branches: [main]
   pull_request:
 
+# **要るぶんだけ渡す。** ここは建てて確かめるだけで、書き戻すものが無い。
+# 既定はリポジトリの設定次第で write になりうるので、明示で絞る
+# （`pull_request` は fork からも走る）。
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-latest

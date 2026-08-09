@@ -165,10 +165,24 @@ $NOTES
 </rss>
 XML
 
-# 目録そのものにも署名する。差し替えられても Sparkle 側で気付ける。
-# **この後で appcast.xml を書き換えない。** 署名が合わなくなる。
-echo "==> sign_update (appcast)"
-sign --disable-signing-warning "$APPCAST"
+# **目録そのものには署名しない（できない）。**
+#
+# ここには以前 `sign --disable-signing-warning "$APPCAST"` があったが、
+# `sign_update` は署名を**標準出力に出すだけ**で、ファイルには何も埋めない。
+# 出力はどこにも捕まえていなかったので、**この行は 1 バイトも効いていなかった**。
+# それでいて「差し替えられても Sparkle 側で気付ける」というコメントが付いて
+# いたため、**無い保護を有ると読ませていた**（実際に appcast.xml を書き換えて
+# も Sparkle は何も言わない）。
+#
+# Sparkle が検証するのは **enclosure の `sparkle:edSignature`**（＝下で
+# `ENCLOSURE_ATTRS` に埋めた zip の署名）だけで、appcast そのものの署名を
+# 見る仕組みは持たない。目録の完全性は HTTPS と GitHub Releases が持つ。
+# 差し替えられても、**中身の zip は公開鍵と合う署名が無いかぎり適用されない**
+# ——ここが本当の関門。
+#
+# だから appcast.xml を後から書き換えること自体は検証を壊さない。
+# ただし `sparkle:version` と enclosure がずれると更新の判定が狂うので、
+# **直すときは書き換えずにこのスクリプトから作り直す。**
 
 echo
 echo "できました:"

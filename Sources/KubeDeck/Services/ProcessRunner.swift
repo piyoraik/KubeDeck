@@ -83,6 +83,35 @@ enum ProcessRunner {
     private static let queue = DispatchQueue(
         label: "com.piyoraik.KubeDeck.process", attributes: .concurrent)
 
+    /// 読み手・書き手は**専用のスレッドで走らせる。GCD のプールに載せない。**
+    ///
+    /// `run` は `queue` の上で 1 本スレッドを掴んだまま `group.wait()` で止まり、
+    /// **自分が待っている読み手を GCD に投げる**。スレッド上限（64）に当たると
+    /// 読み手が起動できず、待ち側は必ず時間切れになる。そうなるとアプリ側は
+    /// `timedOut` → `terminate()` → `SIGKILL` → 標準出力空、の経路に入るので、
+    /// **クラスタは正常なのに「返ってこない」系の表示が一斉に出る**。
+    ///
+    /// **別の `DispatchQueue` に分けても直らない。** 上限は root queue 単位で、
+    /// どの concurrent queue に投げても同じ予算を食う。一度
+    /// `ioQueue` を足して済ませかけたが、実測すると**数字が 1 つも動かなかった**
+    /// （同時 80 本で時間切れ 64 件、128 本で 128 件。旧実装と完全に同じ）。
+    /// 危うく、`release.sh` の appcast 署名と同じ「**無い保護を有ると書く**」を
+    /// やるところだった。
+    ///
+    /// 専用スレッドは上限の外なので、実測で 80 本・128 本とも**時間切れ 0 件**
+    /// （10.29 秒 → 2.22 秒）。本数は走っている kubectl の数で頭打ちになる。
+    private static func detach(
+        in group: DispatchGroup, _ work: @escaping @Sendable () -> Void
+    ) {
+        group.enter()
+        let thread = Thread {
+            work()
+            group.leave()
+        }
+        thread.stackSize = 512 << 10
+        thread.start()
+    }
+
     /// `input` を渡すと標準入力に流す（`kubectl replace -f -` 用）。
     ///
     /// **一時ファイルを経由しない。** 送るのは編集した YAML そのもので、
@@ -147,8 +176,26 @@ enum ProcessRunner {
             environment: environment, timeout: timeout)
     }
 
+    /// **鍵を持たせる。** 打ち切りの経路では、読み手がまだ `readToEnd()` で
+    /// 止まっているうちに待ち側が結果を組み立てる（2 度目の `group.wait` が
+    /// 時間切れになった場合。孫プロセスがパイプを掴んだまま残ると実際に起きる）。
+    /// 素の `var data` だと、**参照カウント付きの `Data` を同期なしで読み書き**
+    /// することになる。
     private final class DataBox: @unchecked Sendable {
-        var data = Data()
+        private let lock = NSLock()
+        private var storage = Data()
+
+        func set(_ data: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            storage = data
+        }
+
+        func value() -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
     }
 
     /// - Parameter handle: 外から止められるようにするための取っ手。
@@ -185,18 +232,18 @@ enum ProcessRunner {
         let outputBox = DataBox()
         let errorBox = DataBox()
         let group = DispatchGroup()
-        queue.async(group: group) {
-            errorBox.data = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
+        detach(in: group) {
+            errorBox.set((try? errorPipe.fileHandleForReading.readToEnd()) ?? Data())
         }
-        queue.async(group: group) {
-            outputBox.data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+        detach(in: group) {
+            outputBox.set((try? outputPipe.fileHandleForReading.readToEnd()) ?? Data())
         }
         if let input, let inputPipe {
             // **書き込みも別の実行単位にする。** パイプのバッファ（64KB 程度）
             // より大きい入力を呼び出し側のまま書くと、相手が読み始める前に
             // 埋まってこちらが止まる。**閉じるまでが一組** — 閉じないと
             // kubectl は標準入力の終わりを待ち続ける。
-            queue.async(group: group) {
+            detach(in: group) {
                 try? inputPipe.fileHandleForWriting.write(contentsOf: input)
                 try? inputPipe.fileHandleForWriting.close()
             }
@@ -221,10 +268,10 @@ enum ProcessRunner {
         }
         process.waitUntilExit()
 
-        let stderr = String(decoding: errorBox.data, as: UTF8.self)
+        let stderr = String(decoding: errorBox.value(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return CommandResult(
-            exitCode: process.terminationStatus, stdout: outputBox.data, stderr: stderr,
+            exitCode: process.terminationStatus, stdout: outputBox.value(), stderr: stderr,
             timedOut: timedOut)
     }
 
@@ -240,10 +287,24 @@ enum ProcessRunner {
             defer { lock.unlock() }
             pending.append(chunk)
             var lines: [String] = []
-            while let index = pending.firstIndex(of: 0x0A) {
-                let line = pending[pending.startIndex..<index]
-                lines.append(String(decoding: line, as: UTF8.self))
-                pending = pending[pending.index(after: index)...]
+            // **再スライスで済ませない。** `pending = pending[i...]` は同じ
+            // backing storage の範囲をずらすだけで、消費済みの前半を解放しない。
+            // `kubectl logs -f` が流した**全量**を掴み続けることになり、実測
+            // （`phys_footprint`）で 50MB 流すと +52.6MB。捨てれば +0.0MB。
+            // 表示側が 5,000 行で切っていても、こちらには効かない。
+            //
+            // **ただし 1 行ごとに捨てない。** `removeSubrange` は残りを詰めるので
+            // O(残り) が行数ぶん掛かる。実測で 64KB・547 行の塊が
+            // **1.1 秒 → 5.2 秒（113 → 24 MB/s）**に落ちた。改行を先に全部
+            // 走査して切り出し、**詰め直しは塊につき 1 回**にすれば、
+            // メモリも速度も両立する（実測 1.155 秒 / 108 MB/s）。
+            var cursor = pending.startIndex
+            while let index = pending[cursor...].firstIndex(of: 0x0A) {
+                lines.append(String(decoding: pending[cursor..<index], as: UTF8.self))
+                cursor = pending.index(after: index)
+            }
+            if cursor > pending.startIndex {
+                pending.removeSubrange(pending.startIndex..<cursor)
             }
             return lines
         }

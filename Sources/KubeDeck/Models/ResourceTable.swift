@@ -1048,8 +1048,17 @@ enum ResourceTable {
     /// 設定を「何も効いていない」と表示する**。
     static func policyTargets(_ policy: K8sObject) -> String {
         let selector = policySelector(policy)
-        guard !selector.isEmpty else { return allPods }
-        return joined(selector.map { "\($0.key)=\($0.value)" }.sorted(), limit: 3)
+        guard selector.isEmpty else {
+            return joined(selector.map { "\($0.key)=\($0.value)" }.sorted(), limit: 3)
+        }
+        // **`{}` と `matchExpressions` を同じ空に潰さない。** 空の `podSelector`
+        // は「その Namespace のすべての Pod」だが、`matchExpressions` だけの
+        // セレクタは**こちらが解釈できない部分集合**。潰すと、限られた Pod に
+        // しか効いていない設定を「すべての Pod」と断定することになる ——
+        // 上のコメントが警戒している取り違えの、ちょうど逆向き。
+        // PDB 側（`policySelectorText`）はすでにこの 2 つを書き分けている。
+        let expressions = policy.spec?.path("podSelector.matchExpressions")?.arrayValue ?? []
+        return expressions.isEmpty ? allPods : bySelectorExpression
     }
 
     static func policySelector(_ policy: K8sObject) -> [String: String] {

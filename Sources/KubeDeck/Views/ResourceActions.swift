@@ -424,7 +424,14 @@ private struct TypedConfirmSheet: View {
 
             HStack {
                 Spacer()
+                // **Escape で閉じられるようにする。** `role: .cancel` が
+                // Escape を拾うのは `confirmationDialog` / `alert` の中だけで、
+                // 自前の `VStack` を載せた `.sheet` では見た目の役割しか付かない。
+                // 既定アクション（Return）は明示してあるのに逃げ道が無い、
+                // という非対称になっていた —— しかもここは Namespace の削除で、
+                // **既定アクションが「削除する」**である。
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("削除する", role: .destructive) {
                     let action = action
                     dismiss()
@@ -881,7 +888,11 @@ struct DrainSheet: View {
     @State private var options = Kubectl.DrainOptions()
     @State private var preview: String?
     @State private var previewFailure: String?
-    @State private var isChecking = false
+    /// **`true` から始める。** `.task` が走るのは最初の描画のあとなので、
+    /// `false` だと 1 フレームだけ「退避させる」が有効になる。前のシートから
+    /// Return を押しっぱなしにしていると、そこを通り抜けて予告を見ないまま
+    /// drain が走る。
+    @State private var isChecking = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -924,12 +935,19 @@ struct DrainSheet: View {
             HStack {
                 Spacer()
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("退避させる") {
                     let options = options
                     dismiss()
                     Task { await store.drain(node, options: options) }
                 }
                 .keyboardShortcut(.defaultAction)
+                // **予告を取っている最中は押させない。** このシートは
+                // `--dry-run=server` に同じ判断をさせて、その答えを見せるために
+                // ある。取得中に Return を押すと、**安全のために置いた予告を
+                // 1 文字も見ないまま drain が走る**（`isChecking` は
+                // ProgressView にだけ効いていて、ボタンには効いていなかった）。
+                .disabled(isChecking)
             }
         }
         .padding(20)
@@ -1053,6 +1071,7 @@ struct RollbackSheet: View {
             HStack {
                 Spacer()
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("戻す") {
                     let revision = selected
                     dismiss()
@@ -1195,6 +1214,10 @@ struct ScaleSheet: View {
     let object: K8sObject
 
     @State private var replicas: Int = 0
+    /// 開いた時点のレプリカ数。**上限をここから決める。**
+    /// いまの値から決めると、欄に打ち込んだ値のぶん上限も伸びてしまい、
+    /// 縛りとして働かない（`9999` を打てば上限も `9999` になる）。
+    @State private var initialReplicas: Int = 0
 
     /// HPA が管理しているか。**「調べていない」「管理下にある」「管理下に
     /// ない」「調べられなかった」を 1 つにしない** — 特に最後の 2 つを
@@ -1213,7 +1236,13 @@ struct ScaleSheet: View {
     /// レプリカ数のワークロード（300 で動いているものなど）を開くと、
     /// `Stepper` が範囲の外の値を扱うことになる。丸められたまま「適用」を
     /// 押せば**意図しない縮小**になるので、いまの値より下の上限を出さない。
-    private var range: ClosedRange<Int> { 0...max(200, replicas) }
+    /// `Stepper` の上げ下げの幅。
+    private var range: ClosedRange<Int> { 0...max(200, initialReplicas) }
+
+    /// 欄に打ち込める幅。**`Stepper` の幅とは分ける** —— あちらは押しやすさの
+    /// 都合で 200 に丸めてあるが、欄には「200 を超えて増やす」という正当な
+    /// 用途がある。ここで縛りたいのは桁の打ち間違いのほうなので、上限は広く取る。
+    private var replicaRange: ClosedRange<Int> { 0...10_000 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1233,6 +1262,8 @@ struct ScaleSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 70)
                     .multilineTextAlignment(.trailing)
+                    // 空のタイトルは読み上げる名前も無いということ。
+                    .accessibilityLabel(Text("レプリカ数"))
             }
 
             autoscalerNotice
@@ -1243,20 +1274,47 @@ struct ScaleSheet: View {
                     .foregroundStyle(Palette.textColor(for: .warning))
             }
 
+            // **`Stepper` の範囲は欄には効かない。** `in: range` が縛るのは
+            // 上下のボタンだけで、欄は `$replicas` を直に書くので `-3` も
+            // `99999` もそのまま入る。
+            //
+            // **だからといって黙って書き換えない。** 一度 `onChange` で範囲へ
+            // 丸めたが、それだと **5 を 500 に増やす正当な操作が 200 に
+            // 化けた**（しかも逃げ道が無い）。しかも `TextField` の確定は
+            // Return なので、同じ打鍵で「丸め」と「既定アクション（適用）」が
+            // 走り、**画面の値と kubectl へ渡る値が食い違いうる** ——
+            // 打ち間違いを止めるつもりが、逆のことをしていた。
+            //
+            // 押せば失敗すると分かっているものを出さない、といういつもの形で、
+            // 範囲の外では「適用」を無効にして理由を書く。
+            if !replicaRange.contains(replicas) {
+                Label(
+                    "レプリカ数は \(replicaRange.lowerBound)〜\(replicaRange.upperBound) の範囲で指定してください。",
+                    systemImage: StatusLevel.warning.symbol)
+                    .font(.caption)
+                    .foregroundStyle(Palette.textColor(for: .warning))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Spacer()
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("適用") {
                     let target = replicas
                     dismiss()
                     Task { await store.scale(object, to: target) }
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(!replicaRange.contains(replicas))
             }
         }
         .padding(20)
         .frame(width: 340)
-        .onAppear { replicas = object.spec?["replicas"]?.intValue ?? 0 }
+        .onAppear {
+            replicas = object.spec?["replicas"]?.intValue ?? 0
+            initialReplicas = replicas
+        }
         .task {
             switch await store.autoscalers(for: object) {
             case .success(let found):

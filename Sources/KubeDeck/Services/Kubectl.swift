@@ -466,16 +466,44 @@ actor Kubectl {
         "SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL", "AUTH", "SESSION",
     ]
 
+    /// **名前そのものが「場所」を名乗っているもの。** ここに当たる名前だけ、
+    /// 値の形を見て見せる側に倒す。`AWS_SHARED_CREDENTIALS_FILE` や
+    /// `GOOGLE_APPLICATION_CREDENTIALS` は秘密を思わせる名前だが、入っているのは
+    /// 指し先で、まさに確かめたい値。
+    private static let locationHints = [
+        "_FILE", "_PATH", "_DIR", "_SOCK", "_BUNDLE", "_CONFIG", "CREDENTIALS",
+    ]
+
     static func hidesValue(name: String, value: String) -> Bool {
         // **名前に頼りきらない。** `DATABASE_URL=postgres://user:pass@host` のような
         // 値は、名前のどれにも当たらないのに認証情報を含む。この画面は設定画面で
         // あって、そのまま貼って共有されうる場所なので、形でも見る。
         if containsEmbeddedCredentials(value) { return true }
+
+        let upper = name.uppercased()
+        let hintsSecret = secretHints.contains { upper.contains($0) }
+        // **値の形より名前を先に見る。** 以前は「`/` で始まれば場所」を先に
+        // 判定しており、`AWS_SECRET_ACCESS_KEY` のような名前でも値が `/` で
+        // 始まるだけで**そのまま表示していた**。base64 の資格情報は `/` を
+        // 含む（AWS のシークレットキーは 40 文字の base64）ので、これは
+        // 64 分の 1 の確率で起きる。名前が秘密を名乗っていて、かつ場所を
+        // 名乗っていないなら、値が何に見えようと伏せる。
+        if hintsSecret, !locationHints.contains(where: { upper.contains($0) }) { return true }
         // 場所を指しているなら見せる。CA や kubeconfig の指し先が合っているかを
         // 確かめる場所なので、伏せると診断にならない。
-        if value.hasPrefix("/") || value.hasPrefix("~") { return false }
-        let upper = name.uppercased()
-        return secretHints.contains { upper.contains($0) }
+        if looksLikeFilePath(value) { return false }
+        return hintsSecret
+    }
+
+    /// 値が「場所」に見えるか。
+    ///
+    /// **先頭が `/` なだけでは足りない。** 上と同じ理由で、base64 の資格情報が
+    /// 場所に化ける。区切りの `/` か拡張子の `.` を、先頭より後ろに要求する
+    /// （base64 の字種に `.` は無い）。
+    private static func looksLikeFilePath(_ value: String) -> Bool {
+        guard value.hasPrefix("/") || value.hasPrefix("~") else { return false }
+        let rest = value.dropFirst()
+        return rest.contains("/") || rest.contains(".")
     }
 
     /// `scheme://user:pass@host` の形。**`user@host` は伏せない** —
@@ -1124,7 +1152,15 @@ actor Kubectl {
         guard !unique.isEmpty else { return [] }
         let kind: ResourceKind = namespace == nil ? .clusterRole : .role
         var arguments = ["get", kind.resourceName]
-        arguments += unique
+        // 名前は Binding の `roleRef` から来る＝サーバが返した値。位置引数に
+        // 置くので、他と同じ規則で検める。
+        //
+        // **ここだけは投げずに落とす。** この画面は逆引きの補助情報なので、
+        // 名前が 1 つ変でも**残りのロールは出せる**ほうがよい（`--ignore-not-found`
+        // を付けてあるのと同じ判断）。操作系は投げて止める。
+        let checked = unique.compactMap { try? Self.checkedName($0) }
+        guard !checked.isEmpty else { return [] }
+        arguments += checked
         arguments += ["-o", "json", "--request-timeout=\(requestTimeout)",
                       "--ignore-not-found=true"]
         if let namespace, !namespace.isEmpty { arguments += ["-n", namespace] }
@@ -1137,7 +1173,7 @@ actor Kubectl {
     func yaml(
         resource: String, object: K8sObject, context: String
     ) async throws -> String {
-        var arguments = ["get", resource, object.name, "-o", "yaml",
+        var arguments = ["get", resource, try Self.checkedName(object.name), "-o", "yaml",
                          "--request-timeout=\(requestTimeout)"]
         if let namespace = object.namespace {
             arguments += ["-n", namespace]
@@ -1248,10 +1284,60 @@ actor Kubectl {
         ).stdout
     }
 
+    // MARK: - サーバが返した名前を、位置引数に置く前に検める
+
+    /// **`-` で始まる名前をそのまま kubectl に渡さない。**
+    ///
+    /// `Process.arguments` の配列渡しは**シェル**には安全だが、**kubectl 自身の
+    /// フラグ解析は素通りする**。実測（kubectl v1.32.13、到達しない kubeconfig）:
+    ///
+    /// ```
+    /// $ kubectl delete pods "--all" foo
+    /// error: name cannot be provided when a selector is specified   ← フラグとして食われた
+    /// ```
+    ///
+    /// つまり応答に `metadata.name: "--all"` を混ぜられるだけで、**1 件の削除が
+    /// その Namespace ぜんぶの削除に化ける**。確認の文面には `--all` という名前が
+    /// 出るだけなので、読み飛ばせば通る。同じ形が scale・patch・drain にもある。
+    ///
+    /// **`--` で切る手は使えない。** 実測で `--` より後ろは全部位置引数になるので、
+    /// この実装が名前の**後ろ**に置いている `--wait=false` / `-n` /
+    /// `--request-timeout` まで名前として食われる（`--request-timeout=1s` が効かず
+    /// 既定の 32s になるのを確認した）。だから名前のほうを検める。
+    ///
+    /// **RFC 1123 で弾かない。** RBAC の名前には `:` が入る
+    /// （`system:controller:deployment-controller`）ので、弾くと実在するクラスタで
+    /// ClusterRole を操作できなくなる。Kubernetes 自身が一部の種別に使っている
+    /// **path segment** の規則（空でない・`/` と `%` を含まない・`.` `..` でない）に、
+    /// 「`-` で始まらない」と「制御文字を含まない」を足す。後者は、この名前が
+    /// `ExecSheet` からターミナルへそのまま流れて OSC シーケンスとして解釈され
+    /// うるため。
+    ///
+    /// **黙って直さない。** 落とすでも読み替えるでもなく、そういう名前だと言って
+    /// 止める（「無い」と「取れていない」を混ぜないのと同じで、**変なものは変だと
+    /// 言う**）。一覧に出すぶんには無害なので、止めるのは操作の手前だけ。
+    static func checkedName(_ name: String) throws -> String {
+        func reject() -> CommandError {
+            CommandError(
+                command: "kubectl",
+                exitCode: -1,
+                message: String(localized: """
+                    サーバが返した名前が Kubernetes の名前として扱えないので、操作を中止しました: \(name)
+                    """))
+        }
+        guard !name.isEmpty, name != ".", name != ".." else { throw reject() }
+        guard !name.hasPrefix("-") else { throw reject() }
+        guard !name.contains("/"), !name.contains("%") else { throw reject() }
+        guard !name.unicodeScalars.contains(where: {
+            CharacterSet.controlCharacters.contains($0)
+        }) else { throw reject() }
+        return name
+    }
+
     // MARK: - 操作
 
     func delete(resource: String, object: K8sObject, context: String) async throws {
-        var arguments = ["delete", resource, object.name, "--wait=false"]
+        var arguments = ["delete", resource, try Self.checkedName(object.name), "--wait=false"]
         if let namespace = object.namespace {
             arguments += ["-n", namespace]
         }
@@ -1271,9 +1357,10 @@ actor Kubectl {
         var failures: [String] = []
 
         for (namespace, group) in groups.sorted(by: { $0.key < $1.key }) {
-            var arguments = ["delete", resource] + group.map(\.name) + ["--wait=false"]
-            if !namespace.isEmpty { arguments += ["-n", namespace] }
             do {
+                var arguments = ["delete", resource]
+                    + (try group.map { try Self.checkedName($0.name) }) + ["--wait=false"]
+                if !namespace.isEmpty { arguments += ["-n", namespace] }
                 try await run(arguments, context: context)
             } catch {
                 failures.append(
@@ -1300,7 +1387,8 @@ actor Kubectl {
 
     func scale(_ object: K8sObject, to replicas: Int, context: String) async throws {
         guard let kind = object.kind, kind.isScalable else { return }
-        var arguments = ["scale", kind.resourceName, object.name, "--replicas=\(replicas)"]
+        var arguments = ["scale", kind.resourceName, try Self.checkedName(object.name),
+                         "--replicas=\(replicas)"]
         if let namespace = object.namespace {
             arguments += ["-n", namespace]
         }
@@ -1377,7 +1465,10 @@ actor Kubectl {
             throw KubectlError.unsupportedRollout(
                 object.kind?.displayName ?? String(localized: "この種別"))
         }
-        var full = ["rollout"] + arguments + ["\(kind.resourceName)/\(object.name)"]
+        // `種別/名前` の形なので先頭が `-` にはならないが、名前そのものは
+        // 同じ規則で検める（`/` を含む名前をここで繋ぐと別の対象を指す）。
+        let name = try Self.checkedName(object.name)
+        var full = ["rollout"] + arguments + ["\(kind.resourceName)/\(name)"]
         if let namespace = object.namespace {
             full += ["-n", namespace]
         }
@@ -1447,7 +1538,7 @@ actor Kubectl {
     func patch(
         _ object: K8sObject, resource: String, patch: String, dryRun: Bool, context: String
     ) async throws -> String {
-        var arguments = ["patch", resource, object.name, "-p", patch,
+        var arguments = ["patch", resource, try Self.checkedName(object.name), "-p", patch,
                          "--request-timeout=\(requestTimeout)"]
         if let namespace = object.namespace {
             arguments += ["-n", namespace]
@@ -1494,7 +1585,9 @@ actor Kubectl {
     }
 
     func cordon(_ node: K8sObject, unschedulable: Bool, context: String) async throws {
-        try await run([unschedulable ? "cordon" : "uncordon", node.name], context: context)
+        try await run(
+            [unschedulable ? "cordon" : "uncordon", try Self.checkedName(node.name)],
+            context: context)
     }
 
     struct DrainOptions: Sendable, Equatable {
@@ -1525,7 +1618,7 @@ actor Kubectl {
         _ node: K8sObject, options: DrainOptions, context: String
     ) async throws -> String {
         // `requestTimeout` は "15s" のように単位まで含む。ここで `s` を足さない。
-        var arguments = ["drain", node.name,
+        var arguments = ["drain", try Self.checkedName(node.name),
                          "--ignore-daemonsets",
                          "--timeout=\(requestTimeout)",
                          "--request-timeout=\(requestTimeout)"]
@@ -1606,7 +1699,10 @@ actor Kubectl {
 
         switch target {
         case .pod(let name):
-            arguments.append(name)
+            // **ここも位置引数。** 純粋関数なので投げられないが、`pod/<名前>` の
+            // 形にすれば先頭が `-` にならず、フラグには化けない（`kubectl logs`
+            // は `種別/名前` を受け取る）。読み取り系なので止めるまではしない。
+            arguments.append(name.hasPrefix("-") ? "pod/\(name)" : name)
         case .selector(let labels):
             arguments.append("--selector=" + labels
                 .map { "\($0.key)=\($0.value)" }

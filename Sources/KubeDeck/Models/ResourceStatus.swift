@@ -148,9 +148,30 @@ enum StatusResolver {
         }
 
         let initStatuses = pod.status?["initContainerStatuses"]?.arrayValue ?? []
+        // **ネイティブ sidecar を「初期化が終わっていない」と読まない。**
+        //
+        // `spec.initContainers[].restartPolicy: Always`（1.29 で GA。Istio の
+        // sidecar 注入がこの形）は**終了しない**ので、状態は `terminated` でも
+        // `waiting` でもなく `running` のまま。素直に読むと下の `else` に落ちて
+        // `Init:0/1` で `break` し、**健全に動いている Pod の STATUS が橙のまま
+        // 固定される**。しかも READY 列は `containerStatuses` だけを見るので
+        // `1/1` と出て、同じ行の中で食い違う。
+        //
+        // kubectl の printer は 1.28 以降、`started` が立った restartable init
+        // container を読み飛ばす（`isRestartableInitContainer && *cs.Started`）。
+        // **ここを「分かりやすく」書き換えない** —— kubectl と表示がずれると、
+        // どちらが正しいのか確かめる手段が無くなる。
+        let restartableInit = Set(
+            restartableInitStatuses(of: pod).compactMap { $0["name"]?.stringValue })
+
         var initializing = false
         for (index, container) in initStatuses.enumerated() {
             let state = container["state"]
+            if let name = container["name"]?.stringValue,
+               restartableInit.contains(name),
+               container["started"]?.boolValue == true {
+                continue
+            }
             if let terminated = state?["terminated"] {
                 if terminated["exitCode"]?.intValue == 0 { continue }
                 if let terminatedReason = terminated["reason"]?.stringValue, !terminatedReason.isEmpty {
@@ -171,7 +192,13 @@ enum StatusResolver {
             break
         }
 
-        if !initializing {
+        // kubectl と同じく、`Initialized` が立っていれば初期化中とは見ない
+        // （`if !initializing || isPodInitializedConditionTrue(&pod.Status)`）。
+        // 上の読み飛ばしが効かない版・形のときの受け皿。
+        let isInitialized = (pod.status?["conditions"]?.arrayValue ?? []).contains {
+            $0["type"]?.stringValue == "Initialized" && $0["status"]?.stringValue == "True"
+        }
+        if !initializing || isInitialized {
             var hasRunning = false
             // kubectl と同じく後ろから見る。最後に見つかった異常が表に出る。
             for container in (pod.status?["containerStatuses"]?.arrayValue ?? []).reversed() {
@@ -205,18 +232,53 @@ enum StatusResolver {
     }
 
     /// READY 列（`2/3`）と RESTARTS 列。
+    ///
+    /// **ネイティブ sidecar も数に入れる。** kubectl の `printPod` は
+    /// restartable init container を `totalContainers` に足し、`Ready` なら
+    /// `readyContainers` にも足す。ここが `containerStatuses` しか見ていないと、
+    /// 同じ行が **kubectl では `1/2`、こちらでは `1/1`** になる。
+    ///
+    /// **`podStatus` だけ揃えても足りなかった。** sidecar を読み飛ばすように
+    /// した結果、STATUS は `Running` になったのに READY は `1/1` を返すので、
+    /// `health(for:)` の降格（Running なのに Ready が揃っていない）が発火せず、
+    /// **sidecar が Ready でない Pod がドーナツで完全に正常になる**。
+    /// kubectl の STATUS 列だけ見ていると気付けない状態を表に出す、という
+    /// `health` の役目がそこだけ抜けていた。
     static func podReady(_ pod: K8sObject) -> (ready: Int, total: Int) {
         let statuses = pod.status?["containerStatuses"]?.arrayValue ?? []
-        let ready = statuses.filter { $0["ready"]?.boolValue == true }.count
-        let total = statuses.isEmpty
+        var ready = statuses.filter { $0["ready"]?.boolValue == true }.count
+        var total = statuses.isEmpty
             ? (pod.spec?["containers"]?.arrayValue.count ?? 0)
             : statuses.count
+
+        for status in restartableInitStatuses(of: pod) {
+            total += 1
+            // kubectl は `Started` が立っているものだけ数に入れる。
+            if status["started"]?.boolValue == true, status["ready"]?.boolValue == true {
+                ready += 1
+            }
+        }
         return (ready, total)
     }
 
     static func podRestarts(_ pod: K8sObject) -> Int {
-        (pod.status?["containerStatuses"]?.arrayValue ?? [])
+        let normal = (pod.status?["containerStatuses"]?.arrayValue ?? [])
             .reduce(0) { $0 + ($1["restartCount"]?.intValue ?? 0) }
+        // sidecar の再起動も数える（kubectl と同じ。あれは落ちても Pod が
+        // 生き続けるので、数えないと再起動しているのに 0 のままになる）。
+        return normal + restartableInitStatuses(of: pod)
+            .reduce(0) { $0 + ($1["restartCount"]?.intValue ?? 0) }
+    }
+
+    /// `spec.initContainers[].restartPolicy: Always` に当たる initContainerStatus。
+    static func restartableInitStatuses(of pod: K8sObject) -> [JSONValue] {
+        let names = Set(
+            (pod.spec?["initContainers"]?.arrayValue ?? [])
+                .filter { $0["restartPolicy"]?.stringValue == "Always" }
+                .compactMap { $0["name"]?.stringValue })
+        guard !names.isEmpty else { return [] }
+        return (pod.status?["initContainerStatuses"]?.arrayValue ?? [])
+            .filter { names.contains($0["name"]?.stringValue ?? "") }
     }
 
     // MARK: Node

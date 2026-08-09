@@ -52,6 +52,48 @@ struct QuantityTests {
         #expect(Quantity.parse("Mi") == nil)
     }
 
+    /// **有限でない値・int64 を超える値で落ちない。**
+    ///
+    /// `resource.Quantity` は int64 に収まらない値を big-decimal で受けるので、
+    /// `cpu: "10E"`（1e19）も `memory: "1e40"` も**API サーバが通す正当な値**。
+    /// 整形が `Int(Double)` を経由していたので、そういう Pod の設定タブを
+    /// 開くだけで `Fatal error: Double value cannot be converted to Int` で
+    /// **アプリごと落ちた**（metrics-server が無い環境でも通る経路がある）。
+    ///
+    /// 0 ではなく nil にするのは、いつもの「無い」と「取れていない」を
+    /// 混ぜないため。
+    @Test("非有限値は nil。0 と混ぜない", arguments: [
+        "Infinity", "-Infinity", "nan", "1e400",
+    ])
+    func nonFiniteIsNil(text: String) {
+        #expect(Quantity.parse(text) == nil)
+    }
+
+    /// **読めた値を「取れていない」ことにしない。** int64 に収まらない
+    /// quantity（`10E` = 1e19、`10Ei` = 1.15e19）は正しく読めているので、
+    /// nil にはしない。落ちないことのほうを整形側で担保する。
+    @Test("int64 を超える quantity も読めた値として返す")
+    func hugeButReadable() throws {
+        #expect(try #require(Quantity.parse("10E")) == 1e19)
+        #expect(try #require(Quantity.parse("10Ei")) == 10 * 1_152_921_504_606_846_976)
+        // 落ちないこと（以前はここで trap した）。
+        #expect(!Quantity.formatCPU(cores: 1e19).isEmpty)
+        #expect(!Quantity.formatMemory(bytes: 1.15e19).isEmpty)
+    }
+
+    /// 整形側にも網を張る。合計や割り算の結果は `parse` を通らずに来る。
+    @Test("整形は Int を経由しない（落ちずに出す）")
+    func formattingNeverTraps() {
+        #expect(Quantity.formatCPU(cores: 1e19) == "10000000000000000000")
+        #expect(Quantity.formatCPU(cores: .infinity) == "—")
+        #expect(Quantity.formatCPU(cores: .nan) == "—")
+        #expect(Quantity.formatMemory(bytes: 1e40) != "")
+        #expect(Quantity.formatMemory(bytes: .infinity) == "—")
+        #expect(Quantity.formatPercent(.infinity) == "—")
+        // ふつうの値は今までどおり。
+        #expect(Quantity.formatPercent(0.5) == "50%")
+    }
+
     // MARK: - 割合
 
     /// **分母が 0 のときに `0%` と出さない。**

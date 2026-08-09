@@ -259,6 +259,7 @@ struct YAMLEditSheet: View {
             Spacer()
 
             Button("やめる", role: .cancel) { dismiss() }
+                .keyboardShortcut(.cancelAction)
                 .disabled(isApplying)
 
             switch phase {

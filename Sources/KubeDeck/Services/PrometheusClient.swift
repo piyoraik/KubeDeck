@@ -17,8 +17,23 @@ struct PrometheusEndpoint: Sendable, Hashable, Codable {
         var components = URLComponents()
         components.queryItems = query
         let encoded = components.percentEncodedQuery ?? ""
-        return "/api/v1/namespaces/\(namespace)/services/\(service):\(port)"
+        return "/api/v1/namespaces/\(Self.segment(namespace))"
+            + "/services/\(Self.segment(service)):\(port)"
             + "/proxy/api/v1/\(apiPath)?\(encoded)"
+    }
+
+    /// パスの 1 区切りとして安全な形にする。
+    ///
+    /// **組み立てた文字列をそのまま `kubectl get --raw` へ渡している**ので、
+    /// `/` や `..` が入ると Go 側で正規化され、プロキシではない別の API パスに
+    /// 届く。本物の k8s の Service 名は RFC 1035 ラベルしか許さないうえ、
+    /// 手で指定する欄も本人の入力なので**権限の境界は越えない**（届く先は
+    /// その人の資格情報で許された範囲だけ）。それでも、組み立てた先が
+    /// 意図と違う場所を指しうる状態は残さない。
+    private static func segment(_ value: String) -> String {
+        value.addingPercentEncoding(
+            withAllowedCharacters: CharacterSet.alphanumerics
+                .union(CharacterSet(charactersIn: "-._"))) ?? ""
     }
 }
 

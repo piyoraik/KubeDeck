@@ -961,7 +961,16 @@ private struct ListSummaryPane: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
 
-                if objects.isEmpty {
+                if !isSettled {
+                    // **まだ数えていないことを「0 件」「ありません」と書かない。**
+                    // このペインは選択が無いあいだ常に出るので、`reload()` が
+                    // 返る前も失敗した後も描かれる。中央の一覧は正しく
+                    // `LoadingView` / 失敗表示を出しているのに、その真横だけが
+                    // 「表示するものがありません。」と断定していた（兄弟の
+                    // `ClusterSummaryPane` は `hasOverviewData` を見て正しく
+                    // 行ごと出さない）。**重ねて言わず、何も出さない。**
+                    EmptyView()
+                } else if objects.isEmpty {
                     Text("表示するものがありません。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1018,11 +1027,22 @@ private struct ListSummaryPane: View {
             Text(target.displayName)
                 .font(.headline)
             Spacer(minLength: 6)
-            Text("\(objects.count) 件")
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
         }
+    }
+
+    /// 数えた結果として出してよいか。**「まだ数えていない」と「0 件」を分ける印。**
+    ///
+    /// **`errorMessage` だけを見ない。** あれは取得の失敗とは限らず、
+    /// `perform` の失敗や読み取り専用の断り（`refuseIfReadOnly`）でも立つ。
+    /// それで丸ごと隠すと、**読み取り専用のクラスタで「削除」を押しただけで
+    /// 右パネルの要約が消える**（一覧の行は全部出ているのに）。⌘R のたびに
+    /// 一瞬消えるのも同じ理由。
+    ///
+    /// 出せる中身があるなら出す。隠すのは**まだ 1 件も無く、かつ取得が
+    /// 済んでいない**ときだけ ——「無い」と「取れていない」を分けたいのは
+    /// そこだから。
+    private var isSettled: Bool {
+        !objects.isEmpty || (!store.isLoading && store.errorMessage == nil)
     }
 
     private func countRow(label: String, count: Int, level: StatusLevel?) -> some View {

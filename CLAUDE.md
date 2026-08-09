@@ -138,6 +138,18 @@ plutil -extract "削除しますか？" raw -o - "$APP/Contents/Resources/en.lpr
 CRD の列だけは別で、見出しがサーバから来る（`ResourceColumn(serverTitle:)`）。
 **訳す先が無い**ので鍵もその名前をそのまま使う。
 
+**そして、補間の入った見出しは鍵として一意ではない。** `LocalizedStringResource.key`
+は**書式指定子のまま**なので、`規則 1` も `規則 2` も鍵は `"規則 %lld"`。
+`SettingGroup.id` / `SettingRow.id` を鍵から作っている以上、**番号違いが全部
+同じ id になる**（カタログに `"規則 %lld"` / `"対象 %lld"` が実在することで裏が
+取れる）。`ForEach` の同一性が重なると SwiftUI は行を取り違える。`cluster-admin`
+のように規則が複数ある Role、subject が複数の Binding、規則が複数の
+NetworkPolicy で**ふつうに起きる**。
+
+鍵に出てこない値は `ordinal:` で明示的に渡して id に混ぜる（`RBACTests` が
+「id が重ならない」を見ている）。**見出しの文言は変えない** —— 番号は人が読む
+ためにそのまま残す。
+
 ### 文をつなぎ合わせて組まない
 
 行の長さに収めるための `+` は、**断片ごとに鍵を作る**。訳す側は語順を変えられない
@@ -277,6 +289,53 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 
 確認は、Finder 相当の最小環境でアプリを起こして子プロセスの環境を見る。`env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=... SHELL=/bin/zsh KubeDeck.app/Contents/MacOS/KubeDeck` で起動し、`ps -Ewwp <kubectl の pid>` の `PATH` に**シェルの設定でしか足されない場所**（このマシンなら `~/.bun/bin`）が入っていること。
 
+### サーバが返した名前を、位置引数に置く前に検める
+
+**`Process.arguments` の配列渡しは、シェルには安全でも kubectl のフラグ解析には
+素通り。** 実測（v1.32.13、到達しない kubeconfig）:
+
+```
+$ kubectl delete pods "--all" foo
+error: name cannot be provided when a selector is specified   ← --all がフラグとして食われた
+```
+
+つまり応答に `metadata.name: "--all"` を持つオブジェクトを混ぜられるだけで、
+**1 件の削除がその Namespace ぜんぶの削除に化ける**。確認の文面には `--all` と
+いう名前が出るだけなので、読み飛ばせば通る。同じ形が `scale` / `patch` /
+`drain` / `cordon` にもある。本物の API サーバは CREATE 時に名前を検証するので
+正常なクラスタからは出せないが、**このアプリは自分が管理していないクラスタに
+繋ぐ道具**で、集約 API サーバや間に挟まる proxy が応答を組む経路もある。
+
+**`--` で切る手は使えない。** 実測で `--` より後ろは全部位置引数になるので、
+名前の**後ろ**に置いている `--wait=false` / `-n` / `--request-timeout` まで
+名前として食われる（`--request-timeout=1s` が効かず既定の 32s になった）。
+だから名前のほうを検める（`Kubectl.checkedName`）。
+
+**RFC 1123 で弾かない。** RBAC の名前には `:` が入る
+（`system:controller:deployment-controller`）ので、弾くと実在するクラスタで
+ClusterRole を操作できなくなる。Kubernetes 自身が一部の種別に使っている
+**path segment** の規則（空でない・`/` と `%` を含まない・`.` `..` でない）に、
+「`-` で始まらない」と「制御文字を含まない」を足す。後者は、名前が `ExecSheet`
+からターミナルへ流れて OSC シーケンスとして解釈されうるため。
+
+**黙って直さない。落とさない。** そういう名前だと言って操作を中止する
+（`KubectlTests`）。一覧に出すぶんには無害なので、止めるのは操作の手前だけ。
+
+### 環境変数の伏せ字は、値の形より名前を先に見る
+
+`hidesValue` は「`/` か `~` で始まれば場所だから見せる」を**名前の判定より先**に
+置いていた。値が `/` で始まりさえすれば、名前が何であろうと平文で出る。
+**AWS のシークレットアクセスキーは 40 文字の base64（`A-Za-z0-9+/`）なので、
+64 分の 1 の確率で `/` から始まる。** この画面は「そのまま貼って共有されうる
+場所」として作ってあるので、そこが漏れ口になる。しかも値次第で伏せたり伏せ
+なかったりするので、当人は気付けない。
+
+いまは名前を先に見て、**秘密を思わせる名前は値が何に見えても伏せる**。
+ただし名前そのものが場所を名乗るもの（`_FILE` / `_PATH` / `_SOCK` /
+`CREDENTIALS` など）は、いままでどおり指し先を見せる ——
+`AWS_SHARED_CREDENTIALS_FILE` や `GOOGLE_APPLICATION_CREDENTIALS` に入って
+いるのは指し先で、まさに確かめたい値だから。
+
 ### 権限で拒まれたときは、押したあとに言う
 
 **押す前に調べる作りにしていない。** `kubectl auth can-i --list` は **JSON を
@@ -334,6 +393,67 @@ kubectl 本体は決まった場所を順に見れば見つかるが、kubeconfi
 `ProcessHandle` を止める（ログの追従と同じ仕組みを取得系にも通す）。
 
 打ち切りは `terminate()` → 2 秒待って駄目なら `SIGKILL`。確認は、返ってこない認証プラグイン（`sleep` するだけのスクリプト）を `command:` に指定した kubeconfig で起動し、`ps -eo ppid,args` で本数を数える。実行中のぶん（`async let` の 4 本×重なり）を超えて増えないこと、`ppid` が 1 のプラグインが残らないこと。
+
+### 読み手は GCD のプールに載せない（キューを分けても直らない）
+
+`run` は `queue` の上で 1 本スレッドを掴んだまま `group.wait()` で止まり、
+**自分が待っている読み手を GCD に投げる**。スレッド上限に当たると読み手が
+起動できず、待ち側は必ず時間切れになる。越えると `timedOut` →
+`terminate()` → `SIGKILL` → 標準出力空、の経路に落ちるので、**クラスタは
+正常なのに「返ってこない」系の表示が一斉に出る**。
+
+**別の `DispatchQueue` に分けても直らない。** 上限は root queue 単位なので、
+どの concurrent queue に投げても同じ予算を食う。実測（読み手の実作業 0.2 秒・
+待ち上限 3 秒。時間切れになった run の数）:
+
+| 同時 run | 同じ queue | 別 queue に分割 | 専用スレッド |
+|---|---|---|---|
+| 64 | 64 | **64**（変わらず） | **0** |
+| 80 | 64 | **64**（変わらず） | **0** |
+| 128 | 128 | **128**（変わらず） | **0** |
+
+**一度これを `ioQueue` を足して直したことにしかけた。** 数字を取ってみたら
+1 つも動いていなかった —— `release.sh` の appcast 署名で「無い保護を有ると
+読ませていた」と自分で指摘したのと、まったく同じことをやるところだった。
+**直したと書く前に測る。**
+
+いまは `ProcessRunner.detach(in:)` が `Thread` を起こす（上限の外）。本数は
+走っている kubectl の数で頭打ちになる。
+
+**打ち切りの経路では、読み手がまだ止まっているうちに結果を組み立てる**
+（2 度目の `group.wait` も時間切れになった場合。孫プロセスがパイプを掴んだまま
+残ると実際に起きる）。素の `var data` だと**参照カウント付きの `Data` を同期
+なしで読み書き**することになるので、`DataBox` に鍵を持たせる。
+
+### 消費した先頭を、再スライスで捨てたことにしない
+
+`LineBuffer` は `pending = pending[pending.index(after: index)...]` としていたが、
+`Data` の再スライスは**同じ backing storage の範囲をずらすだけ**で、消費済みの
+前半を解放しない。つまり `kubectl logs -f` が流した**全量**を掴み続ける。
+実測（`phys_footprint`）:
+
+| 投入した総量 | footprint |
+|---|---|
+| 10MB | 13.0MB |
+| 30MB | 32.0MB |
+| 50MB | 51.1MB |
+
+捨てれば横ばい。**表示側の 5,000 行の上限はここには効かない**（あれは消費した
+あとの話）。毎秒数百行を出す Pod を開いて放置すると、1MB/s で 1 時間 3.6GB。
+
+**ただし 1 行ごとに捨てない。** `removeSubrange` は残りを詰めるので、行数ぶん
+O(残り) が掛かる。改行を先に全部走査して切り出し、**詰め直しは塊につき 1 回**に
+する。実測（64KB・547 行の塊）:
+
+| | 速度 | footprint 増 |
+|---|---|---|
+| 再スライス（元） | 129 MB/s | **+51.8MB** |
+| 1 行ごとに `removeSubrange` | **69 MB/s** | +0.1MB |
+| まとめて 1 回（いま） | **133 MB/s** | **+0.0MB** |
+
+**片方だけ直すと、もう片方が悪くなる。**両方測る。差し替えたら、旧実装との
+差分をランダム入力（多チャンク・行途中・UTF-8 をチャンク境界で割る・連続改行）で
+突き合わせること。
 
 **概要画面は 1 回の kubectl でまとめて取る。** 種別ごとに投げると 13 プロセス起動することになる。カンマ区切りで複数種別を get すると `items` に `kind` が入るので、呼び出し側で振り分けられる（単一種別の get では `kind` が空になる版もあるため、`K8sObject.list(from:assuming:)` で要求種別を補う）。
 
@@ -658,6 +778,47 @@ API サーバに掛ける負荷が減る話として持つ。
 kubectl 側の表示が変わったかを疑うときだけ、実クラスタと突き合わせる
 （`kubectl get pods -A --no-headers` の STATUS / READY / RESTARTS）。
 
+### ネイティブ sidecar を「初期化が終わっていない」と読まない
+
+`spec.initContainers[].restartPolicy: Always`（1.29 で GA。Istio の sidecar 注入が
+この形）は**終了しない**ので、状態は `terminated` でも `waiting` でもなく
+`running` のまま。素直に読むと `Init:0/1` の枝に落ちて `break` し、**健全に動いて
+いる Pod の STATUS が橙のまま固定される**。しかも READY 列は `containerStatuses`
+だけを見るので `1/1` と出て、**同じ行の中で食い違う**。`health(for:)` は
+`text == "Running"` を条件にしているので降格の判定にも入らない。
+
+kubectl の printer は 1.28 以降、`started` が立った restartable init container を
+読み飛ばし、ループ後の判定も `!initializing || isPodInitializedConditionTrue` に
+なっている。**同じ形にする**（片方だけでは足りない ——
+読み飛ばさないと `reason` が `Init:0/1` に汚れたまま先へ進む）。
+
+**そして STATUS だけ揃えても足りない。** kubectl は同じ `printPod` の中で
+restartable init を `totalContainers` に足し、`Ready` なら `readyContainers` にも
+足す。`podReady` が `containerStatuses` しか見ていないと、同じ行が
+**kubectl では `1/2`、こちらでは `1/1`** になる。しかも読み飛ばしを入れた
+あとだと STATUS は `Running` なので、**`health(for:)` の降格（Running なのに
+Ready が揃っていない）が発火せず、Ready でない sidecar を抱えた Pod が
+ドーナツで完全に正常になる**。「kubectl の STATUS 列だけ見ていると気付けない
+状態をここで表に出す」という `health` の役目が、そこだけ抜ける。
+再起動の数も同じ（sidecar は落ちても Pod が生き続けるので、数えないと 0 のまま）。
+`StatusResolverTests` が両方を見ている。
+
+### 桁の大きい quantity で落ちない
+
+**`Int(Double)` を経由しない。** `resource.Quantity` は int64 に収まらない値を
+big-decimal で受けるので、`cpu: "10E"`（1e19）や `memory: "1e40"` は
+**API サーバが通す正当な値**。整形が `"\(Int(cores.rounded()))"` だったので、
+そういう Pod の**設定タブを開くだけでアプリごと落ちた**（実測:
+`Fatal error: Double value cannot be converted to Int because the result would be
+greater than Int.max`）。metrics-server が無い環境でも通る経路がある。
+`String(format: "%.0f", …)` で出す。
+
+**読めた値を nil にしない。** 一度は「int64 に収まらない値」も `parse` で落としたが、
+それは**読めているものを「取れていない」ことにする**（＝このリポジトリが避けて
+いる取り違えの、こちら側）。落とすのは非有限（`Infinity` / `nan`。`Double(_:)` は
+どちらも受ける）だけにして、落ちないことは整形側で担保する。棒は
+`min(1, max(0, ratio))` で抑えてある。
+
 ## テストは純粋関数に掛ける
 
 ```bash
@@ -677,6 +838,9 @@ xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck -destination 'platf
 | `WorkloadRelations` | 空セレクタや Namespace 越えで無関係なものが繋がる |
 | `PlacementTrace` | 名前だけで束ねて別物が合体する。ReplicaSet で止まる |
 | `Kubectl.deniedKinds` | 依存している kubectl の stderr の書式 |
+| `Kubectl.checkedName` | フラグに化ける名前が位置引数へ通る（1 件の削除が `--all` に化ける）。逆に `system:` 付きを弾くと ClusterRole を操作できなくなる |
+| `Kubectl.hidesValue` | 伏せ字が値の 1 文字目で無効になる（設定画面は貼って共有される場所） |
+| `SettingGroup.id` / `SettingRow.id` | 補間の入った鍵が全部同じ id になり、`ForEach` が行を取り違える |
 | 概要の読み込み中 | まだ数えていないのに 0 のリングを出す。逆に読み込み中のまま留まる |
 | 並べ替え・しきい値 | 黙って意味が変わる（警告色が出なくなるなど） |
 
@@ -1002,8 +1166,16 @@ Namespace の選択は残ります」で、消えることに触れていなか�
 `SafetyTests` が「戻しても札が残ること」を見ている。
 
 **画面で隠すだけにしない。** `ClusterStore.refuseIfReadOnly` が、実際に kubectl を
-起こす手前でも止める（`perform` / `applyYAML` / `patchResources`）。開いたままの
-シートから届く道が残りうるため。**dry-run は止めない** —— 何も変えないので。
+起こす手前でも止める（`perform` / `applyYAML` / `patchResources` / `refusesExec`）。
+開いたままのシートから届く道が残りうるため。**dry-run は止めない** ——
+何も変えないので。
+
+**exec がその 4 つ目。** 予告しておきながら、**exec にだけ二重の防御が無かった**。
+しかもここは kubectl を起こすのがアプリ自身ではなく**ターミナル**なので、
+`perform` / `applyYAML` / `patchResources` の関門を**どれも通らない唯一の変更
+経路**だった（`ExecSheet.open()` が `ExecScript.write` → `NSWorkspace.open` を
+直に呼んでいた）。`ClusterStore.refusesExec()` を通す。断りは帯が出すので、
+シートは閉じるだけにする。
 
 **できない理由を、できないことより先に出す。** 何も無いメニューが出ると、
 壊れているのか権限が無いのか分からない。帯とメニューの先頭に理由を書く。
@@ -2522,9 +2694,29 @@ GET .../pods/demo-proxy-859f44696-kslx8/log?container=proxy&follow=true&tailLine
 **概要の集計も捨てる** — 残ると `hasOverviewData` が真のままで、概要が
 0 の並んだカードを出す（「まだ数えていない」が「0 件」に化ける）。
 
+**コンテキストを切り替えるときは、didSet 任せにしない。** `currentContext` の
+didSet は `selectedNamespace = nil` と書いていたが、**既定は「すべての
+Namespace」（＝ nil）**なので、そのまま切り替えると `nil = nil` の代入になって
+`selectedNamespace` の didSet が丸ごと素通りし、`discardLoadedResources()` が
+**走らない**。すると前のクラスタの行が選択ごと画面に残り、`ResourceListView` も
+行があるうちは読み込み中を出さないので、取得が終わるまで（遅い経路で 10〜15 秒）
+**別クラスタの一覧を操作できてしまう**。削除は `context: currentContext`
+（＝新しいほう）で飛ぶので、同名のものがあれば**別のクラスタのものが消える**。
+「見えている選択と操作する対象を揃える」が、ここだけ破れていた。
+`currentContext` の didSet が自分で呼ぶ。
+
+**種別を移るときは `unknownKinds` も捨てる。** `selection` の didSet は
+`deniedKinds` だけを捨てており、片割れが残っていた。`unknownKinds` が立つのは
+配置画面だけなので、配置 → 一覧と移ると「○○ はクラスタに見つかりませんでした」の
+帯が、**その種別を要求してもいない画面に**出たままになる。配置の配列
+（`placementNodes` ほか）も同じ理由で捨てる。
+
 **読み込み中を失敗より先に見る。** `errorMessage` は前回の取得のものなので、引き直して
 いる最中にこれを先に見ると、まだ何も試していないのに失敗の画面が出たままになる
-（`PlacementView` がそうなっていた）。
+（`PlacementView` がそうなっていた）。**詳細パネルの一覧の要約も同じ**（
+`ListSummaryPane`）—— あそこは選択が無いあいだ常に出るので、中央が正しく
+`LoadingView` を出している真横で「`Pod  0 件` 表示するものがありません。」と
+断定していた。件数の持ち場は副題なので、**パネルからは件数ごと落とす**。
 
 ### 概要にも同じ規則を通す
 
@@ -2786,6 +2978,38 @@ Secrets の `SPARKLE_PRIVATE_KEY` の 2 か所にあり、失うと同じこと�
 その最低線として明示的に認められている。CI が `codesign --verify --deep --strict` を
 毎回通しているのはこのため。
 
+### Hardened Runtime は入れない（Apple Developer に登録しない）
+
+**決定: 登録しない。** そのうえで Hardened Runtime も入れない。理由は実測にある。
+
+`ENABLE_HARDENED_RUNTIME=YES` は **ad-hoc のままでも立つ**（登録は要らない）。
+ビルドも `codesign --verify --deep --strict` も通る（`flags=0x10002(adhoc,runtime)`）。
+**だが起動しない。**
+
+```
+Library not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle
+```
+
+**library validation**（Hardened Runtime の中核）が「読み込むコードは同じ
+Team ID か Apple の署名であること」を要求するのに、ad-hoc は
+`TeamIdentifier=not set` なので、同梱の Sparkle が読めない。
+
+通すには `com.apple.security.cs.disable-library-validation` が要る（実測で起動する）。
+**それは今回いちばん欲しかった保護そのものを切ることになる**ので、入れる意味が無い。
+残るのは DYLD 注入とデバッガ接続の制限だけだが、ad-hoc では攻撃者がバンドルを
+ad-hoc で署名し直せるので、そこも実効が薄い。
+
+| | 登録 | library validation | DYLD 注入・デバッガ制限 | 改竄検知 / Gatekeeper 警告なし |
+|---|---|---|---|---|
+| いま（ad-hoc のみ） | 不要 | ✗ | ✗ | ✗ |
+| ad-hoc + Runtime + validation 無効 | 不要 | ✗ | ○ | ✗ |
+| Developer ID + notarization | **$99/年** | ○ | ○ | ○ |
+
+**そのかわり、何が守られていないかを黙らない。** このプロセスはログインシェルの
+環境を丸ごと保持する（＝メモリに各クラウドの資格情報が乗る）。脅威は「すでに
+そのマシンにいる、同じユーザ権限の攻撃者」に限られる、という前提を README に
+明記して引き受ける。**「安全である」と書かない。**
+
 **版は `Scripts/release.sh` が xcodebuild の引数で注入する。** `project.yml` の
 `MARKETING_VERSION` は「タグを打たずに手元で建てたもの」用の値。スクリプトは焼いた
 Info.plist の版と指定した版が一致することを確かめてから詰める。ずれたまま出すと、
@@ -2796,8 +3020,27 @@ Info.plist の版と指定した版が一致することを確かめてから詰
 `releases/latest/download/appcast.xml` に毎回 1 項目だけ上げている。この URL は
 プレリリースを指さないので、試し焼きは `--prerelease` で出せば既存の利用者に届かない。
 
-**appcast.xml を後から書き換えない。** ファイル自身に署名を埋めてあるので、1 文字でも
-変えると検証に落ちる。直すときは `Scripts/release.sh` から作り直す。
+**appcast.xml には署名しない（できない）。** ここには以前
+`sign --disable-signing-warning "$APPCAST"` があり、「ファイル自身に署名を埋めて
+あるので 1 文字でも変えると検証に落ちる」と書いてあったが、**どちらも事実では
+なかった**。`sign_update` は署名を**標準出力に出すだけ**でファイルには何も
+埋めない。出力はどこにも捕まえていなかったので、**あの行は 1 バイトも効いて
+いなかった**。それでいて「差し替えられても気付ける」と読ませていた ——
+**無い保護を有ると書くのは、取れていないものを取れたことにするのと同じ**。
+
+Sparkle が検証するのは **enclosure の `sparkle:edSignature`**（＝ zip の署名）
+だけで、appcast そのものの署名を見る仕組みを持たない。目録の完全性は HTTPS と
+GitHub Releases が持つ。差し替えられても、**中身の zip は公開鍵と合う署名が
+無いかぎり適用されない** —— そこが本当の関門。
+
+だから appcast.xml を書き換えること自体は検証を壊さない。ただし
+`sparkle:version` と enclosure がずれると更新の判定が狂うので、**直すときは
+書き換えずに `Scripts/release.sh` から作り直す。**
+
+**ビルド経路も守る。** `release.sh` が落としてくる Sparkle のツールは
+`sign_update`、つまり秘密鍵を扱う当人。版は固定してあり https だが、**ハッシュの
+ピン留めはまだ無い**（未対応）。CI の `run:` に `${{ inputs.* }}` を直接展開しない
+（展開はシェルより先に起きるので、下の正規表現の検査は間に合わない）。`env:` 経由で渡す。
 
 **更新の設定を Sparkle 側と二重に持たない。** `Info.plist` に `SUEnableAutomaticChecks` を
 置いて Sparkle 自身の問い合わせを止め、実際に効く値は `Preferences` から

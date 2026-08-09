@@ -5156,6 +5156,22 @@
         }
       }
     },
+    "サーバが返した名前が Kubernetes の名前として扱えないので、操作を中止しました: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped: the server returned a name that cannot be used as a Kubernetes name: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバが返した名前が Kubernetes の名前として扱えないので、操作を中止しました: %@"
+          }
+        }
+      }
+    },
     "サーバに聞きました: %@": {
       "localizations": {
         "en": {
@@ -5424,6 +5440,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "ターミナルで中に入る (kubectl exec)"
+          }
+        }
+      }
+    },
+    "ターミナルで中に入る操作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "opening a terminal inside the container"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルで中に入る操作"
           }
         }
       }
@@ -6240,6 +6272,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "ログを別ウインドウで見る"
+          }
+        }
+      }
+    },
+    "ログを取得できませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not fetch logs"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ログを取得できませんでした"
           }
         }
       }
@@ -8132,18 +8180,18 @@
         }
       }
     },
-    "取得元は %@ です。": {
+    "取得元は %@ です。ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。管理されたクラスタでは、ノードの指標だけ拒まれることがあります。Pod ごとの使用量は一覧の列に出ます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The source is %@."
+            "value": "The source is %@. Node usage cannot be read, so the cluster-wide percentage is unavailable. Managed clusters sometimes refuse node metrics only. Per-pod usage still appears in the list columns."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "取得元は %@ です。"
+            "value": "取得元は %@ です。ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。管理されたクラスタでは、ノードの指標だけ拒まれることがあります。Pod ごとの使用量は一覧の列に出ます。"
           }
         }
       }

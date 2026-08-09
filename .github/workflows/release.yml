@@ -38,9 +38,17 @@ jobs:
 
       - name: 版を決める
         id: version
+        # **`${{ }}` を run の中に直接展開しない。** あれはシェルが動く前に
+        # テキストとして差し込まれるので、`inputs.version` に `"; …; #` を
+        # 入れられると**この行の検査を通る前に**任意のコマンドが走る（下の
+        # 正規表現は展開のあとにしか効かない）。env 経由で渡せば、値は
+        # あくまで変数の中身にとどまる。
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
@@ -105,15 +113,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           ARGS=(--title "KubeDeck $VERSION" --generate-notes)
-          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+          if [[ "$PRERELEASE" == "true" ]]; then
             ARGS+=(--prerelease)
           fi
           # workflow_dispatch のときはタグがまだ無いので、ここで作らせる。
           # **git の状態で判断しない。** checkout がタグを持ってくるかどうかは
           # 設定次第で、有無を取り違えるとタグの指す先がずれる。
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             ARGS+=(--target "$GITHUB_SHA")
           fi
           gh release create "v$VERSION" "${ARGS[@]}" \

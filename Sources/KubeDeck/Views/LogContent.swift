@@ -88,6 +88,15 @@ struct LogContent: View {
     @State private var dayKeyRange: ClosedRange<Int>?
     /// 何番目の取得か。待っているあいだに対象が変わったかの判定に使う。
     @State private var generation = 0
+    /// ログの取得そのものに失敗した理由。
+    ///
+    /// **本文の 1 行目として描かない。** 以前は `lines = [LogLine(text: 説明)]` と
+    /// していたので、kubectl の失敗が**行番号 1・時刻 `—`** のログ行として並び、
+    /// 下の帯は「1 行」と数えた。しかも `lines` が空でなくなるので、
+    /// せっかく 4 つに分けてある空の表示（引いていない／Pod が無い／引けなかった／
+    /// ログが空）が**1 つも発火しない**。絞り込み中なら「一致する行がありません」
+    /// とすら出る。`EventsPane` が `failure` を別に持っているのと同じ形にする。
+    @State private var failure: String?
 
     /// 行数の上限。追従したままにすると際限なく積み上がる。設定で変えられる。
     private var maximumLines: Int { Preferences.shared.logBufferLines }
@@ -451,7 +460,15 @@ struct LogContent: View {
     /// 別の表示にする。** どれも本文が空になるが、見る場所も打つ手も違う。
     @ViewBuilder
     private var placeholder: some View {
-        if request.isGroup {
+        // **取得そのものの失敗を、いちばん先に見る。** 「ログがありません」も
+        // 「Pod が残っていません」も、引けていれば言えることであって、
+        // 引けなかったときに言うことではない。
+        if let failure {
+            ContentUnavailableView(
+                "ログを取得できませんでした",
+                systemImage: "exclamationmark.triangle",
+                description: Text(failure))
+        } else if request.isGroup {
             groupPlaceholder
         } else {
             singlePlaceholder
@@ -810,6 +827,7 @@ struct LogContent: View {
         generation += 1
         let token = generation
         lines = []
+        failure = nil
         didTruncate = false
         observedPods = []
         // **色の割り当ても捨てる。** 持ち越すと、対象を切り替えたあとの
@@ -831,7 +849,7 @@ struct LogContent: View {
         {
         case .failure(let error):
             guard token == generation else { return }
-            lines = [LogLine(id: 0, text: error.localizedDescription)]
+            failure = error.localizedDescription
         case .success(let (stream, processHandle)):
             // 待っているあいだに対象が変わっていたら、掴んだプロセスをその場で捨てる。
             // `stop()` はこの時点でまだ存在しないハンドルを止められないので、

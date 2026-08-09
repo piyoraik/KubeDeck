@@ -56,13 +56,23 @@ final class ClusterStore {
             namespaces = []
             selectedNamespace = nil
             serverVersion = ""
+            // **`selectedNamespace = nil` の didSet に任せない。** 既定は
+            // 「すべての Namespace」（＝ nil）なので、そのまま切り替えると
+            // `nil = nil` の代入になって didSet が丸ごと素通りし、
+            // `discardLoadedResources()` が**走らない**。すると前のクラスタの行が
+            // 選択ごと画面に残り、`ResourceListView` も行があるうちは読み込み中を
+            // 出さないので、取得が終わるまで（遅い経路で 10〜15 秒）**別クラスタの
+            // 一覧を操作できてしまう**。削除は `context: currentContext`（＝新しい
+            // ほう）で飛ぶので、同名のものがあれば**別のクラスタのものが消える**。
+            // 「見えている選択と操作する対象を揃える」が、ここだけ破れていた。
+            discardLoadedResources()
             // 取得元はクラスタごとに違う。持ち越すと別クラスタの値を出す。
             metrics = MetricsSnapshot()
             metricsServerAvailable = nil
             prometheus = nil
             customTypes = []
-            deniedKinds = []
-            overview = OverviewSnapshot()
+            selectedHistory = MetricsHistory()
+            clusterHistory = MetricsHistory()
             // **クラスタごとの調べものにも世代番号を通す。** ここを素の Task で
             // 投げていたら、A → B と続けて切り替えたときに A 向けの結果が B に
             // 書き込まれた。とくに Prometheus の探索は全 Service を順に叩くので
@@ -107,6 +117,12 @@ final class ClusterStore {
         overview = OverviewSnapshot()
         deniedKinds = []
         unknownKinds = []
+        // **ログの行き先も捨てる。** `logStream` は `context: currentContext` を
+        // 使うので、prod → dev と切り替えると開いている帯が **dev の同名 Pod を
+        // 追い始める**（`reloadKey` に context が入っていないので、そもそも
+        // 取り直しもされず前のクラスタの行が出続けることもある）。
+        // 「見えている選択と操作する対象を揃える」の同じ穴。
+        logRequest = nil
         clearSelection()
     }
 
@@ -120,6 +136,17 @@ final class ClusterStore {
             searchText = ""
             objects = []
             deniedKinds = []
+            // **`unknownKinds` も一緒に捨てる。** ここだけ `deniedKinds` の片割れが
+            // 残っており、配置画面（`unknownKinds` が立つ唯一の場所）から一覧へ
+            // 移ると「○○ はクラスタに見つかりませんでした」の帯が、**その種別を
+            // 要求してもいない画面に**出たままになっていた。
+            unknownKinds = []
+            // 配置の中身も別の画面のもの。残すと、配置へ戻ったとき取得中に
+            // 古いノードの箱が出る（`objects` を捨てるのと同じ理由）。
+            placementNodes = []
+            placementControllers = []
+            placementWorkloads = []
+            placementRelated = []
             // 列は種別ごとに違うので、見出しを持ち越しても指す先が無い。
             sortDescriptor = nil
             // 別の種別を開いたのに前の Pod のログが下に残ると、
@@ -238,10 +265,25 @@ final class ClusterStore {
             guard selectedObjectID != oldValue else { return }
             // 前の対象の線を残さない。残すと別の Pod の履歴に見える。
             selectedHistory = MetricsHistory()
-            Task { await self.refreshSelectedHistory() }
+            // **前の選択ぶんを止めてから投げる。** ここは `refreshHistories` の
+            // 間隔（既定 60 秒）を通らないうえ、`Task` を保持していなかったので
+            // 取り消しようが無かった。履歴は `queryRange` を 2 本＝ kubectl を
+            // 2 プロセス起こすので、一覧で ↓ を押しっぱなしにする（キーリピートは
+            // 毎秒 15 回ほど）だけで**数十本が並走する**。しかも 1 本あたり
+            // スレッドを 3 本掴むので、`ProcessRunner` のスレッド上限にも当たる。
+            selectedHistoryTask?.cancel()
+            selectedHistoryTask = Task { [weak self] in
+                // 押しっぱなしの取りこぼしを拾う。手が止まってから引く
+                // （`ResourcesSheet` の dry-run と同じ考え方）。
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.refreshSelectedHistory()
+            }
             followLogsToSelection()
         }
     }
+
+    private var selectedHistoryTask: Task<Void, Never>?
 
     /// 現在の使用量。取得元が無いクラスタでは空のまま。
     var metrics = MetricsSnapshot()
@@ -273,9 +315,12 @@ final class ClusterStore {
     ///
     /// 既定は有効。閉じているパネルをこれで開くことはない
     /// （開けるのは「ログを見る」を押したときだけ）。
-    var followsSelectionForLogs: Bool = Preferences.shared.followsSelectionForLogs {
-        didSet { Preferences.shared.followsSelectionForLogs = followsSelectionForLogs }
-    }
+    /// **写しを持たない。** 以前は `Preferences` の値で初期化した格納
+    /// プロパティだったが、設定画面が束ねている先は `$preferences` のほうなので、
+    /// **こちらには誰も書かなかった**。つまりトグルは保存されるのに、
+    /// 実際に判定に使うこの値は**次の起動まで変わらない**（押しても効かない
+    /// 設定に見える）。`historyWindowMinutes` などと同じく、素直に引く。
+    var followsSelectionForLogs: Bool { Preferences.shared.followsSelectionForLogs }
 
     var isLoading = false
 
@@ -1277,6 +1322,20 @@ final class ClusterStore {
             変更するには設定の「コンテキスト」で解除してください。
             """)
         return true
+    }
+
+    /// ターミナルで中に入る手前の関門。
+    ///
+    /// **exec を「読むだけ」に数えない。** 入ってしまえば中で何でもできる。
+    /// `ResourceActionSet` は読み取り専用のとき exec を落とすが、それは画面の
+    /// 側の話で、**開いたままのシートから届く道**が残る（CLAUDE.md が
+    /// `refuseIfReadOnly` の節でそう予告している当の形）。
+    ///
+    /// しかもここは、**kubectl を起こすのがアプリ自身ではなくターミナル**なので、
+    /// `perform` / `applyYAML` / `patchResources` の 3 つの関門をどれも通らない
+    /// 唯一の変更経路になっていた。二重の防御が exec にだけ無い状態だった。
+    func refusesExec() -> Bool {
+        refuseIfReadOnly("ターミナルで中に入る操作")
     }
 
     func yaml(for object: K8sObject) async -> Result<String, Error> {

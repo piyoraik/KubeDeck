@@ -72,6 +72,7 @@ struct ResourcesSheet: View {
             HStack {
                 Spacer()
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                     .disabled(isApplying)
                 Button("適用") {
                     Task { await apply() }

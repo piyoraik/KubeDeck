@@ -183,10 +183,17 @@ struct PlacementView: View {
         /// あるのはふつうで、名前で束ねると無関係なものが 1 つに合体する
         /// （実際、2 つの Deployment が 1 つの箱に混ざった）。
         let namespace: String?
+        /// 所有者の種別。**`id` にも見出しにも要る。**
+        /// 束ねる鍵にだけ足すと、同じ Namespace の Deployment `web` と
+        /// StatefulSet `web` は箱こそ分かれるのに **`id` が重なり**、
+        /// `ForEach` が行を取り違える（並べ替えの同点崩しも `id` なので、
+        /// どちらも `<` が成り立たず取得のたびに順番が入れ替わる）。
+        /// 画面にも出さないと、同名のカードが 2 枚並ぶだけになる。
+        let kind: String?
         /// ノード名ごとの Pod。多い順。
         let byNode: [(node: String, pods: [K8sObject])]
 
-        var id: String { "\(namespace ?? "-")/\(name)" }
+        var id: String { "\(namespace ?? "-")/\(kind ?? "-")/\(name)" }
         var podCount: Int { byNode.reduce(0) { $0 + $1.pods.count } }
         var nodeCount: Int { byNode.count }
         /// ノードをまたいだ全部。使用量の合計を出すときに使う。
@@ -200,15 +207,27 @@ struct PlacementView: View {
     private var spreads: [Spread] {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
+        // **鍵から名前を切り出さない。** 種別を鍵に足すと、切り出しの規則も
+        // 一緒に複雑になる。表示に要るものは別に覚える。
+        var owners: [String: (kind: String?, name: String)] = [:]
         for pod in store.filteredObjects {
-            let owner = Self.owner(of: pod, controllers: index)
-                ?? String(localized: "単体の Pod")
-            byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
+            let owner = PlacementTrace.workloadOwner(of: pod, controllers: index)
+            let name = owner?.name ?? String(localized: "単体の Pod")
+            // **種別を落とさない。** Namespace は足したのに種別は落ちていたので、
+            // 同じ Namespace の Deployment `web` と StatefulSet `web`（あるいは
+            // DaemonSet と Deployment の `node-exporter`）が**1 つの箱に合体**し、
+            // この画面を作った理由そのものである `isConcentrated` が、
+            // 混ざった集合で計算されていた。`PlacementTrace.workloadAnchor` は
+            // 最初から `id` に種別を含めている。
+            let key = "\(pod.namespace ?? "-")/\(owner?.kind ?? "-")/\(name)"
+            byOwner[key, default: []].append(pod)
+            owners[key] = (kind: owner?.kind, name: name)
         }
 
         var result: [Spread] = []
         for (key, pods) in byOwner {
-            let name = String(key.drop(while: { $0 != "/" }).dropFirst())
+            let owner = owners[key]
+            let name = owner?.name ?? key
             let namespace = pods.first?.namespace
             var byNode: [String: [K8sObject]] = [:]
             for pod in pods {
@@ -223,7 +242,9 @@ struct PlacementView: View {
                 left.pods.count == right.pods.count
                     ? left.node < right.node : left.pods.count > right.pods.count
             }
-            result.append(Spread(name: name, namespace: namespace, byNode: ordered))
+            result.append(
+                Spread(
+                    name: name, namespace: namespace, kind: owner?.kind, byNode: ordered))
         }
         // 固まっているものを先に。次に数の多い順。見たいものが上に来る。
         result.sort { lhs, rhs in
@@ -240,11 +261,6 @@ struct PlacementView: View {
     // 「ワークロード別では 3 個なのに、たどると 2 個」のような食い違いが出る。
     static func nodeName(of pod: K8sObject) -> String? {
         PlacementTrace.nodeName(of: pod)
-    }
-
-    /// Pod の所有者の名前。ReplicaSet / Job で止めず、Deployment / CronJob まで辿る。
-    static func owner(of pod: K8sObject, controllers: [String: K8sObject]) -> String? {
-        PlacementTrace.workloadOwner(of: pod, controllers: controllers)?.name
     }
 
     // MARK: - 中身が無いとき
@@ -331,7 +347,7 @@ private struct NodeCard: View {
                     ForEach(workloads) { workload in
                         LabeledTiles(
                             label: workload.name, namespace: workload.namespace,
-                            count: workload.pods.count
+                            kind: workload.kind, count: workload.pods.count
                         ) {
                             PodTileGrid(pods: workload.pods)
                         }
@@ -372,17 +388,24 @@ private struct NodeCard: View {
     private var workloads: [Workload] {
         let index = store.controllerIndex
         var byOwner: [String: [K8sObject]] = [:]
+        var owners: [String: (kind: String?, name: String)] = [:]
         for pod in group.pods {
-            let owner = PlacementView.owner(of: pod, controllers: index)
-            ?? String(localized: "単体の Pod")
-            byOwner["\(pod.namespace ?? "-")/\(owner)", default: []].append(pod)
+            let owner = PlacementTrace.workloadOwner(of: pod, controllers: index)
+            let name = owner?.name ?? String(localized: "単体の Pod")
+            // ノードの箱の中の集計。**ここでも種別を落とさない**
+            // （`spreads` と同じ理由。解き方を 2 つ持たない）。
+            let key = "\(pod.namespace ?? "-")/\(owner?.kind ?? "-")/\(name)"
+            byOwner[key, default: []].append(pod)
+            owners[key] = (kind: owner?.kind, name: name)
         }
         var result: [Workload] = []
         for (key, pods) in byOwner {
+            let owner = owners[key]
             result.append(
                 Workload(
-                    name: String(key.drop(while: { $0 != "/" }).dropFirst()),
+                    name: owner?.name ?? key,
                     namespace: pods.first?.namespace,
+                    kind: owner?.kind,
                     pods: pods))
         }
         result.sort {
@@ -558,6 +581,15 @@ private struct WorkloadCard: View {
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                // **種別を出す。** 同じ Namespace の Deployment `web` と
+                // StatefulSet `web` は別の箱になるので、出さないと同名の
+                // カードが 2 枚並ぶだけになる。
+                if let kind = spread.kind {
+                    Text(kind)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 8)
                 CountPill(text: "\(spread.podCount) Pod")
                 // 散っている数は、固まっているときだけ色を付ける。
@@ -600,9 +632,11 @@ struct Workload: Identifiable {
     let name: String
     /// 名前だけで束ねない。1 つのノードには複数の Namespace の Pod が載る。
     let namespace: String?
+    /// 所有者の種別。`Spread.kind` と同じ理由（束ねる鍵と `id` を揃える）。
+    let kind: String?
     let pods: [K8sObject]
 
-    var id: String { "\(namespace ?? "-")/\(name)" }
+    var id: String { "\(namespace ?? "-")/\(kind ?? "-")/\(name)" }
 }
 
 /// 左に名前と件数、右にタイル。
@@ -613,6 +647,9 @@ struct Workload: Identifiable {
 private struct LabeledTiles<Content: View>: View {
     let label: String
     var namespace: String?
+    /// 所有者の種別。**同じ名前で種別だけ違うものは別の箱になる**ので、
+    /// 出さないと同名の見出しが 2 つ並ぶだけになる。
+    var kind: String?
     let count: Int
     @ViewBuilder var content: Content
 
@@ -629,10 +666,10 @@ private struct LabeledTiles<Content: View>: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                // **同じ名前が並ぶことがある。** どの Namespace のものか
-                // 添えないと、見分けが付かない。
-                if let namespace {
-                    Text(namespace)
+                // **同じ名前が並ぶことがある。** どの Namespace の、どの種別の
+                // ものかを添えないと、見分けが付かない。
+                if namespace != nil || kind != nil {
+                    Text([namespace, kind].compactMap { $0 }.joined(separator: " / "))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -711,6 +748,10 @@ private struct PodTile: View {
         }
         .buttonStyle(.plain)
         .help(helpText(status))
+        // タイルは自前の図形なので、読み上げる中身も自分で持たせる。
+        // 「小」では名前が画面に出ないので、なおさらここにしか無い。
+        .accessibilityLabel(Text(helpText(status)))
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// **小のときも色だけにしない。** 名前が入らないぶん、指したときに
@@ -740,7 +781,17 @@ private struct PodTile: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         } else {
-            Color.clear.frame(width: 22, height: 22)
+            // **ここが `Color.clear` だった。** 名前が入らないぶん、状態を
+            // 表しているのは背景の 12% の色だけで、つまり**色だけに意味を
+            // 持たせている**状態だった（真上のコメントが「小のときも色だけに
+            // しない」と書いているのに、である）。`.help` は指したときにしか
+            // 出ないうえ、アクセシビリティ上はラベルではなくヒントなので、
+            // 色覚特性のある人にも VoiceOver にも届かない。
+            // 大きさは 22×22 のまま、しるしだけを入れる。
+            Image(systemName: status.level.symbol)
+                .font(.system(size: 10))
+                .foregroundStyle(Palette.color(for: status.level))
+                .frame(width: 22, height: 22)
         }
     }
 

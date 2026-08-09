@@ -82,6 +82,48 @@ struct RBACTests {
         #expect(ResourceTable.ruleSummary(role("[]")).text.isEmpty)
     }
 
+    /// **補間の入った見出しを id に使わない。**
+    ///
+    /// `SettingGroup.id` / `SettingRow.id` は「訳で同一性が動かないように」
+    /// 原文の鍵から作る。ところが `LocalizedStringResource.key` は
+    /// **書式指定子のまま**（`"規則 %lld"`）なので、`規則 1` も `規則 2` も
+    /// 同じ鍵になる。`SettingsDigestView` は `ForEach(groups)` と
+    /// `ForEach(..., id: \.element.id)` で同一性に使っているので、重なると
+    /// SwiftUI が行を取り違える（落ちる・入れ替わる）。
+    /// `cluster-admin` のように規則が複数ある Role でふつうに起きる。
+    @Test("規則が複数ある Role の設定タブで id が重ならない")
+    func ruleGroupsHaveDistinctIDs() {
+        let object = role(
+            """
+            [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]},
+             {"apiGroups": [""], "resources": ["secrets"], "verbs": ["list"]},
+             {"apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["*"]}]
+            """)
+
+        let groups = SettingsDigest.groups(for: object)
+        let ids = groups.map(\.id)
+        #expect(Set(ids).count == ids.count)
+        // 行のほうも同じ理由で重ならないこと。
+        for group in groups {
+            let rowIDs = group.rows.map(\.id)
+            #expect(Set(rowIDs).count == rowIDs.count)
+        }
+    }
+
+    @Test("subject が複数ある Binding の設定タブで id が重ならない")
+    func bindingGroupsHaveDistinctIDs() {
+        let object = binding(
+            """
+            [{"kind": "ServiceAccount", "name": "default", "namespace": "a"},
+             {"kind": "ServiceAccount", "name": "default", "namespace": "b"},
+             {"kind": "Group", "name": "default"}]
+            """)
+
+        let groups = SettingsDigest.groups(for: object)
+        let ids = groups.map(\.id)
+        #expect(Set(ids).count == ids.count)
+    }
+
     // MARK: - Binding
 
     private func binding(_ subjects: String) -> K8sObject {

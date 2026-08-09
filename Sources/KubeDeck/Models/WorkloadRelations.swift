@@ -211,6 +211,13 @@ enum WorkloadRelations {
                 return pods.contains { pod in
                     guard pod.namespace == policy.namespace else { return false }
                     // 空は「すべて」。ここが Service との違い。
+                    //
+                    // **`matchExpressions` だけのセレクタもここに入る**
+                    // （`policySelector` は `matchLabels` しか読まない）。
+                    // 式は評価しない方針なので、**多めに出す側に倒してある** ——
+                    // 効いているかもしれない設定を落とすより、出したうえで
+                    // 「式で指定」と書くほうがよい（`policyTargets`）。
+                    // 落とす側に変えると、いちばん効きの強い設定が消える。
                     return selector.isEmpty || matches(selector, pod.labels)
                 }
             }

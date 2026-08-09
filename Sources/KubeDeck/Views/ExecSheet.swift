@@ -103,6 +103,7 @@ struct ExecSheet: View {
                 }
                 Spacer()
                 Button("やめる", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("ターミナルで開く") { open() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -142,6 +143,28 @@ struct ExecSheet: View {
     }
 
     private func open() {
+        // **読み取り専用のクラスタでは開かない。** 画面から操作を落とすだけでは、
+        // 開いたままのシートから届く道が残る（`ClusterStore.refusesExec`）。
+        // 断りは帯が出すので、ここは閉じるだけにする。
+        guard !store.refusesExec() else {
+            dismiss()
+            return
+        }
+        // **名前を検めてから書き出す。** ここが `Kubectl.checkedName` の doc が
+        // 「制御文字を弾く理由」として名指ししている当の場所。書き出す
+        // `printf '\033]0;%s\007' '<ns>/<pod>'` は名前を**端末へそのまま流す**
+        // ので、生の `\007` が入っていれば OSC がそこで閉じ、残りが制御列として
+        // 解釈される（iTerm2 の OSC 1337 / OSC 52 など）。シェル引用だけでは
+        // 防げない。
+        do {
+            _ = try Kubectl.checkedName(pod.name)
+            if let namespace = pod.namespace, !namespace.isEmpty {
+                _ = try Kubectl.checkedName(namespace)
+            }
+        } catch {
+            failure = error.localizedDescription
+            return
+        }
         do {
             let url = try ExecScript.write(
                 command: shellCommand(),
@@ -165,8 +188,16 @@ enum ExecScript {
     }
 
     static func write(command: String, title: String) throws -> URL {
+        // **置き場所の側も 0700 にする。** ファイルだけ絞っても、既定で作ると
+        // ディレクトリは 0755 になる（実測）。`~/Library/Caches` 自体が 0700 な
+        // ので他人は実際には辿れないが、多層防御の 1 枚が欠けている状態だった。
         try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        // **`createDirectory(attributes:)` は既存のものには効かない。**
+        // 前の版が 0755 で作った `exec/` はそのまま残るので、毎回掛け直す。
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: directory.path)
         purge()
 
         let url = directory.appendingPathComponent("\(UUID().uuidString).command")
@@ -178,10 +209,17 @@ enum ExecScript {
             exec \(command)
 
             """
-        try script.write(to: url, atomically: true, encoding: .utf8)
         // **他人に読ませない。** 中身にはクラスタ名と Pod 名が入る。
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700], ofItemAtPath: url.path)
+        //
+        // **書いてから chmod しない。** `write(to:atomically:)` はまず既定の
+        // 権限（実測 0644）で作るので、`setAttributes` までのあいだ**他人に
+        // 読める窓**が開く。権限を指定して作れば窓そのものが無くなる。
+        guard FileManager.default.createFile(
+            atPath: url.path, contents: Data(script.utf8),
+            attributes: [.posixPermissions: 0o700])
+        else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         return url
     }
 

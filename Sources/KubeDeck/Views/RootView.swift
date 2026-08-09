@@ -77,6 +77,15 @@ struct RootView: View {
             store.isWindowVisible = NSApp.occlusionState.contains(.visible)
         }
         .overlay(alignment: .bottom) { errorBar }
+        // **「元の文言」の開閉を持ち越さない。** `@State` はエラーが変わっても
+        // 畳み直されないので、一度開くと以後の別のエラーも開いた状態で出る
+        // （帯が画面の半分を占める）。
+        //
+        // **`errorBar` の中（`if let message` の内側）に置かない。** そこだと
+        // 帯が消えて出直したとき —— A を ✕ で閉じてから B が出る、という
+        // いちばんよくある道筋 —— に view ごと作り直されて `onChange` が
+        // 発火しない。常にいる側に置く。
+        .onChange(of: store.errorMessage) { _, _ in showsErrorDetail = false }
         // 知らせは帯より上に積む。両方が出るのは、成功の直後に自動更新が
         // 失敗したときぐらいだが、そのとき重なると読めない。
         .overlay(alignment: .bottom) { noticeBar }
@@ -527,15 +536,27 @@ struct RootView: View {
                 Image(systemName: StatusLevel.critical.symbol)
                     .foregroundStyle(Palette.color(for: .critical))
                 VStack(alignment: .leading, spacing: 6) {
+                    // **見出しを行数で切らない。** `Kubectl.explain` が足す
+                    // 言い換えは最初の空行までが丸ごと見出しに入るが、
+                    // `discoveryHint` / `permissionHint` は**内部に空行を持たない
+                    // 十数行**で、**対処が書いてあるのは最後の 2 行**（
+                    // 「`kubectl api-resources` に出るか確かめてください」）。
+                    // 4 行で切ると、原因は読めて**何をすればいいのかだけが
+                    // 画面から消える**。しかも切った分は「元の文言」にも入らない
+                    // （あちらは stderr だけ）ので、アプリの中では辿れなくなる ——
+                    // 4 行で切っていたのをやめた当のことが、言い換え側で再発していた。
                     Text(parts.summary)
                         .font(.callout)
                         .textSelection(.enabled)
-                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
                     // 元の文言は畳んでおく。開いておくと帯が画面の半分を占める。
                     // **切り捨てない。** 切り捨てると、原因の手がかりが末尾に
                     // ある種の失敗（exec プラグインが出す TLS のエラーなど）を
                     // アプリの中では追えなくなる。
                     if let detail = parts.detail {
+                        // **前のエラーで開いた状態を持ち越さない。** `@State` は
+                        // エラーが変わっても畳み直されないので、一度開くと以後の
+                        // 別のエラーも開いた状態で出る（帯が画面の半分を占める）。
                         DisclosureGroup(isExpanded: $showsErrorDetail) {
                             ScrollView {
                                 Text(detail)

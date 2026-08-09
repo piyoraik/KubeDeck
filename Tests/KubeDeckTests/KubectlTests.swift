@@ -221,6 +221,63 @@ struct KubectlTests {
         #expect(Kubectl.hidesValue(name: name, value: value))
     }
 
+    /// **値の 1 文字目で伏せ字を無効にしない。**
+    ///
+    /// 以前は「`/` か `~` で始まれば場所」を**名前の判定より先に**見ていたので、
+    /// 値が `/` で始まりさえすれば名前が何であろうと平文で出た。AWS の
+    /// シークレットアクセスキーは 40 文字の base64（`A-Za-z0-9+/`）なので、
+    /// **64 分の 1 の確率で `/` から始まる**。この画面は「そのまま貼って
+    /// 共有されうる場所」として設計されているので、そこが漏れ口になる。
+    /// 既存のテストは `abc123` だけを見ていて、この穴の脇を通り抜けていた。
+    @Test("場所に見える値でも、秘密を思わせる名前なら伏せる", arguments: [
+        ("AWS_SECRET_ACCESS_KEY", "/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+        ("GITHUB_TOKEN", "/ghp_realtokenvalue"),
+        ("MY_PASSWORD", "~hunter2"),
+    ])
+    func secretNamesAreHiddenEvenWhenPathShaped(name: String, value: String) {
+        #expect(Kubectl.hidesValue(name: name, value: value))
+    }
+
+    /// **伏せすぎない。** 名前そのものが「場所」を名乗っているものは、
+    /// 秘密を思わせる語を含んでいても指し先を見せる —— 切り分けで見たいのは
+    /// まさにそこ（`REQUESTS_CA_BUNDLE` が合っているか、など）。
+    @Test("場所を名乗る名前は、指し先を見せる", arguments: [
+        ("AWS_SHARED_CREDENTIALS_FILE", "/Users/x/.aws/credentials"),
+        ("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp/sa.json"),
+        ("SSH_AUTH_SOCK", "/private/tmp/com.apple.launchd.x/Listeners"),
+    ])
+    func locationNamesAreShown(name: String, value: String) {
+        #expect(!Kubectl.hidesValue(name: name, value: value))
+    }
+
+    // MARK: - サーバが返した名前
+
+    /// **`-` で始まる名前を kubectl の位置引数に置かない。**
+    ///
+    /// `Process.arguments` の配列渡しはシェルには安全だが、kubectl 自身の
+    /// フラグ解析は素通りする。実測（v1.32.13）で
+    /// `kubectl delete pods "--all" foo` は `--all` をフラグとして食い、
+    /// `name cannot be provided when a selector is specified` になる。
+    /// つまり応答に `metadata.name: "--all"` を混ぜられるだけで、
+    /// **1 件の削除が Namespace ぜんぶの削除に化ける**。
+    @Test("フラグに化ける名前は通さない", arguments: [
+        "--all", "-A", "--all-namespaces", "", ".", "..",
+        "a/b", "a%b", "foo\u{1B}]0;x\u{07}",
+    ])
+    func hostileNamesAreRejected(name: String) {
+        #expect(throws: (any Error).self) { try Kubectl.checkedName(name) }
+    }
+
+    /// **RFC 1123 で弾かない。** RBAC の名前には `:` が入る。弾くと実在する
+    /// クラスタで ClusterRole を操作できなくなる。
+    @Test("実在する名前は通す", arguments: [
+        "nginx-7d8f9c-abc", "system:controller:deployment-controller",
+        "system:masters", "my.app.example.com", "a",
+    ])
+    func realNamesArePassed(name: String) throws {
+        #expect(try Kubectl.checkedName(name) == name)
+    }
+
     /// **名前に頼りきらない。** どの目印にも当たらないのに認証情報を含む値がある。
     @Test("URL に埋まった認証情報は、名前が無害でも伏せる")
     func embeddedCredentialsAreHidden() {

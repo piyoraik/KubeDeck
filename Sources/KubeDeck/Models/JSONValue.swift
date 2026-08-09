@@ -85,7 +85,13 @@ extension JSONValue {
     var intValue: Int? {
         switch self {
         case .int(let value): return value
-        case .double(let value): return Int(value)
+        // **`Int(_:)` で丸めない。** `JSONDecoder` は Int に収まらない数値を
+        // `.double` に落とすので（Int のデコードが先に失敗する）、
+        // `{"a": 1e30}` のような応答で `Int(1e30)` が trap する（実測 SIGTRAP）。
+        // `intValue` は `spec.replicas` / `restartCount` / `exitCode` / `port`
+        // など 70 か所から呼ばれており、`Quantity` で直したのと同じ形が
+        // ここに残っていた。範囲外・小数は nil ＝「読めない」に落とす。
+        case .double(let value): return Int(exactly: value.rounded())
         // kubectl は quantity 系（`spec.replicas` を patch した直後など）を
         // 文字列で返すことがある。
         case .string(let value): return Int(value)
