@@ -23,6 +23,23 @@ struct CommandError: LocalizedError, Sendable {
     var partialStdout: Data?
     /// 言い換える前の stderr。種別ごとの失敗を拾い直すために持つ。
     var rawStderr: String = ""
+    /// この失敗が、**引き直したあとの** API の一覧に照らしたものか。
+    ///
+    /// **「取れなかった」と「無いと確かめた」を分けるための印。** kubectl の
+    /// `the server doesn't have a resource type` は、覚えている一覧が縮退して
+    /// いるだけでも出る（`Kubectl.cacheDirectory` の説明を参照）。だから文言だけでは
+    /// 「本当に無い」と決められず、**一覧を捨てて引き直して確かめた**ときだけ
+    /// ここが立つ。立っていない失敗を「その種別は無い」の材料に使わない。
+    ///
+    /// 既定を false にしてあるのは、**確かめていないほうが安全側**だから。
+    var discoveryWasFresh: Bool = false
+
+    /// 引き直したあとの一覧に照らした失敗として印を付ける。
+    func verifiedAgainstFreshDiscovery() -> CommandError {
+        var copy = self
+        copy.discoveryWasFresh = true
+        return copy
+    }
 
     var errorDescription: String? {
         message.isEmpty

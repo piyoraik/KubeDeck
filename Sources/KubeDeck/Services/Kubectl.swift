@@ -208,7 +208,23 @@ actor Kubectl {
     /// クラスタではそれ自体が discovery を失敗しやすくする。
     private static let discoveryResetCooldown: TimeInterval = 60
 
-    /// 覚えている API の一覧を捨てる。捨てたときだけ true。
+    /// `resetDiscoveryCache()` の結果。
+    ///
+    /// **「捨てた／捨てなかった」の 2 値にしない。** 捨てなかった理由には
+    /// **意味の違う 2 つ**があり、混ぜると「確かめていないこと」を「確かめた」
+    /// として使うことになる。実際そうなっていた ——`list(kinds:)` が一過性の
+    /// 失敗で種別を恒久的に外し、core の種別が configmaps → secrets →
+    /// persistentvolumeclaims と次々に消えていた（アプリの stderr で実測）。
+    enum DiscoveryReset {
+        /// 捨てた。呼び出し側は引き直して**確かめられる**。
+        case cleared
+        /// そもそも覚えていない。＝いま引いたものが最新なので、**確かめ済み**。
+        case nothingCached
+        /// 間隔を空けている最中か、捨てられなかった。**確かめていない。**
+        case notChecked
+    }
+
+    /// 覚えている API の一覧を捨てる。
     ///
     /// **アプリ専用のキャッシュだから捨てられる。** ターミナルと共有していたら、
     /// こちらの都合で相手の一覧まで消すことになる。
@@ -216,14 +232,27 @@ actor Kubectl {
     /// 並行して走っている別の kubectl が同じ場所を読んでいることはある
     /// （概要は 4 本まとめて投げる）。捨てられた側は自分で引き直すので、
     /// 失敗しても次の自動更新で戻る。**間隔を空けているのはこのためでもある。**
-    private func resetDiscoveryCache() -> Bool {
+    private func resetDiscoveryCache() -> DiscoveryReset {
+        // **覚えていないことを「捨てられなかった」と混ぜない。** 覚えていない
+        // なら、いま失敗した呼び出しは discovery を引いたうえで失敗している。
+        // つまりそれは確かめた結果であって、引き直す意味が無い。
+        guard Self.hasDiscoveryCache(in: Self.cacheDirectory) else { return .nothingCached }
         if let lastDiscoveryReset,
            Date().timeIntervalSince(lastDiscoveryReset) < Self.discoveryResetCooldown {
-            return false
+            return .notChecked
         }
-        guard Self.removeDiscoveryCache(in: Self.cacheDirectory) else { return false }
+        guard Self.removeDiscoveryCache(in: Self.cacheDirectory) else { return .notChecked }
         lastDiscoveryReset = Date()
-        return true
+        return .cleared
+    }
+
+    private static func discoveryURL(in cacheDirectory: String) -> URL {
+        URL(fileURLWithPath: cacheDirectory, isDirectory: true)
+            .appendingPathComponent("discovery", isDirectory: true)
+    }
+
+    static func hasDiscoveryCache(in cacheDirectory: String) -> Bool {
+        FileManager.default.fileExists(atPath: discoveryURL(in: cacheDirectory).path)
     }
 
     /// `<キャッシュ>/discovery` を消す。消したときだけ true。
@@ -236,8 +265,7 @@ actor Kubectl {
     /// **消す先を間違えると黙って直らなくなる**（消えていないのに引き直す）ので、
     /// ここは `KubectlTests` で固めてある。
     static func removeDiscoveryCache(in cacheDirectory: String) -> Bool {
-        let discovery = URL(fileURLWithPath: cacheDirectory, isDirectory: true)
-            .appendingPathComponent("discovery", isDirectory: true)
+        let discovery = discoveryURL(in: cacheDirectory)
         guard FileManager.default.fileExists(atPath: discovery.path) else { return false }
         return (try? FileManager.default.removeItem(at: discovery)) != nil
     }
@@ -272,8 +300,45 @@ actor Kubectl {
             return try await execute(arguments, context: context, input: input)
         } catch let error as CommandError
             where Self.mentionsMissingResourceType(error.rawStderr) {
-            guard resetDiscoveryCache() else { throw error }
-            return try await execute(arguments, context: context, input: input)
+            // **確かめられたかどうかを失敗に載せて返す。** 載せずに throw して
+            // いたので、間隔を空けている最中の一過性の失敗が「サーバはその種別を
+            // 知らない」という恒久の判断に化けていた（`DiscoveryReset`）。
+            switch resetDiscoveryCache() {
+            case .notChecked:
+                // 確かめていない。**「無い」の材料に使わせない。**
+                throw error
+            case .nothingCached:
+                // 覚えていないので、いまの失敗が引き直した結果そのもの。
+                throw error.verifiedAgainstFreshDiscovery()
+            case .cleared:
+                do {
+                    return try await execute(arguments, context: context, input: input)
+                } catch let retried as CommandError {
+                    // 捨てて引き直しても同じなら、それは本当に無い。
+                    throw retried.verifiedAgainstFreshDiscovery()
+                }
+            }
+        }
+    }
+
+    /// 読んだ結果が要求した種別と食い違ったら、覚えている API の一覧を
+    /// **1 度だけ**捨てて引き直す。
+    ///
+    /// **`run` の網では受けられない。** あちらは stderr の
+    /// `doesn't have a resource type` を見るが、種別が別グループへ流れる経路は
+    /// **exit 0・stderr 空・valid JSON** なので文言が 1 つも出ない
+    /// （`K8sObject.UnexpectedKind` と `ResourceKind.resourceName` の説明）。
+    ///
+    /// **捨てられたときだけ引き直す。** 覚えていないのに引き直しても同じところへ
+    /// 流れるだけで、間隔を空けている最中なら結果は変わらない。
+    private func recoveringUnexpectedKind<T>(
+        _ body: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as K8sObject.UnexpectedKind {
+            guard case .cleared = resetDiscoveryCache() else { throw error }
+            return try await body()
         }
     }
 
@@ -678,8 +743,10 @@ actor Kubectl {
                          "--chunk-size=\(Self.chunkSize)",
                          "--request-timeout=\(requestTimeout)"]
         arguments += scope(for: kind, namespace: namespace)
-        let result = try await run(arguments, context: context)
-        return try K8sObject.list(from: result.stdout, assuming: kind)
+        return try await recoveringUnexpectedKind {
+            let result = try await run(arguments, context: context)
+            return try K8sObject.list(from: result.stdout, assuming: kind)
+        }
     }
 
     /// 複数種別をまとめて取った結果。
@@ -715,7 +782,11 @@ actor Kubectl {
     func list(
         kinds: [ResourceKind], context: String, namespace: String?
     ) async throws -> PartialList {
-        try await list(kinds: kinds, context: context, namespace: namespace, unknown: [])
+        // **引き直しは外側で 1 度だけ。** 中の再帰（知らない種別を除いて
+        // 引き直す経路）に掛けると、種別の数だけ捨てて引き直すことになる。
+        try await recoveringUnexpectedKind {
+            try await list(kinds: kinds, context: context, namespace: namespace, unknown: [])
+        }
     }
 
     /// - Parameter unknown: ここまでに「サーバが知らない」と言われた種別。
@@ -749,7 +820,15 @@ actor Kubectl {
             // **1 回の引き直しで済ませない。** kubectl が名前を出すのは
             // **最初の 1 つだけ**なので（`get pods,hoges,fugas` でも `hoges` しか
             // 出ない）、残った種別で引き直しては除く、を繰り返す。
-            let missing = Self.unknownKinds(in: error.rawStderr, among: kinds)
+            //
+            // **確かめていない失敗で外さない。** `run` が一覧を捨てて引き直せた
+            // ときだけ `discoveryWasFresh` が立つ。立っていないのは
+            // 「間隔を空けている最中の一過性の失敗」で、外すと**一過性を
+            // 恒久の判断に化けさせる**（実測でそうなっていた。core の種別が
+            // 次々に外れて件数が消えた）。ここは「取れていない」として投げる。
+            let missing = Self.kindsToDrop(
+                in: error.rawStderr, among: kinds,
+                discoveryWasFresh: error.discoveryWasFresh)
             guard !missing.isEmpty else { throw error }
             return try await list(
                 kinds: kinds.filter { !missing.contains($0) },
@@ -757,7 +836,11 @@ actor Kubectl {
         }
         guard !result.stdout.isEmpty else { return PartialList(unknown: unknown) }
         return PartialList(
-            objects: try K8sObject.list(from: result.stdout),
+            // **要求した種別だけを受け取る。** 縮退したキャッシュでは
+            // `pods,nodes` が **PodMetrics 185 + NodeMetrics 3** で返る（実測）。
+            // 素通しにすると、まとめ取得の振り分けが丸ごと狂ったまま画面に出る
+            // （`kind` は `assuming:` で要求種別に化けるので消費側では気付けない）。
+            objects: try K8sObject.list(from: result.stdout, expecting: kinds),
             denied: Self.deniedKinds(in: result.stderr, among: kinds),
             unknown: unknown)
     }
@@ -835,6 +918,19 @@ actor Kubectl {
     ///   書かれない。だから要求した種別のほうを最初の `.` で切って突き合わせる。
     /// - **1 つしか書かれない。** 知らない種別が複数あっても、最初に当たった
     ///   1 つで諦める。呼び出し側が引き直しを繰り返すのはこのため。
+    /// 一覧から**外してよい**種別。`unknownKinds` に「確かめたか」を掛けたもの。
+    ///
+    /// **外すのは「サーバはこれを知らない」と言うのと同じ。** だから確かめて
+    /// いない失敗では 1 つも外さない（`CommandError.discoveryWasFresh`）。
+    /// 「取れていない」を「無い」にしない、というこのアプリの規則を、
+    /// ここでは**判断を保留する**という形で守る。
+    static func kindsToDrop(
+        in stderr: String, among kinds: [ResourceKind], discoveryWasFresh: Bool
+    ) -> [ResourceKind] {
+        guard discoveryWasFresh else { return [] }
+        return unknownKinds(in: stderr, among: kinds)
+    }
+
     static func unknownKinds(
         in stderr: String, among kinds: [ResourceKind]
     ) -> [ResourceKind] {

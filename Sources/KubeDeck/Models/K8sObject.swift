@@ -75,14 +75,88 @@ struct K8sObject: Identifiable, Sendable, Hashable {
         return formatter
     }()
 
+    /// 取れたものが要求した種別と食い違った。
+    ///
+    /// **「無い」でも「その種別だった」でもなく、「取れていない」。** この 3 つを
+    /// 混ぜないのがこのアプリの一貫した規則で、ここはその 3 番目にあたる。
+    ///
+    /// 実際に起きたのは、覚えている API の一覧のコアグループが縮退していて
+    /// `nodes` が `metrics.k8s.io` へ流れ、**NodeMetrics が Node として**
+    /// 読まれたこと（`ResourceKind.resourceName` の説明を参照）。`assuming:` は
+    /// 「kind が空の版を補う」ためのものなのに、**埋まっている別の kind まで
+    /// 黙って上書きしていた**のが穴だった。
+    struct UnexpectedKind: LocalizedError, Sendable {
+        /// 要求した種別。
+        let requested: [ResourceKind]
+        /// 実際に返ってきた `kind`。
+        let received: String
+
+        var errorDescription: String? {
+            let names = requested.map(\.apiKind).joined(separator: " / ")
+            return String(localized: """
+                要求した種別（\(names)）ではなく \(received) が返りました。\
+                取得できていないものとして扱います。
+
+                kubectl が覚えている API の一覧が縮退していると、同じ複数形を持つ\
+                別の API グループへ黙って流れることがあります\
+                （`nodes` が `metrics.k8s.io` の NodeMetrics になる、など）。\
+                一覧を捨てて引き直しても直らない場合は、\
+                `kubectl api-resources` に要求した種別が出るかを確かめてください。
+                """)
+        }
+    }
+
     /// `kubectl get ... -o json` の List を展開する。
     /// 単一オブジェクトを返してきた場合（items が無い）もそのまま 1 件として扱う。
-    static func list(from data: Data, assuming fallbackKind: ResourceKind? = nil) throws -> [K8sObject] {
+    ///
+    /// 要求した種別が分かっているなら、それと食い違うものが返っていないかを
+    /// 確かめる（`UnexpectedKind`）。
+    static func list(
+        from data: Data, assuming fallbackKind: ResourceKind? = nil
+    ) throws -> [K8sObject] {
+        try list(from: data, assuming: fallbackKind,
+                 expecting: fallbackKind.map { [$0] } ?? [])
+    }
+
+    /// 複数種別をまとめて get したとき用。**要求していない種別が混ざっていたら
+    /// 投げる。** まとめ取得は kind で振り分けるので、ここが狂うと全部が狂う。
+    static func list(from data: Data, expecting expected: [ResourceKind]) throws -> [K8sObject] {
+        try list(from: data, assuming: nil, expecting: expected)
+    }
+
+    private static func list(
+        from data: Data, assuming fallbackKind: ResourceKind?, expecting expected: [ResourceKind]
+    ) throws -> [K8sObject] {
         let root = try JSONDecoder().decode(JSONValue.self, from: data)
-        guard let items = root["items"] else {
-            return [K8sObject(raw: root, assuming: fallbackKind)].compactMap { $0 }
+        let objects: [K8sObject]
+        if let items = root["items"] {
+            objects = items.arrayValue.compactMap { K8sObject(raw: $0, assuming: fallbackKind) }
+        } else {
+            objects = [K8sObject(raw: root, assuming: fallbackKind)].compactMap { $0 }
         }
-        return items.arrayValue.compactMap { K8sObject(raw: $0, assuming: fallbackKind) }
+        try verify(objects, expecting: expected)
+        return objects
+    }
+
+    /// **`kind` ではなく `rawKind` を見る。** `kind` は
+    /// `ResourceKind(apiKind:) ?? fallbackKind` なので、`NodeMetrics` のように
+    /// enum に無い名前は**要求した種別に化けている**。化けたあとを見ると、
+    /// この検証は 1 度も発火しない。
+    ///
+    /// **空の `rawKind` は通す。** 単一種別の `get -o json` は items に kind を
+    /// 入れてこない版があり、そこを弾くと**ふつうの取得が全部落ちる**。空を
+    /// 補うのが `assuming:` の本来の仕事。
+    ///
+    /// **要求した種別が無いときは何も見ない。** CRD は組み込みの enum に無いので
+    /// 突き合わせる相手がいない。
+    private static func verify(_ objects: [K8sObject], expecting expected: [ResourceKind]) throws {
+        guard !expected.isEmpty else { return }
+        let allowed = Set(expected.map(\.apiKind))
+        for object in objects where !object.rawKind.isEmpty {
+            guard allowed.contains(object.rawKind) else {
+                throw UnexpectedKind(requested: expected, received: object.rawKind)
+            }
+        }
     }
 }
 

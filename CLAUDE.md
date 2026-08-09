@@ -469,6 +469,121 @@ kubectl 側の挙動に依存しない。
 `~/Library/Caches/com.piyoraik.KubeDeck/kube/discovery/.../servergroups.json` が
 できること、`~/.kube/cache` の mtime が動かないこと。
 
+### 縮退した一覧は、種別を消すのではなく別グループへ流す
+
+上の節は「全種別が一斉に**消える**」壊れ方を書いているが、**もっと悪い側がある。**
+同じ複数形を持つ API グループが他にあると、kubectl は**エラーを出さずにそちらへ
+流れる。** 実測（Connect Gateway 越しの GKE、kubectl v1.32.13。コアグループだけが
+`{"name":"","versions":null}` に縮退した状態）:
+
+```
+$ kubectl get nodes -o json          → exit=0  items = NodeMetrics 3
+$ kubectl get pods,nodes -o json     → exit=0  items = PodMetrics 185 + NodeMetrics 3
+$ kubectl get nodes.v1. -o json      → exit=0  items = Node 3
+```
+
+**ファイル全体が縮退していなくても起きる。** 残っていたのは 63 グループ・
+12,663 バイトの valid な JSON で、**コアの `versions` だけが null**。既定の
+キャッシュ（`~/.kube/cache`）と並べると差はそこだけだった（対照群）。
+
+| | core の versions | `get nodes` の中身 |
+|---|---|---|
+| アプリのキャッシュ | `null` | NodeMetrics |
+| `~/.kube/cache` | `[{v1}]` | Node |
+
+NodeMetrics は `status.conditions` も `status.allocatable` も持たないので、
+Node として読むと **全ノードが `Unknown`（橙）になり、割り当て可能量が 0 に
+なって使用量が消える。** クラスタは全ノード Ready で、認証も経路も正常。
+**exit 0・stderr 空・valid JSON なので、既存の網は 1 つも発火しない。**
+
+対処は 2 つ重ねる。
+
+- **コアグループにも `.v1.` を付ける**（`ResourceKind.resourceName`）。「API
+  グループを必ず付ける」を core だけ免除していたのが穴だった。`plural(of:)` が
+  最初の `.` で切るので stderr との突き合わせはそのまま働く（実測で kubectl は
+  `get hoges.v1.` にも `"hoges"` としか書かない）。手元の v1.29.3 / v1.32.13 /
+  v1.34.1 すべてで、縮退したキャッシュのままでも Node が返った。
+- **取れたものが要求した種別かを確かめる**（`K8sObject.UnexpectedKind`）。
+  食い違ったら**取れていないものとして投げ**、一覧を 1 度だけ捨てて引き直す
+  （`Kubectl.recoveringUnexpectedKind`）。`.v1.` は「流れないようにする」網で、
+  こちらは「別の道で流れてきたら気付く」網。
+
+**`kind` ではなく `rawKind` で判定する。** `K8sObject.kind` は
+`ResourceKind(apiKind:) ?? fallbackKind` なので、enum に無い `NodeMetrics` は
+**要求した `.node` に化けている。** 化けたあとを見ると検証は 1 度も発火しない。
+`assuming:` は「kind が空の版を補う」ためのものなのに、**埋まっている別の kind
+まで黙って上書きしていた**のがそもそもの穴。**空の kind は通す**（単一種別の
+get は kind を入れてこない版がある）。**要求種別が分からないときは見ない**
+（CRD には突き合わせる相手がいない）。`UnexpectedKindTests`。
+
+### 一過性の discovery 失敗を、種別を外す判断に使わない
+
+縮退したもとでは kubectl は**実在する種別にも**
+`the server doesn't have a resource type` を返す。`list(kinds:)` はそれを
+「サーバはその種別を知らない」と読んで**その種別を外して引き直す**ので、
+一過性の失敗が恒久の判断に化けていた。アプリの stderr で実測した並び:
+
+```
+get pods.v1.,…,configmaps.v1.,…  → doesn't have a resource type "configmaps"
+get services.v1.                 → doesn't have a resource type "services"
+get …,secrets.v1.,…              → doesn't have a resource type "secrets"
+get …,persistentvolumeclaims.v1. → doesn't have a resource type "persistentvolumeclaims"
+```
+
+core の種別が 1 つずつ外れ、そのぶんサイドバーの件数が消え、外すたびに
+discovery を捨てるので全 API グループを引き直す。**症状は「取得が不安定」。**
+
+**「捨てた／捨てなかった」の 2 値で判断しない**（`Kubectl.DiscoveryReset`）。
+捨てなかった理由には意味の違う 2 つがある。
+
+| | 意味 | 外してよいか |
+|---|---|---|
+| `cleared` | 捨てた。引き直して確かめられる | 引き直しても同じなら**よい** |
+| `nothingCached` | 覚えていない＝いま引いたのが最新 | **よい**（確かめ済み） |
+| `notChecked` | 間隔を空けている最中／捨てられなかった | **駄目**（確かめていない） |
+
+`run` が確かめられたかを失敗に載せ（`CommandError.discoveryWasFresh`。**既定は
+false —— 確かめていないほうが安全側**）、`Kubectl.kindsToDrop` がそれを見て
+外す種別を決める。**外すのは「サーバはこれを知らない」と言うのと同じ**なので、
+確かめていないときは**判断を保留する**（画面は「取得できません」になる。
+黙って件数が欠けるより、取れていないと言うほうが正しい）。
+`DiscoveryRecoveryTests`。
+
+### 縮退そのものは残っている（未解決）
+
+**画面の嘘と、一過性を恒久にする判断は直したが、縮退が起きること自体は
+直していない。** 追う人向けの実測を残す。
+
+- アプリを起動すると、健全だったキャッシュのコアグループが `None` に落ちる
+  ところまでは観測した（起動前 `[{v1}]` → 起動後 `None`）。
+- **シェルからは再現できていない** —— 同時 9 本（4 試行）、飛行中に
+  `discovery` を捨てる（3 試行）、discovery の最中に SIGTERM/SIGKILL
+  （5 通りの間隔）、まとめ取得をまっさらなキャッシュへ 5 回、
+  kubectl v1.29.3 / v1.32.13 / v1.34.1、mise の shim 経由、cwd `/`、
+  いずれも core は健全なまま。子 kubectl の環境も
+  シェルとの差は `PATH` とシェルの覚え書きだけだった（`ps -Ewwp` で照合）。
+- **試して駄目だったこと: warm-up。** `kubectl api-versions` は単発なら
+  1.2 秒で縮退を健全に書き戻す（実測）。そこで「一覧が無い／縮退していたら
+  1 本だけ先に走らせる」を入れたが、**アプリから走らせると直らなかった**
+  （`degraded=true` のまま）。しかも判定を
+  `<キャッシュ>/discovery` の**木ぜんぶ**に掛けたので、**別のクラスタの
+  古い縮退ファイルを現在のクラスタの縮退として読み**、毎回 warm-up が走った
+  （1 呼び出しあたり kubectl が 1 本増える）。**入れる前より悪い**ので戻した。
+  やり直すなら、判定を**現在のコンテキストのサーバに絞る**こと。
+
+**切り分けの落とし穴（踏んだ）。** 検証中に `selectedContext` が
+ローカルの kind クラスタへ入れ替わっており、**別のクラスタを測っていた**時間が
+あった。アプリは終了時に設定を書き戻すので、`defaults write` した値が
+巻き戻ることがある（「ウインドウの幅を測るときの落とし穴」と同じ話）。
+**測る前に、そのとき見ているコンテキストを毎回確かめる。**
+
+**`nodes.<グループ>` の失敗を Node のせいにしない。** 解決できない
+グループ付きの名前は、グループを落とした文言で返る（実測。
+`get nodes.nosuchgroup.example.com` → `doesn't have a resource type "nodes"`）。
+`plural(of:)` は両側からグループを落とすので、**`nodes.metrics.k8s.io` の失敗が
+「クラスタに `nodes` という種別が見つかりません」に見える。** metrics API の話を
+コアの Node の話として読むと、見に行く場所を間違える。
+
 ## 取りに行き方を絞る
 
 **一度に全部を要求しない。** `--chunk-size=500` を付ける。`-o json` でも kubectl は

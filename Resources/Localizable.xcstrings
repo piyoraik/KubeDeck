@@ -11828,6 +11828,22 @@
         }
       }
     },
+    "要求した種別（%@）ではなく %@ が返りました。取得できていないものとして扱います。\n\nkubectl が覚えている API の一覧が縮退していると、同じ複数形を持つ別の API グループへ黙って流れることがあります（`nodes` が `metrics.k8s.io` の NodeMetrics になる、など）。一覧を捨てて引き直しても直らない場合は、`kubectl api-resources` に要求した種別が出るかを確かめてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The requested kind (%1$@) was not returned; %2$@ came back instead. Treating this as not retrieved.\n\nWhen kubectl's cached API list is degraded, a request can silently fall through to another API group that shares the same plural (for example `nodes` resolving to NodeMetrics in `metrics.k8s.io`). If discarding the list and refetching does not fix it, check whether the requested kind appears in `kubectl api-resources`."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要求した種別（%1$@）ではなく %2$@ が返りました。取得できていないものとして扱います。\n\nkubectl が覚えている API の一覧が縮退していると、同じ複数形を持つ別の API グループへ黙って流れることがあります（`nodes` が `metrics.k8s.io` の NodeMetrics になる、など）。一覧を捨てて引き直しても直らない場合は、`kubectl api-resources` に要求した種別が出るかを確かめてください。"
+          }
+        }
+      }
+    },
     "見つからない": {
       "localizations": {
         "en": {

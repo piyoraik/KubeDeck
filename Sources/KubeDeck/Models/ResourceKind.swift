@@ -86,9 +86,41 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 
     /// `kubectl get <これ>` に渡す名前。
+    ///
+    /// **コアグループにも `.v1.` を付ける。** 「API グループを必ず付ける」を
+    /// core だけ免除していたが、**core こそ黙って別グループに流れる**。
+    /// 覚えている API の一覧のコアグループが縮退していると
+    /// （`{"name":"","versions":null}`。`Kubectl.cacheDirectory` の説明を参照）、
+    /// kubectl は `nodes` を core から解決できず、**同じ複数形を持つ
+    /// `metrics.k8s.io` へ流れる**。実測（Connect Gateway 越しの GKE、
+    /// kubectl v1.32.13）:
+    ///
+    /// ```
+    /// $ kubectl get pods,nodes -o json     # 縮退したキャッシュのまま
+    /// exit=0   items = PodMetrics 185 + NodeMetrics 3
+    /// $ kubectl get pods.v1.,nodes.v1. -o json
+    /// exit=0   items = Pod 225 + Node 3
+    /// ```
+    ///
+    /// **これは「知らない種別」より悪い壊れ方。** `pods` が本当に解決できない
+    /// ときは `the server doesn't have a resource type "pods"` で終了コードが
+    /// 立つので、`Kubectl.run` の捨てて引き直す網に掛かる。ところがこちらは
+    /// **exit 0・200 OK・valid JSON** なので、網が 1 つも発火しない。返るのは
+    /// `status.conditions` も `status.allocatable` も持たない NodeMetrics で、
+    /// アプリはそれを Node として読み、**全ノードを `Unknown`（橙）と表示し、
+    /// 割り当て可能量を 0 にして使用量を消していた。** 誰も嘘をつかないまま
+    /// 画面だけが嘘になる。
+    ///
+    /// 付けても `Kubectl.plural(of:)` が最初の `.` で切るので、stderr との
+    /// 突き合わせ（`deniedKinds` / `unknownKinds`）はそのまま働く。`get -o yaml`・
+    /// `delete`・`--selector` でも通ることは実測で確かめてある。
+    ///
+    /// **版まで固定してよい種別だけに付ける。** core は v1 しか無いので、
+    /// `autoscaling`（v1 / v2 が併存）のようにグループだけ付ける場合とは違い、
+    /// 版を書いても環境で別のものを引く余地が無い。
     var resourceName: String {
         switch self {
-        case .pod: return "pods"
+        case .pod: return "pods.v1."
         case .deployment: return "deployments"
         case .replicaSet: return "replicasets"
         case .statefulSet: return "statefulsets"
@@ -98,15 +130,15 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         // **API グループを付ける。** `autoscaling` は v1 / v2 が併存し、
         // 短い名前だと環境によって別のバージョンを引く。
         case .horizontalPodAutoscaler: return "horizontalpodautoscalers.autoscaling"
-        case .service: return "services"
+        case .service: return "services.v1."
         case .ingress: return "ingresses"
         // API グループを付ける。`networkpolicies` は Calico など別グループにも
         // 居るので、短い名前だと環境によって別の種別を引く。
         case .networkPolicy: return "networkpolicies.networking.k8s.io"
-        case .configMap: return "configmaps"
-        case .secret: return "secrets"
-        case .persistentVolumeClaim: return "persistentvolumeclaims"
-        case .serviceAccount: return "serviceaccounts"
+        case .configMap: return "configmaps.v1."
+        case .secret: return "secrets.v1."
+        case .persistentVolumeClaim: return "persistentvolumeclaims.v1."
+        case .serviceAccount: return "serviceaccounts.v1."
         // RBAC は必ず API グループを付ける。`roles` は別グループにも居る。
         case .role: return "roles.rbac.authorization.k8s.io"
         case .roleBinding: return "rolebindings.rbac.authorization.k8s.io"
@@ -114,9 +146,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .clusterRoleBinding: return "clusterrolebindings.rbac.authorization.k8s.io"
         case .podDisruptionBudget: return "poddisruptionbudgets.policy"
         case .endpointSlice: return "endpointslices.discovery.k8s.io"
-        case .resourceQuota: return "resourcequotas"
-        case .limitRange: return "limitranges"
-        case .persistentVolume: return "persistentvolumes"
+        case .resourceQuota: return "resourcequotas.v1."
+        case .limitRange: return "limitranges.v1."
+        case .persistentVolume: return "persistentvolumes.v1."
         case .storageClass: return "storageclasses.storage.k8s.io"
         case .priorityClass: return "priorityclasses.scheduling.k8s.io"
         case .validatingWebhookConfiguration:
@@ -124,9 +156,11 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .mutatingWebhookConfiguration:
             return "mutatingwebhookconfigurations.admissionregistration.k8s.io"
         case .apiService: return "apiservices.apiregistration.k8s.io"
-        case .node: return "nodes"
-        case .namespace: return "namespaces"
-        case .event: return "events"
+        // **`nodes` と `pods` と `events` は同じ複数形が別グループにも居る**
+        // （`metrics.k8s.io` / `events.k8s.io`）。実際に流れたのはここ。
+        case .node: return "nodes.v1."
+        case .namespace: return "namespaces.v1."
+        case .event: return "events.v1."
         }
     }
 

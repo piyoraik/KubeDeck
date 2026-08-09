@@ -136,8 +136,9 @@ struct RBACTests {
         #expect(ResourceKind.role.resourceName == "roles.rbac.authorization.k8s.io")
         #expect(ResourceKind.clusterRoleBinding.resourceName
                 == "clusterrolebindings.rbac.authorization.k8s.io")
-        // ServiceAccount は core グループなので付けない。
-        #expect(ResourceKind.serviceAccount.resourceName == "serviceaccounts")
+        // **core も免除しない。** 縮退した discovery のもとで core の複数形は
+        // 同名の別グループへ黙って流れる（`UnexpectedKindTests` を参照）。
+        #expect(ResourceKind.serviceAccount.resourceName == "serviceaccounts.v1.")
     }
 
     @Test("Cluster が付くものは Namespace を持たない")
