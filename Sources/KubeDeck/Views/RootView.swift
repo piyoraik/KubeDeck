@@ -42,9 +42,25 @@ struct RootView: View {
                 // `NSSplitView` そのもので、付け外しはビュー階層から split view が
                 // 消えることになる（`VSplitView` の件と同じ危うさ）。畳んだ状態に
                 // するだけにして、中身だけを止める。
+                // **書き戻しを右に置いているときだけ受ける。** 下へ移すと
+                // getter が false に変わり、SwiftUI は列を畳んだ結果として
+                // `isPresented = false` を**書き戻してくる**。素直に受けると
+                // 「出す／畳む」の状態（`showsInspector`）まで false になり、
+                // 下の帯が出ないまま消える —— つまり**下を選ぶと詳細が消える**。
+                // 実測（切り替えた直後の並び）:
+                //
+                //     switching to bottom (shows=true)
+                //     inspector set=false placement=bottom shows=true  ← 書き戻し
+                //     after switch: shows=false bottom=false
+                //
+                // ここは `.inspector` の畳み方であって人の意思ではないので、
+                // 右に置いているときだけ受ける（掴んで閉じる経路はそのまま効く）。
                 .inspector(isPresented: Binding(
                     get: { showsInspector && preferences.inspectorPlacement == .trailing },
-                    set: { showsInspector = $0 })
+                    set: {
+                        guard preferences.inspectorPlacement == .trailing else { return }
+                        showsInspector = $0
+                    })
                 ) {
                     Group {
                         // 畳んでいるあいだも中身を作らない。作ると詳細パネルが

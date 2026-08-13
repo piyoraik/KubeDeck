@@ -2925,6 +2925,24 @@ SwiftUI.NSHostingView.layout          ← レイアウトの最中
 下に置いているあいだは `isPresented` を false に固定するだけにし、**中身も
 作らない** — 作ると詳細パネルが 2 つ生き、イベントの取得が両方から走る。
 
+**そのぶん、`.inspector` からの書き戻しを素直に受けない。** 下へ移すと
+`isPresented` の getter が false に変わり、SwiftUI は列を畳んだ結果として
+**setter に false を書き戻してくる**。それを受けると「出す／畳む」の状態
+（`showsInspector`）まで false になり、**下を選んだ瞬間に詳細がどこにも
+出なくなる**（帯そのものが出ない）。実測（右 → 下へ切り替えた直後の並び）:
+
+```
+switching to bottom (shows=true)
+inspector set=false placement=bottom shows=true   ← SwiftUI からの書き戻し
+after switch: shows=false bottom=false
+```
+
+**起動時から「下」なら出る**ので、置き場所の実装ではなく切り替えの経路だけが
+壊れていた（切り分けは、`inspectorPlacement` を書いてから起こすのと、
+起こしてから切り替えるのを分けて撮る）。書き戻しは `.inspector` の畳み方で
+あって人の意思ではないので、**右に置いているときだけ受ける**（掴んで閉じる
+経路はそのまま効く）。
+
 **ログと上下に積まない。** 下に置いた詳細とログは同じ帯に**横並び**で入れる
 （ログが伸び縮み、詳細が右で固定幅）。積むと仕切りが 2 本になり、帯を 2 倍に
 広げないとどちらも数行しか残らない。高さは 1 つ（`dockHeight`）で済む。
