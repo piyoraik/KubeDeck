@@ -117,6 +117,11 @@ final class ClusterStore {
         overview = OverviewSnapshot()
         deniedKinds = []
         unknownKinds = []
+        // **使用量も引き直しになる。** スナップショットそのものは捨てない
+        // （すべての Namespace から 1 つへ絞ったときは、いま出ている値がその
+        // まま正しい）が、**まだ引いていないことは印で言う** —— 残したまま
+        // だと、新しい Namespace の Pod が `—`（＝取れなかった）に見える。
+        hasLoadedMetrics = false
         // **ログの行き先も捨てる。** `logStream` は `context: currentContext` を
         // 使うので、prod → dev と切り替えると開いている帯が **dev の同名 Pod を
         // 追い始める**（`reloadKey` に context が入っていないので、そもそも
@@ -289,6 +294,19 @@ final class ClusterStore {
     var metrics = MetricsSnapshot()
     /// metrics-server が使えるか。判定が済むまで nil。
     var metricsServerAvailable: Bool?
+    /// 取得元をいま調べている最中か。
+    ///
+    /// **`metricsServerAvailable == false` を「無い」と読ませないために持つ。**
+    /// あれが決まったあとも Prometheus の探索は続く（全 Service を順に叩く）ので、
+    /// そこだけを見て「入っていません」と書くと、**探している最中に断定する**
+    /// ことになる。
+    private(set) var isDetectingMetricsSources = false
+    /// 決まった取得元から 1 度でも値を取り終えたか。
+    ///
+    /// **`metrics.isEmpty` で代用しない。** 1 件も引けなかったクラスタと、
+    /// まだ引いていないクラスタが同じ姿になる（「無い」と「取れていない」を
+    /// 混ぜるのと同じ形）。
+    private(set) var hasLoadedMetrics = false
     /// どこから取るかの設定。
     var metricsPreference: MetricsSourcePreference = Preferences.shared.metricsPreference {
         didSet {
@@ -296,6 +314,7 @@ final class ClusterStore {
             Preferences.shared.metricsPreference = metricsPreference
             // 取得元が変われば数字の出どころも変わる。持ち越さない。
             metrics = MetricsSnapshot()
+            hasLoadedMetrics = false
             Task { await self.refreshMetrics() }
         }
     }
@@ -420,7 +439,12 @@ final class ClusterStore {
         switch currentTarget {
         case .builtIn(let kind):
             return ResourceTable.columns(
-                for: kind, showNamespace: showsNamespaceColumn, metrics: metrics)
+                for: kind, showNamespace: showsNamespaceColumn, metrics: metrics,
+                // **`.detecting` では出さない。** そのクラスタに使用量の列が
+                // あるべきかどうかがまだ決まっていないので、出してから引っ込める
+                // ことになる（一覧の幅が 2 度動く）。取得元が決まってからなら
+                // 列は必ず出るので、そこから先だけを「取得中」で埋める。
+                metricsPending: metricsPhase == .loading)
         case .custom(let type):
             return ResourceTable.columns(for: type, showNamespace: showsNamespaceColumn)
         case nil:
@@ -578,7 +602,9 @@ final class ClusterStore {
     }
 
     private nonisolated static func isMissing(_ text: String) -> Bool {
-        text.isEmpty || text == "—"
+        // **「取得中」も値ではない。** 引き終われば別の文字になるので、
+        // これで並べると並び順が値と無関係に動く。
+        text.isEmpty || text == "—" || text == ResourceTable.loadingUsage
     }
 
     var namespaceLabel: String {
@@ -644,6 +670,17 @@ final class ClusterStore {
             if metricsServerAvailable == true { return .metricsServer }
             return prometheus.map { .prometheus($0) } ?? .none
         }
+    }
+
+    /// 使用量の取得がどこまで進んでいるか。画面はこれを見て「取得中」と
+    /// 「取得できません」を書き分ける。**判定は `MetricsPhase.resolve` の
+    /// 1 か所**（画面ごとに条件を書くと、同じ画面で食い違う）。
+    var metricsPhase: MetricsPhase {
+        MetricsPhase.resolve(
+            sourceAvailable: activeMetricsSource.isAvailable,
+            isDetecting: isDetectingMetricsSources,
+            hasCheckedSource: metricsServerAvailable != nil,
+            hasLoaded: hasLoadedMetrics)
     }
 
     /// 設定で選んだ先が使えないときの説明。空なら問題なし。
@@ -1038,6 +1075,14 @@ final class ClusterStore {
         let context = currentContext
         guard !context.isEmpty else { return }
         let token = token ?? contextGeneration
+        // **調べている最中であることを画面に出せるようにする。** ここを黙ると、
+        // 探しているあいだじゅう「metrics-server も Prometheus も見つかりません」と
+        // 出る（`activeMetricsSource` はまだ `.none`）。
+        //
+        // **下ろすのは、いま走っているのが最新のときだけ。** 世代が進んで
+        // いれば、下ろす相手はもう別の呼び出しが持っている。
+        isDetectingMetricsSources = true
+        defer { if token == contextGeneration { isDetectingMetricsSources = false } }
 
         let available = await kubectl.metricsServerAvailable(
             context: context, namespace: selectedNamespace)
@@ -1066,6 +1111,7 @@ final class ClusterStore {
         Defaults.setPrometheus(nil, for: currentContext)
         prometheus = nil
         metricsServerAvailable = nil
+        hasLoadedMetrics = false
         await detectMetricsSources()
     }
 
@@ -1102,6 +1148,9 @@ final class ClusterStore {
         }
         guard token == contextGeneration else { return }
         metrics = loaded
+        // **取得元が無いときは立てない。** 空の結果を「引き終えた」にすると、
+        // まだ探している最中のセルが `—`（＝取れなかった）に倒れる。
+        if activeMetricsSource.isAvailable { hasLoadedMetrics = true }
         await refreshHistories()
     }
 

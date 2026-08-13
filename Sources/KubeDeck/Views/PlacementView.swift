@@ -439,6 +439,10 @@ private struct NodeUsageBars: View {
                         format: { Quantity.formatMemory(bytes: $0) })
                 }
             }
+        } else if store.metricsPhase.isPending {
+            // **「まだ引いていない」を「取得できません」と書かない。**
+            // 箱ごとに出るので輪は回さない（文字だけで足りる）。
+            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .caption2)
         } else {
             // 0% と描かない。「使っていない」と「測れていない」は別。
             Text("使用量を取得できません。")
@@ -487,6 +491,8 @@ private struct WorkloadUsageBars: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        } else if store.metricsPhase.isPending {
+            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .caption2)
         } else {
             Text("使用量を取得できません。")
                 .font(.caption2)

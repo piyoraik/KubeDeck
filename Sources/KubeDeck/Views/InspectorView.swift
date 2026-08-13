@@ -208,6 +208,14 @@ private struct SummaryPane: View {
                     InfoSection(title: "使用量") {
                         usageMeters(usage)
                     }
+                } else if store.metricsPhase.isPending, hasUsage {
+                    // **節ごと消したままにしない。** 値が届くまで間があるので、
+                    // 何も出さないと「この種別には使用量が出ない」に見える
+                    // （そして人は待たずに別の画面へ行く）。**出せる種別の
+                    // ときだけ**出す —— ConfigMap にいくら待っても使用量は無い。
+                    InfoSection(title: "使用量") {
+                        MetricsPendingLabel(phase: store.metricsPhase)
+                    }
                 }
 
                 if let endpoint = store.prometheus,
@@ -358,6 +366,10 @@ private struct SummaryPane: View {
             note: String(localized: "上限 未設定（ノードの空きまで使えます）"),
             noteLevel: .warning)
     }
+
+    /// 使用量が出る種別か。**`MetricsSnapshot.usage(for:)` と揃える** ——
+    /// ずれると、待っても出ないものに「取得しています」と出る。
+    private var hasUsage: Bool { object.kind == .pod || object.kind == .node }
 
     private var containerUsage: [String: ResourceUsage]? {
         let key = MetricsSnapshot.key(namespace: object.namespace, name: object.name)

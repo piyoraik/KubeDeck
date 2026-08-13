@@ -88,13 +88,23 @@ enum ResourceTable {
     private static let unsupported = String(localized: "不可")
     private static let localAPIService = String(localized: "ローカル（集約なし）")
     private static let unsetBase = String(localized: "未設定")
+    /// 使用量をまだ引いていないセル。**並べ替えでは値として扱わない**ので、
+    /// `ClusterStore.isMissing` からも引ける場所に置く（文字を 2 か所に書くと、
+    /// 片方だけ直したときに黙って並び順の意味が変わる）。
+    static let loadingUsage = String(localized: "取得中")
     private static let ingressDirection = String(localized: "Ingress（入）")
     private static let egressDirection = String(localized: "Egress（出）")
 
     /// `metrics` は metrics-server が入っているクラスタでだけ渡ってくる。
     /// 入っていないクラスタで空の列を並べても意味が無いので、そのときは列ごと出さない。
+    ///
+    /// **ただし「まだ引いていない」あいだは出す**（`metricsPending`）。取得元が
+    /// 決まっていれば列は必ず出るので、値が届いてから足すと**見ているあいだに
+    /// 列が増えて横幅が動く**。中身は `—` ではなく「取得中」にする ——
+    /// あれは「取れなかった」の印で、待てば出るものに使う字ではない。
     static func columns(
-        for kind: ResourceKind, showNamespace: Bool, metrics: MetricsSnapshot? = nil
+        for kind: ResourceKind, showNamespace: Bool, metrics: MetricsSnapshot? = nil,
+        metricsPending: Bool = false
     ) -> [ResourceColumn] {
         var columns: [ResourceColumn] = []
 
@@ -112,8 +122,8 @@ enum ResourceTable {
         }
 
         columns += specific(for: kind)
-        if let metrics, !metrics.isEmpty {
-            columns += usageColumns(for: kind, metrics: metrics)
+        if let metrics, !metrics.isEmpty || metricsPending {
+            columns += usageColumns(for: kind, metrics: metrics, pending: metricsPending)
         }
 
         columns.append(
@@ -779,7 +789,7 @@ enum ResourceTable {
 
     /// CPU とメモリ。Node は割り当て可能量に対する割合も出す。
     private static func usageColumns(
-        for kind: ResourceKind, metrics: MetricsSnapshot
+        for kind: ResourceKind, metrics: MetricsSnapshot, pending: Bool = false
     ) -> [ResourceColumn] {
         guard kind == .pod || kind == .node else { return [] }
         let snapshot = metrics
@@ -798,6 +808,7 @@ enum ResourceTable {
                         ? object.nodeAllocatable.cpuCores
                         : object.containerResourceTotal("requests").cpuCores,
                     limit: object.containerResourceTotal("limits").cpuCores,
+                    pending: pending,
                     format: { Quantity.formatCPU(cores: $0) })
             },
             ResourceColumn(
@@ -811,6 +822,7 @@ enum ResourceTable {
                         ? object.nodeAllocatable.memoryBytes
                         : object.containerResourceTotal("requests").memoryBytes,
                     limit: object.containerResourceTotal("limits").memoryBytes,
+                    pending: pending,
                     format: { Quantity.formatMemory(bytes: $0) })
             },
         ]
@@ -829,12 +841,16 @@ enum ResourceTable {
     /// 色を付けない（ノードの空きの話になり、それは Node の行が持っている）。
     private static func usageCell(
         kind: ResourceKind, used: Double?, base: Double, limit: Double,
-        format: (Double) -> String
+        pending: Bool = false, format: (Double) -> String
     ) -> ResourceCell {
         guard let used else {
             // 取れていないものを 0 と書かない。集計直後の Pod はまだ値が無く、
             // それは「使っていない」ではない。
-            return ResourceCell(text: "—", emphasis: .secondary)
+            //
+            // **そして「まだ引いていない」も `—` と書かない。** 取得元が
+            // 決まってから最初の値が届くまでには間があり（遅い経路で十数秒）、
+            // そこを `—` にすると**待てば出るものを「取れなかった」と断定する**。
+            return ResourceCell(text: pending ? loadingUsage : "—", emphasis: .secondary)
         }
         let text = format(used)
         let level = kind == .node

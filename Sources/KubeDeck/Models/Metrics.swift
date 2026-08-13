@@ -164,6 +164,49 @@ enum MetricsSourcePreference: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 使用量の取得がどこまで進んでいるか。
+///
+/// **「無い」と「取れていない」と「まだ引いていない」を混ぜない。** 取得元を
+/// 調べ終えて最初の値が返るまでには間がある —— 探索は全 Service を順に叩き、
+/// 値そのものは一覧を取り終えてから引く（遅い経路では十数秒）。そのあいだ
+/// セルに `—` を出したり「取得できません」と書いたりすると、**確かめて
+/// いないことを断定する**表示になる。ここは「無い」と「取れていない」を
+/// 混ぜないという同じ話で、**3 つ目に「まだ引いていない」がある**。
+enum MetricsPhase: Sendable, Hashable {
+    /// 取得元を調べている最中。まだ「入っていない」とは言えない。
+    case detecting
+    /// 取得元は決まった。最初の値を待っている。
+    case loading
+    /// 引き終わった。**ここから先の空欄だけが「取れなかった」の意味を持つ。**
+    case ready
+    /// 調べ終えて、取得元が無かった。
+    case unavailable
+
+    /// まだ答えが出ていないか。**このあいだ画面は断定しない。**
+    var isPending: Bool { self == .detecting || self == .loading }
+
+    /// **判定は 1 か所で持つ。** 画面ごとに条件を書くと、片方だけ直したときに
+    /// 「取得中」と「取得できません」が同じ画面で食い違う。
+    ///
+    /// - Parameters:
+    ///   - sourceAvailable: 現在値を取れる先がもう決まっているか。
+    ///   - isDetecting: 取得元をいま調べている最中か。
+    ///   - hasCheckedSource: 取得元を 1 度でも調べ終えたか。
+    ///   - hasLoaded: 決まった先から 1 度でも値を取り終えたか。
+    static func resolve(
+        sourceAvailable: Bool, isDetecting: Bool, hasCheckedSource: Bool, hasLoaded: Bool
+    ) -> MetricsPhase {
+        // 取得元が決まっているなら、待っているのは値のほう。**探索の続きを
+        // 待たない** —— metrics-server が見つかったあとも Prometheus の探索は
+        // 続くが、現在値はもうそちらから引ける。
+        if sourceAvailable { return hasLoaded ? .ready : .loading }
+        // **調べ終わる前に「無い」と決めない。** metrics-server が無いことは
+        // 早々に分かるが、そのあと Prometheus を探している最中でもある。
+        if isDetecting || !hasCheckedSource { return .detecting }
+        return .unavailable
+    }
+}
+
 /// 実際に使っている取得元。設定と、クラスタで使えるものの両方で決まる。
 enum MetricsSource: Sendable, Hashable {
     case metricsServer

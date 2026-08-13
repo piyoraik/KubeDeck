@@ -6166,16 +6166,16 @@
     },
     "レプリカ数は %lld〜%lld の範囲で指定してください。": {
       "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "レプリカ数は %lld〜%lld の範囲で指定してください。"
-          }
-        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Replicas must be between %1$lld and %2$lld."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "レプリカ数は %lld〜%lld の範囲で指定してください。"
           }
         }
       }
@@ -7188,6 +7188,38 @@
         }
       }
     },
+    "使用量の取得元を確認しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking the usage source…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量の取得元を確認しています…"
+          }
+        }
+      }
+    },
+    "使用量を取得しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading usage…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量を取得しています…"
+          }
+        }
+      }
+    },
     "使用量を取得できません": {
       "localizations": {
         "en": {
@@ -8164,6 +8196,22 @@
         }
       }
     },
+    "取得中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得中"
+          }
+        }
+      }
+    },
     "取得中 · %@": {
       "localizations": {
         "en": {
@@ -8213,6 +8261,7 @@
       }
     },
     "取得元を確認しています。": {
+      "extractionState": "stale",
       "localizations": {
         "en": {
           "stringUnit": {

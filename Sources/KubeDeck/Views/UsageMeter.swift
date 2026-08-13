@@ -127,6 +127,37 @@ struct UsageMeter: View {
     }
 }
 
+/// 使用量をまだ引いている最中であることを 1 行で言う。
+///
+/// **「取得できません」と同じ見た目にしない。** あちらは結果で、こちらは
+/// 途中経過（`MetricsPhase`）。同じ文面にすると、**待てば出るものを
+/// 「出ない」と読ませる**（そして人はもう一度探しに行く）。
+struct MetricsPendingLabel: View {
+    let phase: MetricsPhase
+    /// 回る印を付けるか。**並べる場所では付けない** —— 配置画面はノードの箱
+    /// ごとにこれを出すので、20 個の輪が同時に回ることになる（舵輪を Core
+    /// Animation に逃がしたのと同じ話で、待っているだけの絵に CPU を使わない）。
+    var spins = true
+    var font: Font = .caption
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if spins {
+                ProgressView().controlSize(.small)
+            }
+            // **「取得元を探している」と「値を待っている」を分ける。** 前者は
+            // 入っているかどうかがまだ分からない段で、後者はもう待つだけ。
+            if phase == .detecting {
+                Text("使用量の取得元を確認しています…")
+            } else {
+                Text("使用量を取得しています…")
+            }
+        }
+        .font(font)
+        .foregroundStyle(.secondary)
+    }
+}
+
 /// 概要に出すクラスタ全体の使用量。
 ///
 /// 瞬時値と推移を 1 枚にまとめる。別カードに分けると、同じ CPU とメモリの
@@ -169,6 +200,10 @@ struct ClusterUsageCard: View {
                     series: store.clusterHistory.memory,
                     tint: Palette.seriesMemory,
                     format: { Quantity.formatMemory(bytes: $0) })
+            } else if store.metricsPhase.isPending {
+                // **まだ引いていないことを「取得できません」と書かない。**
+                // 取得元の探索と最初の取得で、遅い経路では十数秒かかる。
+                MetricsPendingLabel(phase: store.metricsPhase)
             } else {
                 unavailable
             }
@@ -226,8 +261,16 @@ struct ClusterUsageCard: View {
     }
 
     private var sourceLabel: String {
-        if store.metricsServerAvailable == nil && store.prometheus == nil {
+        switch store.metricsPhase {
+        case .detecting:
             return String(localized: "確認中")
+        case .loading:
+            // **取得元の名前も出す。** どこから取ろうとしているのかは、
+            // 待っているあいだにいちばん知りたいこと。
+            return [store.activeMetricsSource.label, String(localized: "取得中")]
+                .joined(separator: " · ")
+        case .ready, .unavailable:
+            break
         }
         var parts: [String] = []
         if store.activeMetricsSource.isAvailable { parts.append(store.activeMetricsSource.label) }
@@ -258,9 +301,9 @@ struct ClusterUsageCard: View {
 
     private var unavailableReason: String {
         if let problem = store.metricsSourceProblem { return problem }
-        if store.metricsServerAvailable == nil {
-            return String(localized: "取得元を確認しています。")
-        }
+        // **ここに「確認しています」を持たない。** 調べている最中は
+        // `MetricsPendingLabel` が出る側で、この文面は**調べ終えた結果**だけを
+        // 言う（2 か所が同じことを言うと、片方だけ直したときに食い違う）。
         // **取得元が無いことにしない。** 取得元はあるのにノードの使用量だけ
         // 引けないことがある（GKE の Warden など、管理されたクラスタは
         // ノードの指標を拒みつつ Pod の指標は通す）。そこで「見つかりません」と
