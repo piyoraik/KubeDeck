@@ -125,7 +125,15 @@ actor APIDiscovery {
     func resource(
         for resourceName: String, context: String, client: APIClient
     ) async throws -> APIResource {
-        let table = try await table(for: context, client: client)
+        let table: [APIResource]
+        do {
+            table = try await self.table(for: context, client: client)
+        } catch let error as APIDiscoveryError {
+            throw error
+        } catch {
+            // **一覧を引けなかったことを、種別の話にしない。**
+            throw APIDiscoveryError.unreachable(error)
+        }
         let query = Self.parse(resourceName)
         guard let found = Self.match(query, in: table) else {
             throw APIDiscoveryError.unknownResource(resourceName)
@@ -257,8 +265,12 @@ actor APIDiscovery {
     /// バージョン（`pods.v1.`）は core なので、これで足りる。
     private static func legacy(client: APIClient) async throws -> [APIResource] {
         var groupVersions: [String] = []
-        if let core = try? await client.data(path: "api"),
-           let root = try? JSONDecoder().decode(JSONValue.self, from: core) {
+        // **引けなかったら投げる。`try?` で流さない。**
+        // ここを握りつぶすと、core が引けなかっただけで表から `pods` や
+        // `services` が丸ごと落ち、呼び出し側は「サーバがその種別を知らない」
+        // と読む（しかも 10 分覚える）。**「取れなかった」を「無い」にしない。**
+        let core = try await client.data(path: "api")
+        if let root = try? JSONDecoder().decode(JSONValue.self, from: core) {
             for version in root["versions"]?.arrayValue ?? [] {
                 if let name = version.stringValue { groupVersions.append(name) }
             }
@@ -272,20 +284,26 @@ actor APIDiscovery {
         }
 
         var result: [APIResource] = []
-        await withTaskGroup(of: [APIResource].self) { tasks in
+        var failed: [String] = []
+        await withTaskGroup(of: (String, [APIResource]?).self) { tasks in
             for groupVersion in groupVersions {
                 tasks.addTask {
                     let path = groupVersion.contains("/")
                         ? "apis/\(groupVersion)" : "api/\(groupVersion)"
                     guard let data = try? await client.data(path: path),
                           let list = try? JSONDecoder().decode(JSONValue.self, from: data)
-                    else { return [] }
-                    return parseResourceList(list, groupVersion: groupVersion)
+                    else { return (groupVersion, nil) }
+                    return (groupVersion, parseResourceList(list, groupVersion: groupVersion))
                 }
             }
-            for await entries in tasks { result += entries }
+            for await (groupVersion, entries) in tasks {
+                if let entries { result += entries } else { failed.append(groupVersion) }
+            }
         }
-        guard !result.isEmpty else {
+        // **欠けたまま覚えない。** 1 グループでも引けなかったら、その表は
+        // 「そのグループの種別は存在しない」と読まれてしまう（10 分覚える）。
+        // 集約 discovery で「片方だけで済ませない」としたのと同じ理由。
+        guard failed.isEmpty, !result.isEmpty else {
             throw APIDiscoveryError.empty
         }
         return result
@@ -312,6 +330,12 @@ actor APIDiscovery {
 enum APIDiscoveryError: LocalizedError {
     case unknownResource(String)
     case empty
+    /// 一覧を引く途中の通信の失敗。**種別の話と混ぜない。**
+    ///
+    /// これを `APIError.notFound` のまま返すと、呼び出し側が
+    /// 「サーバがその種別を知らない」と読む（`/api` が 404 を返しただけで、
+    /// 要求した種別すべてが「存在しない」ことになる）。
+    case unreachable(any Error)
 
     var errorDescription: String? {
         switch self {
@@ -326,6 +350,8 @@ enum APIDiscoveryError: LocalizedError {
                 """)
         case .empty:
             return String(localized: "API の一覧を引けませんでした。")
+        case .unreachable(let error):
+            return error.localizedDescription
         }
     }
 }

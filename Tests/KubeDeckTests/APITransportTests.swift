@@ -458,7 +458,8 @@ struct APITransportTests {
         // 型として別に受けられること（`catch APIDiscoveryError.unknownResource`）。
         switch unknown {
         case .unknownResource: break
-        case .empty: Issue.record("unknownResource が empty として読まれた")
+        case .empty, .unreachable:
+            Issue.record("unknownResource が別のものとして読まれた")
         }
     }
 

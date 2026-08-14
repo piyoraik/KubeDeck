@@ -173,9 +173,16 @@ actor ClusterProxy {
             instances[context] = instance
             failures[context] = nil
             return instance.endpoint
+        } catch let error as ClusterProxyError {
+            // **畳んだことを「立てられなかった」にしない。** 切り替えの途中で
+            // 畳むのはこちらの都合であって失敗ではない。ここで覚えると、
+            // 戻ってきたときに立て直しの間隔（10 秒）に掛かって
+            // **kubectl 経由に落ち、設定には起きていない失敗の理由が出る。**
+            if case .unavailable = error { throw error }
+            failures[context] = Failure(at: Date(), reason: error.localizedDescription)
+            throw error
         } catch {
-            let reason = error.localizedDescription
-            failures[context] = Failure(at: Date(), reason: reason)
+            failures[context] = Failure(at: Date(), reason: error.localizedDescription)
             throw error
         }
     }
@@ -185,6 +192,11 @@ actor ClusterProxy {
 
     func diagnostics(for context: String) -> Diagnostics? {
         instances[context]?.diagnostics(context: context)
+    }
+
+    /// ある時刻より後に proxy が書き出した行。**失敗の説明に添える用。**
+    func output(for context: String, since: Date) -> [String] {
+        instances[context]?.recentOutput(since: since) ?? []
     }
 
     // MARK: - 起こす / 止める
@@ -254,6 +266,10 @@ actor ClusterProxy {
     /// **開いたぶんだけ常駐させない。** 1 本あたり RSS 31MB・10 スレッド（実測）
     /// なので、切り替えて回るだけで積み上がる。
     func keepOnly(_ context: String) async {
+        // **覚えている失敗も忘れる。** 人が「立て直す」を押すのは、失敗した
+        // 直後（＝立て直しの間隔の最中）。忘れないと、押しても間隔に掛かって
+        // 何も起きず、**古い理由がそのまま出続ける。**
+        failures.removeAll()
         await drainStarts(except: context)
         for key in instances.keys where key != context {
             await stop(context: key)
@@ -487,6 +503,10 @@ extension ClusterProxy {
             kubeconfigFingerprint == Instance.fingerprintKubeconfig(kubeconfig)
         }
 
+        func recentOutput(since: Date) -> [String] {
+            output.lines(since: since).map { endpoint.redacting($0) }
+        }
+
         func diagnostics(context: String) -> Diagnostics {
             Diagnostics(
                 context: context,
@@ -690,14 +710,14 @@ extension ClusterProxy {
     /// proxy が書き出した行を、直近ぶんだけ持つ。
     final class OutputBuffer: @unchecked Sendable {
         private let lock = NSLock()
-        private var buffer: [String] = []
+        private var buffer: [(at: Date, line: String)] = []
         /// **際限なく溜めない。** 届かないクラスタでは 1 要求ごとに数行書く。
         private let limit = 40
 
         func append(_ line: String) {
             lock.lock()
             defer { lock.unlock() }
-            buffer.append(line)
+            buffer.append((Date(), line))
             if buffer.count > limit {
                 buffer.removeFirst(buffer.count - limit)
             }
@@ -706,7 +726,16 @@ extension ClusterProxy {
         func lines() -> [String] {
             lock.lock()
             defer { lock.unlock() }
-            return buffer
+            return buffer.map(\.line)
+        }
+
+        /// **いつ書かれたかで絞れるようにする。** 失敗の説明に添えるとき、
+        /// 20 分前に出た認証プラグインの行を「いまの理由」として見出しに
+        /// 出してしまうと、見に行く場所を間違えさせる。
+        func lines(since: Date) -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return buffer.filter { $0.at >= since }.map(\.line)
         }
     }
 

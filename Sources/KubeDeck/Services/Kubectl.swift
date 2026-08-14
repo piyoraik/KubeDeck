@@ -785,12 +785,13 @@ actor Kubectl {
             // 避ける理由（discovery を通らないと Connect Gateway で 404 になる）
             // に当たらない** —— あれは metrics API の話で、`/version` は
             // 集約 API サーバ越しではなく本体が答える。
+            let startedAt = Date()
             do {
                 let data = try await api.data(path: "version")
                 let root = try JSONDecoder().decode(JSONValue.self, from: data)
                 return root["gitVersion"]?.stringValue ?? String(localized: "不明")
             } catch {
-                throw await explained(error, context: context)
+                throw await explained(error, context: context, since: startedAt)
             }
         }
         let result = try await run(
@@ -881,6 +882,7 @@ actor Kubectl {
     ) async throws -> [K8sObject] {
         let resource: APIResource
         let pages: [Data]
+        let startedAt = Date()
         do {
             resource = try await APIDiscovery.shared.resource(
                 for: resourceName, context: context, client: api)
@@ -894,7 +896,7 @@ actor Kubectl {
             }
         } catch {
             // **proxy が書いたものを添えてから投げる**（`explained` の説明を参照）。
-            throw await explained(error, context: context)
+            throw await explained(error, context: context, since: startedAt)
         }
         var objects: [K8sObject] = []
         for page in pages {
@@ -943,7 +945,18 @@ actor Kubectl {
     ///
     /// **種別ごとの拒否や NotFound には添えない。** あれは応答そのものが理由を
     /// 言っているので、proxy の古い行を足すとかえって読み違える。
-    private func explained(_ error: any Error, context: String) async -> any Error {
+    /// - Parameter since: この時刻より後に proxy が書いた行だけを添える。
+    ///   **古い行を「いまの理由」として見出しに出さない。**
+    private func explained(
+        _ error: any Error, context: String, since: Date
+    ) async -> any Error {
+        // **包んだぶんを剥がしてから見る。** 一覧を引く途中の失敗は
+        // `APIDiscoveryError.unreachable` に包んである（種別の話と混ぜない
+        // ため）。剥がさないと、**いちばん出したい経路 —— 起動直後の認証
+        // 失敗 —— でプラグインの文言が添えられない**（実際そうなった）。
+        if case APIDiscoveryError.unreachable(let inner) = error {
+            return await explained(inner, context: context, since: since)
+        }
         guard let apiError = error as? APIError else { return error }
         switch apiError {
         case .forbidden, .notFound, .conflict:
@@ -951,7 +964,7 @@ actor Kubectl {
         case .unauthorized, .status, .timedOut, .unreachable, .malformed:
             break
         }
-        let output = await ClusterProxy.shared.diagnostics(for: context)?.recentOutput ?? []
+        let output = await ClusterProxy.shared.output(for: context, since: since)
         // proxy 自身の「中継に失敗した」行は body と同じことを言っているだけ、
         // 待ち受けを始めた行はそもそも失敗ではない。どちらも落とす。
         // **プラグインの行は残す。**
@@ -1098,6 +1111,7 @@ actor Kubectl {
         metadataOnly: Set<ResourceKind> = []
     ) async throws -> PartialList {
         guard !kinds.isEmpty else { return PartialList() }
+        let startedAt = Date()
 
         enum Outcome: Sendable {
             case objects([K8sObject])
@@ -1123,6 +1137,13 @@ actor Kubectl {
                         }
                     } catch APIDiscoveryError.unknownResource {
                         // 表に無い＝サーバが知らない。**拒否とは分けて持つ。**
+                        //
+                        // **ここに来るのは「表は引けた。その中に無かった」
+                        // ときだけ。** 表そのものを引けなかったとき
+                        // （`APIDiscoveryError.unreachable` / `.empty`）は
+                        // 下の `.failed` に落ちる —— そちらを混ぜると、
+                        // `/api` が 404 を返しただけで**要求した全種別が
+                        // 「クラスタに存在しない」**ことになる。
                         return (kind, .unknown)
                     } catch {
                         // **一過性の discovery 失敗を「無い」にしない。**
@@ -1177,7 +1198,7 @@ actor Kubectl {
         }
         if readKinds.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
            let first = kinds.compactMap({ failures[$0] }).first {
-            throw await explained(first, context: context)
+            throw await explained(first, context: context, since: startedAt)
         }
         return result
     }
