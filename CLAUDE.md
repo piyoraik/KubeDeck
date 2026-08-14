@@ -597,6 +597,30 @@ k8s 1.30 以降）。古いクラスタは従来の形を返すので、その�
 - **`exec`**: ターミナルに任せる（既定の `--reject-paths` が proxy 側でも
   exec / attach を 403 で塞ぐ。実測）。
 
+#### 実クラスタに当てて確かめる（`Scripts/verify-transport`）
+
+**単体テストの代わりではない。** あちらは合成 JSON で判断を固定するもの、
+こちらは「実際のクラスタで、実際の kubectl と同じ数字になるか」を見るもの。
+アプリの実コードをそのまま呼ぶので、画面を通さずに通る道を叩ける。
+
+```bash
+Scripts/verify-transport/run.sh kind-kubedeck
+Scripts/verify-transport/run.sh <context> --switch=<別のコンテキスト>
+```
+
+**既定は読み取りだけ。** 他人のクラスタに当てても書き込まない。CRD と
+「権限で一部だけ拒まれる」経路まで見るときは `fixtures.sh up`（**kind 専用**。
+終わったら `down`）。
+
+**実測でしか出なかった壊れ方は、どれもここで見つかっている** —— Connect
+Gateway でパスが落ちて全 API が 404、metadata だけで引くと件数が空欄、
+立ち上げに相乗りした側が畳まれた proxy を受け取る、など。
+
+**生きているクラスタは数えているあいだにも動く。** 件数は kubectl で前後 2 回
+挟み、その間に入っていれば一致とみなす（実測: あのクラスタは Helm のリリース
+Secret が毎分増減する）。ページ送りの厳密な一致は、動かない種別（Namespace）で
+見る。
+
 #### まだやっていない: watch
 
 `watch=1` は proxy 経由で流れる（`{"type":"ADDED",…}`、`allowWatchBookmarks` も
