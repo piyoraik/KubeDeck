@@ -10,3 +10,7 @@ dist/
 # 画面の確認で撮ったもの。配布物の図は Design/ にある。
 スクリーンショット*.png
 Screenshot*.png
+
+# 検証で作る kubeconfig。**トークンが入る**ので絶対にコミットしない
+# （`Scripts/verify-transport/fixtures.sh up` が置く。`down` で消える）。
+Scripts/verify-transport/*.kubeconfig
