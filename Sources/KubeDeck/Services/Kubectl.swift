@@ -840,10 +840,22 @@ actor Kubectl {
     }
 
     /// 読み取り用の HTTP の口。使えないときは nil（＝ kubectl 経由に落ちる）。
+    /// コンテキストごとに、最後に使った待ち受け先。
+    ///
+    /// **proxy が立て直されたら、覚えた API の一覧も捨てる。** kubeconfig が
+    /// 書き換わって別のクラスタを指した場合、待ち受け先は同じでも中身は別物
+    /// になる。古い表のままだとパスが合わず、**「クラスタに見つかりません」と
+    /// 出る**（`APIDiscovery` の説明が約束していたのに、誰も捨てていなかった）。
+    private var lastEndpoints: [String: URL] = [:]
+
     private func api(for context: String) async -> APIClient? {
         guard usesAPIProxy, !context.isEmpty else { return nil }
         do {
             let endpoint = try await ClusterProxy.shared.endpoint(for: context)
+            if lastEndpoints[context] != endpoint.baseURL {
+                lastEndpoints[context] = endpoint.baseURL
+                await APIDiscovery.shared.invalidate(context: context)
+            }
             proxyFailure = nil
             return APIClient(endpoint: endpoint, timeout: TimeInterval(timeoutSeconds))
         } catch {
@@ -1109,10 +1121,20 @@ actor Kubectl {
                         case .notFound: return (kind, .unknown)
                         default: return (kind, .failed(error))
                         }
-                    } catch is APIDiscoveryError {
+                    } catch APIDiscoveryError.unknownResource {
                         // 表に無い＝サーバが知らない。**拒否とは分けて持つ。**
                         return (kind, .unknown)
                     } catch {
+                        // **一過性の discovery 失敗を「無い」にしない。**
+                        // `APIDiscoveryError.empty`（一覧そのものを引けなかった）
+                        // をここに混ぜると、全種別が「クラスタに見つかりません
+                        // でした。`kubectl api-resources` を確かめてください」に
+                        // なる。kubectl 経由で `discoveryWasFresh` を足して守った
+                        // のと同じ話（確かめていない失敗を、外す判断に使わない）。
+                        if error is K8sObject.UnexpectedKind {
+                            // 表が古い疑いがあるので、次の周期で引き直させる。
+                            await APIDiscovery.shared.invalidate(context: context)
+                        }
                         return (kind, .failed(error))
                     }
                 }
@@ -1145,7 +1167,15 @@ actor Kubectl {
         // **読めたぶんは捨てない**（kubectl 経由で `partialStdout` を拾い直して
         // いるのと同じ判断）。**全部が駄目だったときだけ投げる** —— そのときは
         // 呼び出し側が「取得できません」を出せるように、最初の失敗を渡す。
-        if result.objects.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
+        //
+        // **「読めた」を件数で判定しない。** `objects.isEmpty` で見ていると、
+        // 読めた種別がたまたま全部 0 件だったときに**取得そのものが失敗した
+        // ことになる**（0 件と取れていないを混ぜる、いつもの間違いの裏返し）。
+        let readKinds = kinds.filter { kind in
+            if case .objects = outcomes[kind] { return true }
+            return false
+        }
+        if readKinds.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
            let first = kinds.compactMap({ failures[$0] }).first {
             throw await explained(first, context: context)
         }

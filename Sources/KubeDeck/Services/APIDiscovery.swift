@@ -47,8 +47,24 @@ actor APIDiscovery {
     private static let aggregatedAccept =
         "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList"
 
-    private var tables: [String: [APIResource]] = [:]
+    /// 覚えた表と、いつ引いたか。
+    ///
+    /// **いつまでも覚えない。** クラスタは動く —— metrics-server を後から入れる、
+    /// 集約 API サーバが遅れて上がる、CRD を足す。永久に覚えていると
+    /// 「その種別は無い」が**そのコンテキストを離れるまで直らない**（実際、
+    /// 起動後に metrics-server を入れると `metricsServerAvailable` が false の
+    /// まま戻らなくなる）。kubectl の discovery キャッシュも 10 分で切れる。
+    private static let tableLifetime: TimeInterval = 10 * 60
+
+    private struct Table {
+        var entries: [APIResource]
+        var loadedAt: Date
+    }
+
+    private var tables: [String: Table] = [:]
     private var loading: [String: Task<[APIResource], Error>] = [:]
+    /// 捨てた回数。**引いている最中に捨てられたら、その結果を採らない。**
+    private var generations: [String: Int] = [:]
 
     /// 種別名を解いた結果。
     struct Query: Sendable, Equatable {
@@ -140,17 +156,25 @@ actor APIDiscovery {
 
     /// コンテキストごとの表。**同時に 2 本引かない。**
     func table(for context: String, client: APIClient) async throws -> [APIResource] {
-        if let table = tables[context] { return table }
+        if let table = tables[context],
+           Date().timeIntervalSince(table.loadedAt) < Self.tableLifetime {
+            return table.entries
+        }
         if let task = loading[context] { return try await task.value }
+        let generation = generations[context] ?? 0
         let task = Task { try await Self.load(client: client) }
         loading[context] = task
         do {
-            let table = try await task.value
-            loading[context] = nil
-            tables[context] = table
-            return table
+            let entries = try await task.value
+            if loading[context] == task { loading[context] = nil }
+            // **捨てられていたら覚え直さない。** 引いている最中に
+            // `invalidate` が走っていたら、この結果はもう古い相手のもの
+            // （コンテキストを切り替えた直後にこの窓を踏む）。
+            guard generations[context] ?? 0 == generation else { return entries }
+            tables[context] = Table(entries: entries, loadedAt: Date())
+            return entries
         } catch {
-            loading[context] = nil
+            if loading[context] == task { loading[context] = nil }
             throw error
         }
     }
@@ -162,10 +186,19 @@ actor APIDiscovery {
     /// proxy を立て直したときは、こちらも捨てる。
     func invalidate(context: String) {
         tables[context] = nil
+        generations[context, default: 0] += 1
+        // **走っている取得も止める。** 放っておくと、捨てたはずの表が
+        // 完了と同時に覚え直される（世代でも弾くが、無駄に引かせない）。
+        loading[context]?.cancel()
         loading[context] = nil
     }
 
     func invalidateAll() {
+        for context in tables.keys { generations[context, default: 0] += 1 }
+        for (context, task) in loading {
+            task.cancel()
+            generations[context, default: 0] += 1
+        }
         tables.removeAll()
         loading.removeAll()
     }

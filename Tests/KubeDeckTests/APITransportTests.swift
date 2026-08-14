@@ -442,6 +442,40 @@ struct APITransportTests {
         #expect(APIClient.continueToken(in: Data("404 page not found".utf8)) == nil)
     }
 
+    // MARK: - 失敗の読み分け
+
+    /// **一過性の discovery 失敗を「その種別は無い」にしない。**
+    ///
+    /// `unknownResource` は「表に無い」＝サーバが知らない。`empty` は
+    /// 「一覧そのものを引けなかった」で、次の周期では取れるかもしれない。
+    /// 混ぜると、届かなかっただけで全種別に
+    /// 「クラスタに見つかりませんでした」と書くことになる。
+    @Test func tellsUnknownResourceFromEmptyDiscovery() {
+        let unknown = APIDiscoveryError.unknownResource("hoges.example.com")
+        let empty = APIDiscoveryError.empty
+        #expect(unknown.errorDescription?.contains("api-resources") == true)
+        #expect(empty.errorDescription?.contains("api-resources") != true)
+        // 型として別に受けられること（`catch APIDiscoveryError.unknownResource`）。
+        switch unknown {
+        case .unknownResource: break
+        case .empty: Issue.record("unknownResource が empty として読まれた")
+        }
+    }
+
+    /// 通信の失敗には proxy の文言を添える。**403 / 404 には添えない**
+    /// （応答そのものが理由を言っているので、古い行を足すと読み違える）。
+    @Test func composesTransportErrorMessage() {
+        let composed = TransportError(
+            summary: "8 秒待っても API サーバから応答がありませんでした。",
+            detail: "gke-gcloud-auth-plugin: ERROR: …")
+        let text = composed.errorDescription ?? ""
+        // **言い換えを先に置く**（帯は最初の段落しか見出しに出さない）。
+        #expect(text.hasPrefix("gke-gcloud-auth-plugin"))
+        #expect(text.contains("8 秒待っても"))
+        // 添えるものが無ければ、元の文言だけ。
+        #expect(TransportError(summary: "そのまま", detail: "").errorDescription == "そのまま")
+    }
+
     // MARK: - 待ち受け先の読み取り
 
     /// `kubectl proxy` の 1 行目から待ち受け先を取る。手元の v1.32.13 と v1.36.2 は

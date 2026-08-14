@@ -117,7 +117,26 @@ actor ClusterProxy {
         // **走っている起動があれば、それに乗る。** ここを見ずに立てると、
         // 概要の 13 種別が同時に読みに来るだけで proxy が 13 本立つ。
         if let task = starting[context] {
-            return try await task.value.endpoint
+            let instance = try await task.value
+            // **相乗りした側も、畳まれていないかを見る。** 待っているあいだに
+            // コンテキストが切り替わると `drainStarts` がこの起動を引き取って
+            // 終わらせている。立てた本人だけが確かめる作りにしていたので、
+            // 相乗り側には**すでに死んだ proxy の待ち受け先**が配られていた
+            // （症状は「立ち上げ直後だけ接続を拒まれる」）。
+            //
+            // **「まだ登録されていない」を「畳まれた」と読まない。** 起動が
+            // 終わると待っていた全員が動き出せるようになるが、登録するのは
+            // 立てた本人だけ。`instances` だけを見ると、本人より先に動いた
+            // 相乗り側が**必ず**弾かれる（実測でそうなった）。畳まれたかどうかは
+            // 「この起動がまだ現役か」で見る —— `drainStarts` は引き取るときに
+            // `starting` から外す。
+            guard starting[context] == task || instances[context]?.pid == instance.pid,
+                  instance.isRunning
+            else {
+                throw ClusterProxyError.unavailable(
+                    String(localized: "立ち上げの途中で畳まれました。"))
+            }
+            return instance.endpoint
         }
 
         if let failure = failures[context],
@@ -195,6 +214,13 @@ actor ClusterProxy {
         if !context.isEmpty {
             arguments += ["--context", context]
         }
+        // **読み取りしか通さない。** アプリは書き込みを kubectl の子プロセスで
+        // 行うので、この口に POST / PUT / PATCH / DELETE が通る必要はない。
+        // 既定の `--reject-methods` は `^$`（何も拒まない）なので、常駐している
+        // あいだ**書き込みできる口が loopback に開いたまま**になる。読み取り専用の
+        // 札（`ContextProfile.isReadOnly`）は画面と `ClusterStore` で守っているが、
+        // 「画面で隠すだけにしない」に倣ってここでも塞ぐ。
+        arguments.append("--reject-methods=^(POST|PUT|PATCH|DELETE)$")
         // **`--request-timeout` を渡さない。** 全要求に上限が掛かると watch が
         // 切られる。待ち上限は呼び出し側（URLSession）で持つ。
         // **`--reject-paths` は既定のまま。** exec / attach を 403 で塞ぐ
@@ -316,7 +342,7 @@ actor ClusterProxy {
     /// いたら、立て直しが重なったときに**最後の書き込みか削除だけが残り、
     /// 残りの pid が記録から消えた**（実測。3 本のうち控えられていたのは
     /// 1 本だけで、残り 2 本は次の起動でも片付かなかった）。
-    private static func pidFile(pid: Int32) -> URL {
+    static func pidFile(pid: Int32) -> URL {
         pidDirectory.appendingPathComponent("\(pid).pid")
     }
 
@@ -457,6 +483,10 @@ extension ClusterProxy {
                 recentOutput: output.lines().map { endpoint.redacting($0) })
         }
 
+        /// **待たずに殺す。** ここはアクター（`ClusterProxy`）から呼ばれるので、
+        /// 中で 2 秒眠ると**その間すべての取得が止まる**（コンテキストを
+        /// 切り替えるたびに起きる）。SIGTERM を送って、止めを刺す役は別の
+        /// スレッドに預ける。
         func terminate() {
             ClusterProxy.livePIDs.remove(pid)
             lock.lock()
@@ -464,14 +494,17 @@ extension ClusterProxy {
             lock.unlock()
             guard target.isRunning else { return }
             target.terminate()
-            // 2 秒待って駄目なら SIGKILL（取得系と同じ手当て）。
-            let deadline = Date().addingTimeInterval(2)
-            while target.isRunning, Date() < deadline {
-                usleep(50_000)
+            let thread = Thread {
+                let deadline = Date().addingTimeInterval(2)
+                while target.isRunning, Date() < deadline {
+                    usleep(50_000)
+                }
+                if target.isRunning {
+                    kill(target.processIdentifier, SIGKILL)
+                }
             }
-            if target.isRunning {
-                kill(target.processIdentifier, SIGKILL)
-            }
+            thread.stackSize = 128 << 10
+            thread.start()
         }
 
         /// 起こして、待ち受け先を言うまで待つ。
@@ -506,6 +539,14 @@ extension ClusterProxy {
             } catch {
                 throw ClusterProxyError.startupFailed(error.localizedDescription)
             }
+            // **立ち上がりを待つ前に控える。** 待ち上限まで返ってこない相手
+            // （返事をしない exec 認証プラグイン）は、まさにこの経路で捨てられる。
+            // 控えていないと `terminateAllNow()` にも次回起動の回収にも引っ掛か
+            // らず、待ち受けたまま残る。
+            ClusterProxy.livePIDs.add(process.processIdentifier)
+            try? "\(process.processIdentifier)".write(
+                to: ClusterProxy.pidFile(pid: process.processIdentifier),
+                atomically: true, encoding: .utf8)
 
             // **読み手は専用スレッドで走らせる。GCD のプールに載せない。**
             // 常駐なので走り続ける。しかも **stderr を汲まないと詰まる** ——
@@ -530,11 +571,11 @@ extension ClusterProxy {
             }
 
             guard let resolved = await address.wait(timeout: timeout) else {
-                process.terminate()
+                abandon(process)
                 throw ClusterProxyError.startupTimedOut(output.lines().joined(separator: "\n"))
             }
             guard let url = URL(string: "http://\(resolved)/\(secret)") else {
-                process.terminate()
+                abandon(process)
                 throw ClusterProxyError.startupFailed(
                     String(localized: "待ち受け先を読み取れませんでした。"))
             }
@@ -545,7 +586,6 @@ extension ClusterProxy {
                 output: output,
                 fingerprint: fingerprintKubeconfig(kubeconfig),
                 kubeconfig: kubeconfig)
-            ClusterProxy.livePIDs.add(instance.pid)
             return instance
         }
 
@@ -581,6 +621,24 @@ extension ClusterProxy {
                 let size = (attributes?[.size] as? Int) ?? 0
                 return "\(path):\(Int(date)):\(size)"
             }.joined(separator: "|")
+        }
+
+        /// 立ち上がりに失敗したプロセスを始末する。**SIGTERM で終わらない相手が
+        /// いる**（返事をしない認証プラグインを抱えたまま止まっている）ので、
+        /// 止めを刺すところまで面倒を見る。
+        private static func abandon(_ process: Process) {
+            ClusterProxy.livePIDs.remove(process.processIdentifier)
+            try? FileManager.default.removeItem(
+                at: ClusterProxy.pidFile(pid: process.processIdentifier))
+            guard process.isRunning else { return }
+            process.terminate()
+            let thread = Thread {
+                let deadline = Date().addingTimeInterval(2)
+                while process.isRunning, Date() < deadline { usleep(50_000) }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+            thread.stackSize = 128 << 10
+            thread.start()
         }
 
         private static func detach(_ work: @escaping @Sendable () -> Void) {
