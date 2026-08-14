@@ -953,22 +953,41 @@ actor Kubectl {
     /// **突き合わせる相手が無いときは見ない。** CRD のように discovery から
     /// 単数形が取れないことがあるので、そのときは通す（「取れていない」ことを
     /// 「食い違っている」にしない）。
+    ///
+    /// **`JSONValue` に落とさない。** 見たいのはトップレベルの `kind` 1 つ
+    /// だけなのに、木にすると節の数だけ `try?` の連鎖を通る（273KB のページで
+    /// 135〜270ms。`continueToken` で `JSONSerialization` を選んだのと同じ話）。
+    /// しかも**本体はこの直後に `K8sObject.list` がもう 1 度木にする**ので、
+    /// ここで木を作ると全ページぶん丸ごと二重に払うことになる。
+    ///
+    /// **List の名前を `<単数形>List` と決め打ちしない。** CRD は
+    /// `names.listKind` を自由に付けられる（`kind: Widget` に
+    /// `listKind: WidgetCollection` は正当。`List` で終わる必要すら無い）。
+    /// 決め打ちで弾くと、そういう CRD の一覧が**丸ごと「取得できていない」に
+    /// 化けて 1 件も出ない** —— 取れているものを取れていないことにする、
+    /// このアプリでいちばん避けたい間違い。discovery が返すのは単数形
+    /// （`responseKind.kind`）だけで listKind は分からないので、**組み込み
+    /// 種別だけ見る**（`requested` がある側 ＝ 突き合わせる相手がある側）。
+    ///
+    /// **CRD で網が減るわけではない。** この網が捕まえたかったのは
+    /// 「`nodes` が NodeMetrics に流れる」——**種別名から解決するときに別の
+    /// グループへ流れる**壊れ方で、CRD はパスを discovery から自分で組んで
+    /// いるので、そもそも流れようがない。
     static func verifyListKind(
         _ data: Data, resource: APIResource, requested: ResourceKind?,
         metadataOnly: Bool = false
     ) throws {
-        let expected = resource.kind.isEmpty ? (requested?.apiKind ?? "") : resource.kind
-        guard !expected.isEmpty,
-              let root = try? JSONDecoder().decode(JSONValue.self, from: data),
-              let received = root["kind"]?.stringValue, !received.isEmpty
+        guard let requested, !requested.apiKind.isEmpty else { return }
+        let expected = resource.kind.isEmpty ? requested.apiKind : resource.kind
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let received = root["kind"] as? String, !received.isEmpty
         else { return }
         // metadata だけを頼んだときは `PartialObjectMetadataList` が返る（実測）。
         // **頼んでいないときに通さない** —— 通すと、中身を使う経路に metadata
         // だけの応答が流れ込んでも気付けなくなる。
         if metadataOnly, received == "PartialObjectMetadataList" { return }
         guard received != "\(expected)List", received != expected else { return }
-        throw K8sObject.UnexpectedKind(
-            requested: requested.map { [$0] } ?? [], received: received)
+        throw K8sObject.UnexpectedKind(requested: [requested], received: received)
     }
 
     /// HTTP の失敗に、proxy が書き出した文言を添えて言い換える。

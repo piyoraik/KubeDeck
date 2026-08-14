@@ -545,6 +545,13 @@ extension ClusterProxy {
             self.kubeconfigFingerprint = fingerprint
         }
 
+        /// `Process` に触るときは必ずここを通す（鍵を短く 1 回ずつ取る）。
+        private func withProcess<T>(_ body: (Process) -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body(process)
+        }
+
         var isRunning: Bool {
             lock.lock()
             defer { lock.unlock() }
@@ -576,20 +583,28 @@ extension ClusterProxy {
         /// 中で 2 秒眠ると**その間すべての取得が止まる**（コンテキストを
         /// 切り替えるたびに起きる）。SIGTERM を送って、止めを刺す役は別の
         /// スレッドに預ける。
+        /// **鍵は `Process` そのものに掛ける。** 以前は「参照を取り出すため」に
+        /// だけ鍵を取り、`isRunning` も `terminate()` も鍵の外で呼んでいた ——
+        /// つまり**鍵が何も守っていなかった**（`Process` はスレッド安全を
+        /// 保証しない。ここはアクターの外から呼ばれ、止めを刺すスレッドも
+        /// 50ms ごとに同じ相手を触るので、`diagnostics()` の `isRunning` と
+        /// ふつうに重なる）。
+        ///
+        /// **長く握らない。** 2 秒眠るあいだ握ると、その間の `isRunning` が
+        /// すべて待たされる。1 回ずつ短く取る（`withProcess`）。
         func terminate() {
             ClusterProxy.livePIDs.remove(pid)
-            lock.lock()
-            let target = process
-            lock.unlock()
-            guard target.isRunning else { return }
-            target.terminate()
+            guard withProcess({ $0.isRunning }) else { return }
+            withProcess { $0.terminate() }
+            let alive = { [weak self] in self?.withProcess { $0.isRunning } ?? false }
+            let target = pid
             let thread = Thread {
                 let deadline = Date().addingTimeInterval(2)
-                while target.isRunning, Date() < deadline {
+                while alive(), Date() < deadline {
                     usleep(50_000)
                 }
-                if target.isRunning {
-                    kill(target.processIdentifier, SIGKILL)
+                if alive() {
+                    kill(target, SIGKILL)
                 }
             }
             thread.stackSize = 128 << 10
@@ -700,9 +715,13 @@ extension ClusterProxy {
         /// （Freelens も正規表現に `i` を付けている）。unix ソケットのときは
         /// パスが来るので、`:` を含む＝ホストとポートのときだけ受ける。
         static func parseAddress(_ line: String) -> String? {
+            // **写しから取った添字で、元の文字列を切らない。** `lowercased()` は
+            // 長さを変えうる（`İ` → `i̇`）ので、目印より前に非 ASCII が混ざると
+            // 別の位置を指すか、最悪トラップする。同じ意図は `.caseInsensitive`
+            // で済む（いまの kubectl の出力は ASCII なので当たらないが、
+            // **当たらない理由が相手側にある**ものを残さない）。
             let marker = "starting to serve on"
-            let lowered = line.lowercased()
-            guard let range = lowered.range(of: marker) else { return nil }
+            guard let range = line.range(of: marker, options: .caseInsensitive) else { return nil }
             let tail = line[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
             guard !tail.isEmpty, tail.contains(":") else { return nil }
             return tail
@@ -730,6 +749,11 @@ extension ClusterProxy {
         /// 立ち上がりに失敗したプロセスを始末する。**SIGTERM で終わらない相手が
         /// いる**（返事をしない認証プラグインを抱えたまま止まっている）ので、
         /// 止めを刺すところまで面倒を見る。
+        ///
+        /// **ここは鍵が要らない。** `Instance` がまだ組み立てられていない ——
+        /// つまりこの `Process` を知っているのは `spawn` の中のこの経路だけで、
+        /// アクター側からは触りようがない（`terminate()` のほうは配ったあとに
+        /// 呼ばれるので鍵が要る）。
         private static func abandon(_ process: Process) {
             let pid = process.processIdentifier
             ClusterProxy.livePIDs.remove(pid)

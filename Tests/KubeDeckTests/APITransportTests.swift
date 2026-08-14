@@ -506,6 +506,45 @@ struct APITransportTests {
         #expect(fresh.errorDescription?.contains("kubectl proxy を立ち上げられませんでした") == true)
     }
 
+    // MARK: - List の kind の検め
+
+    /// **CRD の List 名を `<単数形>List` と決め打ちしない。**
+    ///
+    /// `names.listKind` は自由に付けられる（`kind: Widget` に
+    /// `listKind: WidgetCollection` は正当）。決め打ちで弾くと、そういう CRD の
+    /// 一覧が丸ごと「取得できていない」に化けて**1 件も出ない** —— 取れて
+    /// いるものを取れていないことにする、いちばん避けたい間違い。
+    @Test func acceptsCustomListKindForCRDs() throws {
+        let widget = APIResource(group: "kubedeck.test", version: "v1alpha1",
+                                 plural: "widgets", kind: "Widget", namespaced: true)
+        // `listKind` は自由に付けられる。**`List` で終わる必要すら無い。**
+        for kind in ["WidgetCollection", "WidgetList", "Widgets"] {
+            #expect(throws: Never.self) {
+                try Kubectl.verifyListKind(
+                    Data(#"{"kind":"\#(kind)","items":[]}"#.utf8),
+                    resource: widget, requested: nil)
+            }
+        }
+    }
+
+    /// 組み込み種別は**厳密なまま**。`nodes` が NodeMetrics に流れたのを
+    /// 捕まえるのがこの網の役目なので、そこを緩めない。
+    @Test func staysStrictForBuiltinKinds() {
+        let node = APIResource(group: "", version: "v1", plural: "nodes",
+                               kind: "Node", namespaced: false)
+        #expect(throws: Never.self) {
+            try Kubectl.verifyListKind(
+                Data(#"{"kind":"NodeList","items":[]}"#.utf8),
+                resource: node, requested: .node)
+        }
+        // `*List` で終わっていても、要求と違えば弾く。
+        #expect(throws: (any Error).self) {
+            try Kubectl.verifyListKind(
+                Data(#"{"kind":"NodeMetricsList","items":[]}"#.utf8),
+                resource: node, requested: .node)
+        }
+    }
+
     // MARK: - 引けなかったグループ
 
     /// **引けなかったグループの種別を「無い」と言わない。**

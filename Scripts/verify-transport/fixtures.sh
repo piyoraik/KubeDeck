@@ -57,7 +57,10 @@ YAML
   TOKEN=$($K create token kubedeck-nobody -n default --duration=3600s)
   SERVER=$($K config view --raw -o jsonpath="{.clusters[?(@.name==\"kind-kubedeck\")].cluster.server}")
   CA=$($K config view --raw -o jsonpath="{.clusters[?(@.name==\"kind-kubedeck\")].cluster.certificate-authority-data}")
-  cat > nobody.kubeconfig <<YAML
+  # **作った瞬間から 0600 にする。** あとから `chmod` すると、書いてから
+  # 直すまでのあいだ 0644 で存在する —— 中身は ServiceAccount のトークンで、
+  # `.gitignore` に足してまで「絶対にコミットしない」と決めた当のもの。
+  (umask 077; cat > nobody.kubeconfig <<YAML
 apiVersion: v1
 kind: Config
 clusters:
@@ -73,6 +76,7 @@ users:
   user: {token: $TOKEN}
 current-context: kind-kubedeck
 YAML
+  )
   chmod 600 nobody.kubeconfig 2>/dev/null || true
   echo "置いた: CRD widgets.kubedeck.test（Widget 3 件）/ nobody.kubeconfig"
   ;;
