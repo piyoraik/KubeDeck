@@ -878,6 +878,12 @@ actor Kubectl {
             }
             proxyFailure = nil
             return APIClient(endpoint: endpoint, timeout: TimeInterval(timeoutSeconds))
+        } catch ClusterProxyError.unavailable {
+            // **畳んだことを「立てられなかった」にしない。** `ClusterProxy` 側で
+            // 覚えないようにしてあるのに、ここで覚えては同じこと（設定に
+            // 「常駐を立てられませんでした／立ち上げの途中で畳まれました」と、
+            // 起きていない失敗の理由が出る）。
+            return nil
         } catch {
             proxyFailure = error.localizedDescription
             return nil
@@ -1716,13 +1722,14 @@ actor Kubectl {
                 paths.append(("pods.metrics.k8s.io", namespace))
             }
             for (resource, scoped) in paths {
-                // **確かめるだけなので 1 件でよい。** kubectl 経路は `-o name`
-                // だったので名前しか運んでいなかった。全件引くと、数千 Pod の
-                // クラスタでコンテキストを切り替えるたびに数 MB を運んで捨てる。
+                // **`limit` を掛けない。** metrics API は `limit` / `continue` を
+                // 実装していないことがあり（`metricsData` の説明）、弾かれると
+                // `try?` に握られて **false** ＝「metrics-server が見つかりません」
+                // になる。`kubectl top` は通るのに、である。運ぶ量を惜しんで
+                // 「無い」と言うほうが高くつく。
                 if (try? await httpObjects(
                     api, resourceName: resource, context: context, namespace: scoped,
-                    assuming: nil,
-                    query: [URLQueryItem(name: "limit", value: "1")], chunk: nil)) != nil {
+                    assuming: nil, chunk: nil)) != nil {
                     return true
                 }
             }

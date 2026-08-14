@@ -56,6 +56,13 @@ actor APIDiscovery {
     /// まま戻らなくなる）。kubectl の discovery キャッシュも 10 分で切れる。
     private static let tableLifetime: TimeInterval = 10 * 60
 
+    /// 「見つからない」を受けて引き直すときの、最短の間隔。
+    ///
+    /// **確かめてから「無い」と言うため**に引き直すが、本当に無い種別を毎周期
+    /// たずねる画面があると discovery を引き続けることになる（kubectl 経由で
+    /// 「知らない種別を毎周期たずねない」と決めたのと同じ話）。
+    private static let refreshCooldown: TimeInterval = 30
+
     struct Table {
         var entries: [APIResource]
         /// 覚えてよいか。**欠けている表は覚えない**（次の周期で引き直す）。
@@ -145,10 +152,32 @@ actor APIDiscovery {
             throw APIDiscoveryError.unreachable(error)
         }
         let query = Self.parse(resourceName)
-        guard let found = Self.match(query, in: table) else {
-            throw APIDiscoveryError.unknownResource(resourceName)
+        if let found = Self.match(query, in: table) { return found }
+
+        // **引けなかったグループの種別を「無い」と言わない。** グループを
+        // 書いていない名前（`deployments`）はどこに属するか決まらないので、
+        // 1 つでも欠けていれば「取れていない」に倒す（安全側）。
+        if !missing.isEmpty, query.group.map({ missing.contains($0) }) ?? true {
+            throw APIDiscoveryError.empty
         }
-        return found
+
+        // **古い表を根拠に「無い」と断定しない。** kubectl 経由では
+        // `the server doesn't have a resource type` を受けると一覧を捨てて
+        // 1 度だけ引き直していた（文言からは「本当に無い」のか「一覧が
+        // 欠けている」のかが決まらないため）。同じ手当てをここにも置く ——
+        // 置かないと、**アプリを開いたまま入れた CRD が最大 10 分使えない。**
+        //
+        // **引き直したばかりなら引き直さない。** 本当に無い種別を毎回
+        // たずねる画面があると、そのたびに discovery を引くことになる。
+        if let loadedAt = tables[context]?.loadedAt,
+           Date().timeIntervalSince(loadedAt) > Self.refreshCooldown {
+            invalidate(context: context)
+            if let refreshed = try? await self.loadedTable(for: context, client: client),
+               let found = Self.match(query, in: refreshed.entries) {
+                return found
+            }
+        }
+        throw APIDiscoveryError.unknownResource(resourceName)
     }
 
     /// 表から 1 つ選ぶ。

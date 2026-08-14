@@ -276,12 +276,24 @@ actor ClusterProxy {
         // 直後（＝立て直しの間隔の最中）。忘れないと、押しても間隔に掛かって
         // 何も起きず、**古い理由がそのまま出続ける。**
         failures.removeAll()
-        await drainStarts(except: context)
-        let dropped = instances.keys.filter { $0 != context }
-        for key in dropped {
-            await stop(context: key)
+        // **畳んでいる最中に立ったものを取りこぼさない。** `drainStarts` は
+        // `await` で中断するので、そのあいだに入った `endpoint(for: 別)` が
+        // 新しい起動を始めうる。1 度で終わりにすると、**誰も使わない proxy が
+        // 31MB・10 スレッドを掴んだまま残る。** 動きが止まるまで繰り返す。
+        var dropped: Set<String> = []
+        for _ in 0..<4 {
+            await drainStarts(except: context)
+            let extra = instances.keys.filter { $0 != context }
+            for key in extra {
+                await stop(context: key)
+                dropped.insert(key)
+            }
+            if starting.keys.allSatisfy({ $0 == context }),
+               instances.keys.allSatisfy({ $0 == context }) {
+                break
+            }
         }
-        return dropped
+        return Array(dropped)
     }
 
     func stopAll() async {
@@ -699,15 +711,24 @@ extension ClusterProxy {
         /// いる**（返事をしない認証プラグインを抱えたまま止まっている）ので、
         /// 止めを刺すところまで面倒を見る。
         private static func abandon(_ process: Process) {
-            ClusterProxy.livePIDs.remove(process.processIdentifier)
-            try? FileManager.default.removeItem(
-                at: ClusterProxy.pidFile(pid: process.processIdentifier))
-            guard process.isRunning else { return }
+            let pid = process.processIdentifier
+            ClusterProxy.livePIDs.remove(pid)
+            guard process.isRunning else {
+                try? FileManager.default.removeItem(at: ClusterProxy.pidFile(pid: pid))
+                return
+            }
             process.terminate()
             let thread = Thread {
                 let deadline = Date().addingTimeInterval(2)
                 while process.isRunning, Date() < deadline { usleep(50_000) }
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                if process.isRunning { kill(pid, SIGKILL) }
+                // **死んだのを確かめてから記録を消す。** 先に消すと、止めを
+                // 刺す前にアプリが落ちた場合に**誰も回収できない孤児**が残る
+                // （待ち上限まで返ってこない認証プラグインを抱えたまま、
+                // 秘密の prefix ごと loopback で待ち受け続ける）。
+                if !process.isRunning {
+                    try? FileManager.default.removeItem(at: ClusterProxy.pidFile(pid: pid))
+                }
             }
             thread.stackSize = 128 << 10
             thread.start()
