@@ -59,6 +59,7 @@ final class Preferences {
         static let refreshInterval = "refreshInterval"
         static let requestTimeoutSeconds = "requestTimeoutSeconds"
         static let kubectlPathOverride = "kubectlPathOverride"
+        static let usesAPIProxy = "usesAPIProxy"
         static let contextProfiles = "contextProfiles"
 
         static let checksForUpdates = "checksForUpdates"
@@ -318,6 +319,24 @@ final class Preferences {
         }
     }
 
+    /// 読み取りを常駐 `kubectl proxy` 経由の HTTP で行うか。
+    ///
+    /// **認証の委ね先は変わらない。** 入れても切っても、資格情報を扱うのは
+    /// kubectl（の中の client-go）のまま。変わるのは「取得のたびに 1 プロセス
+    /// 起こす」か「1 本を常駐させて HTTP で引く」かだけ。書き込み・`drain`・
+    /// `rollout`・`exec`・ログは、どちらでも kubectl を起こす。
+    ///
+    /// **切る口を残す理由。** 常駐が使えない環境（proxy が立たない、
+    /// loopback を塞いでいる）で、原因を切り分けられるようにするため。
+    /// 立てられなかったときは自動で kubectl 経由に落ちるが、**落ちたことは
+    /// 設定の「接続」に出す**（黙って別の経路を使わない）。
+    var usesAPIProxy: Bool {
+        didSet {
+            store.set(usesAPIProxy, forKey: Key.usesAPIProxy)
+            applyToKubectl()
+        }
+    }
+
     // MARK: - コンテキストごとの覚え書き
 
     /// コンテキスト名 → 色・別名・読み取り専用。
@@ -445,6 +464,7 @@ final class Preferences {
         refreshInterval = store.object(forKey: Key.refreshInterval) as? TimeInterval ?? 10
         requestTimeoutSeconds = store.object(forKey: Key.requestTimeoutSeconds) as? Int ?? 20
         kubectlPathOverride = store.string(forKey: Key.kubectlPathOverride) ?? ""
+        usesAPIProxy = store.object(forKey: Key.usesAPIProxy) as? Bool ?? true
         contextProfiles = store.data(forKey: Key.contextProfiles)
             .flatMap { try? JSONDecoder().decode(ContextProfiles.self, from: $0) } ?? [:]
 
@@ -471,7 +491,11 @@ final class Preferences {
     private func applyToKubectl() {
         let timeout = requestTimeoutSeconds
         let path = kubectlPathOverride
-        Task { await Kubectl.shared.configure(timeoutSeconds: timeout, executableOverride: path) }
+        let proxy = usesAPIProxy
+        Task {
+            await Kubectl.shared.configure(
+                timeoutSeconds: timeout, executableOverride: path, usesAPIProxy: proxy)
+        }
     }
 
     /// すべて既定値に戻す。
@@ -517,6 +541,7 @@ final class Preferences {
         refreshInterval = 10
         requestTimeoutSeconds = 20
         kubectlPathOverride = ""
+        usesAPIProxy = true
         checksForUpdates = true
         downloadsUpdatesAutomatically = false
         updateCheckIntervalHours = 24

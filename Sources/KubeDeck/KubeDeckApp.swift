@@ -11,6 +11,22 @@ struct KubeDeckApp: App {
     /// 手が届かない。持ち主を上げれば、メニューと画面が同じ 1 つを見る。
     @State private var actions = ResourceActionHost()
 
+    /// **常駐させた `kubectl proxy` を置き忘れない。**
+    ///
+    /// `kubectl proxy` は親の死を見ないので、畳まずに終わると待ち受けたまま残る。
+    /// **非同期の後始末では間に合わない** —— `willTerminate` を待って
+    /// `await` する形にしていたら、アプリが先に終わって proxy が残った（実測。
+    /// ⌘Q と同じ経路で終了させても 1 本残る）。AppKit は終了を待ってくれないので、
+    /// 通知の中で**同期で殺す**。落ちたときのぶんは、次の起動で pid を控えた
+    /// ファイルから始末する（`ClusterProxy`）。
+    init() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { _ in
+            ClusterProxy.terminateAllNow()
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

@@ -57,12 +57,29 @@ actor Kubectl {
     /// 設定で場所を指定されたとき用。空なら自動で探す。
     private var executableOverride = ""
 
-    func configure(timeoutSeconds: Int, executableOverride: String) {
+    /// 読み取りを常駐 proxy 経由の HTTP で行うか。書き込みは常に kubectl。
+    private var usesAPIProxy = true
+    /// proxy を立てられなかった理由。**黙って kubectl 経由へ流さないために持つ。**
+    private var proxyFailure: String?
+
+    func configure(timeoutSeconds: Int, executableOverride: String, usesAPIProxy: Bool = true) {
         let trimmed = executableOverride.trimmingCharacters(in: .whitespaces)
         // 場所が変わったら、覚えている解決結果を捨てる。
         if trimmed != self.executableOverride { cachedEnvironment = nil }
         self.timeoutSeconds = max(3, timeoutSeconds)
         self.executableOverride = trimmed
+        if usesAPIProxy != self.usesAPIProxy {
+            self.usesAPIProxy = usesAPIProxy
+            proxyFailure = nil
+            // 切ったなら常駐も畳む。入れ直したときは次の取得で立ち上がる。
+            let stopping = !usesAPIProxy
+            Task {
+                if stopping {
+                    await ClusterProxy.shared.stopAll()
+                    await APIDiscovery.shared.invalidateAll()
+                }
+            }
+        }
     }
 
     // MARK: - 実行環境の解決
@@ -747,12 +764,153 @@ actor Kubectl {
 
     /// 接続先のサーバ版。到達確認も兼ねる。
     func serverVersion(context: String) async throws -> String {
+        if let api = await api(for: context) {
+            // `/version` は discovery を通らない素のパス。**ここは `--raw` を
+            // 避ける理由（discovery を通らないと Connect Gateway で 404 になる）
+            // に当たらない** —— あれは metrics API の話で、`/version` は
+            // 集約 API サーバ越しではなく本体が答える。
+            let data = try await api.data(path: "version")
+            let root = try JSONDecoder().decode(JSONValue.self, from: data)
+            return root["gitVersion"]?.stringValue ?? String(localized: "不明")
+        }
         let result = try await run(
             ["version", "-o", "json", "--request-timeout=\(requestTimeout)"],
             context: context)
         let root = try JSONDecoder().decode(JSONValue.self, from: result.stdout)
         return root.path("serverVersion.gitVersion")?.stringValue
             ?? String(localized: "不明")
+    }
+
+    // MARK: - 読み取りの経路
+
+    /// いま読み取りに何を使っているか。
+    ///
+    /// **「使えないから黙って別の先へ流す」をしない。** 使えなかった理由を
+    /// 持ち回して設定画面に出す（メトリクスの取得元を勝手に切り替えないのと
+    /// 同じ判断）。
+    enum ReadTransport: Sendable, Equatable {
+        /// 常駐 proxy 経由の HTTP。
+        case apiProxy
+        /// kubectl を毎回起こす従来の経路。`reason` は proxy を使えない理由
+        /// （nil なら設定で切ってある）。
+        case kubectl(reason: String?)
+    }
+
+    func readTransport(for context: String) async -> ReadTransport {
+        guard usesAPIProxy else { return .kubectl(reason: nil) }
+        if await ClusterProxy.shared.diagnostics(for: context)?.isRunning == true {
+            return .apiProxy
+        }
+        if let proxyFailure { return .kubectl(reason: proxyFailure) }
+        let failure = await ClusterProxy.shared.failure(for: context)
+        return .kubectl(reason: failure?.reason)
+    }
+
+    /// 設定画面に出す常駐 proxy の様子。
+    func proxyDiagnostics(for context: String) async -> ClusterProxy.Diagnostics? {
+        await ClusterProxy.shared.diagnostics(for: context)
+    }
+
+    /// コンテキストを切り替えたときに呼ぶ。要らなくなった proxy を畳み、
+    /// 覚えた API の一覧も捨てる。
+    func releaseTransports(keeping context: String) async {
+        await ClusterProxy.shared.keepOnly(context)
+        await APIDiscovery.shared.invalidateAll()
+        proxyFailure = nil
+    }
+
+    /// アプリを閉じるときに呼ぶ。**常駐を置き忘れない。**
+    func shutdownTransports() async {
+        await ClusterProxy.shared.stopAll()
+    }
+
+    /// 読み取り用の HTTP の口。使えないときは nil（＝ kubectl 経由に落ちる）。
+    private func api(for context: String) async -> APIClient? {
+        guard usesAPIProxy, !context.isEmpty else { return nil }
+        do {
+            let endpoint = try await ClusterProxy.shared.endpoint(for: context)
+            proxyFailure = nil
+            return APIClient(endpoint: endpoint, timeout: TimeInterval(timeoutSeconds))
+        } catch {
+            proxyFailure = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// 種別 1 つを HTTP で引く。
+    ///
+    /// **返ってきた `kind` を確かめる。** kubectl 経由では、縮退した discovery
+    /// キャッシュのせいで `nodes` が NodeMetrics として返る事故があった
+    /// （exit 0・stderr 空・valid JSON なので既存の網が 1 つも発火しない）。
+    /// こちらはパスを自分で組むので同じ形では起きないが、**別の道で流れてきたら
+    /// 気付く**という網は残す。List の `kind` は `PodList` のように付くので
+    /// （実測。items 側には付かない）、そこで見る。
+    /// - Parameter metadataOnly: 件数と metadata しか使わないとき。
+    ///   `spec` / `status` が来なくなるので、**中身を見る経路では使わない。**
+    private func httpObjects(
+        _ api: APIClient, resourceName: String, context: String, namespace: String?,
+        assuming kind: ResourceKind?, query: [URLQueryItem] = [], chunked: Bool = true,
+        metadataOnly: Bool = false
+    ) async throws -> [K8sObject] {
+        let resource = try await APIDiscovery.shared.resource(
+            for: resourceName, context: context, client: api)
+        let path = resource.listPath(namespace: namespace)
+        let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
+        let pages: [Data]
+        if chunked {
+            pages = try await api.list(
+                path: path, query: query, chunk: Self.chunkSize, accept: accept)
+        } else {
+            pages = [try await api.data(path: path, query: query, accept: accept)]
+        }
+        var objects: [K8sObject] = []
+        for page in pages {
+            try Self.verifyListKind(
+                page, resource: resource, requested: kind, metadataOnly: metadataOnly)
+            objects += metadataOnly
+                ? try K8sObject.metadataList(from: page, assuming: kind)
+                : try K8sObject.list(from: page, assuming: kind)
+        }
+        return objects
+    }
+
+    /// List の `kind` が要求したものかを見る。
+    ///
+    /// **突き合わせる相手が無いときは見ない。** CRD のように discovery から
+    /// 単数形が取れないことがあるので、そのときは通す（「取れていない」ことを
+    /// 「食い違っている」にしない）。
+    static func verifyListKind(
+        _ data: Data, resource: APIResource, requested: ResourceKind?,
+        metadataOnly: Bool = false
+    ) throws {
+        let expected = resource.kind.isEmpty ? (requested?.apiKind ?? "") : resource.kind
+        guard !expected.isEmpty,
+              let root = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let received = root["kind"]?.stringValue, !received.isEmpty
+        else { return }
+        // metadata だけを頼んだときは `PartialObjectMetadataList` が返る（実測）。
+        // **頼んでいないときに通さない** —— 通すと、中身を使う経路に metadata
+        // だけの応答が流れ込んでも気付けなくなる。
+        if metadataOnly, received == "PartialObjectMetadataList" { return }
+        guard received != "\(expected)List", received != expected else { return }
+        throw K8sObject.UnexpectedKind(
+            requested: requested.map { [$0] } ?? [], received: received)
+    }
+
+    /// 一覧の `kind` が食い違ったら、覚えた API の一覧を捨てて 1 度だけ引き直す。
+    ///
+    /// kubectl 経由の `recoveringUnexpectedKind` と同じ役目。**こちらが捨てるのは
+    /// ディスクではなくメモリの表**なので、他のプロセスを巻き込まない。
+    private func recoveringDiscovery<T>(
+        context: String, _ body: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as K8sObject.UnexpectedKind {
+            await APIDiscovery.shared.invalidate(context: context)
+            _ = error
+            return try await body()
+        }
     }
 
     // MARK: - 取得
@@ -767,6 +925,13 @@ actor Kubectl {
     func list(
         _ kind: ResourceKind, context: String, namespace: String?
     ) async throws -> [K8sObject] {
+        if let api = await api(for: context) {
+            return try await recoveringDiscovery(context: context) {
+                try await httpObjects(
+                    api, resourceName: kind.resourceName, context: context,
+                    namespace: kind.isNamespaced ? namespace : nil, assuming: kind)
+            }
+        }
         var arguments = ["get", kind.resourceName, "-o", "json",
                          "--chunk-size=\(Self.chunkSize)",
                          "--request-timeout=\(requestTimeout)"]
@@ -807,14 +972,112 @@ actor Kubectl {
     /// にもかかわらず kubectl は**読めた種別を標準出力に書き出している**ので、
     /// 終了コードだけで投げると 200KB の正しい Pod を捨てて「取得できません」と
     /// 出すことになる。Secret だけ読めないクラスタで概要が丸ごと消えていた。
+    /// - Parameter metadataOnly: **件数と metadata しか使わない種別。**
+    ///   `spec` / `status` を運ばせない（Connect Gateway 越しの GKE で
+    ///   secrets が 6.85MB・3 秒から 51KB・0.13 秒になった。実測）。
+    ///   中身を見る種別を入れてはいけない —— 状態の集計が黙って空になる。
+    ///
+    ///   **kubectl 経由では効かない。** あちらに metadata だけを返す口が無いので、
+    ///   この指定は無視される（速さは変わるが、返る中身は同じ）。
     func list(
-        kinds: [ResourceKind], context: String, namespace: String?
+        kinds: [ResourceKind], context: String, namespace: String?,
+        metadataOnly: Set<ResourceKind> = []
     ) async throws -> PartialList {
+        if let api = await api(for: context) {
+            return try await recoveringDiscovery(context: context) {
+                try await httpList(
+                    api, kinds: kinds, context: context, namespace: namespace,
+                    metadataOnly: metadataOnly)
+            }
+        }
         // **引き直しは外側で 1 度だけ。** 中の再帰（知らない種別を除いて
         // 引き直す経路）に掛けると、種別の数だけ捨てて引き直すことになる。
-        try await recoveringUnexpectedKind {
+        return try await recoveringUnexpectedKind {
             try await list(kinds: kinds, context: context, namespace: namespace, unknown: [])
         }
+    }
+
+    /// 複数種別を HTTP で引く。**種別ごとに 1 本、並行に投げる。**
+    ///
+    /// kubectl 経由でまとめて 1 本にしていたのは、種別ごとに投げると
+    /// **プロセスが 13 個立つ**からだった。HTTP ならプロセスは増えず、
+    /// 1 本の TCP 接続に多重化される（往復の数は種別ぶんだが並行に走る）。
+    ///
+    /// **そして、種別ごとの結果が状態コードで分かる。** kubectl 経由では
+    /// 「読めたぶんは標準出力・拒まれた種別は stderr の文言」から拾い分けて
+    /// いた（書式に依存するので `KubectlTests` で固めてある）。ここでは
+    /// 403 が拒否、404 が「サーバはその種別を知らない」。**どちらも 0 件とは
+    /// 混ぜない**という規則はそのまま。
+    ///
+    /// **404 を「無い」と断定してよいのは、いま discovery を引いているから。**
+    /// kubectl 経由では、ディスクのキャッシュが縮退しているだけでも
+    /// 「知らない種別」と言われるので、捨てて引き直せたときだけ外す判断に
+    /// 使っていた（`discoveryWasFresh`）。こちらは毎起動でサーバに聞いた
+    /// 表なので、その一過性が入り込む余地がない。
+    private func httpList(
+        _ api: APIClient, kinds: [ResourceKind], context: String, namespace: String?,
+        metadataOnly: Set<ResourceKind> = []
+    ) async throws -> PartialList {
+        guard !kinds.isEmpty else { return PartialList() }
+
+        enum Outcome: Sendable {
+            case objects([K8sObject])
+            case denied
+            case unknown
+            case failed(any Error)
+        }
+
+        let outcomes = await withTaskGroup(of: (ResourceKind, Outcome).self) { group in
+            for kind in kinds {
+                group.addTask {
+                    do {
+                        let objects = try await self.httpObjects(
+                            api, resourceName: kind.resourceName, context: context,
+                            namespace: kind.isNamespaced ? namespace : nil, assuming: kind,
+                            metadataOnly: metadataOnly.contains(kind))
+                        return (kind, .objects(objects))
+                    } catch let error as APIError {
+                        switch error {
+                        case .forbidden: return (kind, .denied)
+                        case .notFound: return (kind, .unknown)
+                        default: return (kind, .failed(error))
+                        }
+                    } catch is APIDiscoveryError {
+                        // 表に無い＝サーバが知らない。**拒否とは分けて持つ。**
+                        return (kind, .unknown)
+                    } catch {
+                        return (kind, .failed(error))
+                    }
+                }
+            }
+            var collected: [ResourceKind: Outcome] = [:]
+            for await (kind, outcome) in group { collected[kind] = outcome }
+            return collected
+        }
+
+        var result = PartialList()
+        var failures: [any Error] = []
+        // **要求した順に並べる。** kubectl にまとめて渡したときも、返る items は
+        // 種別を並べた順になる。並べ替えの既定（異常が上）や配置のタイルは
+        // 手元の順序を土台にするので、経路で見え方が変わらないようにする。
+        for kind in kinds {
+            switch outcomes[kind] {
+            case .objects(let objects): result.objects += objects
+            case .denied: result.denied.append(kind)
+            case .unknown: result.unknown.append(kind)
+            case .failed(let error): failures.append(error)
+            case nil: break
+            }
+        }
+
+        // **1 種別でも「取れなかった」なら、それを黙らせない。** ただし読めた
+        // ぶんは捨てない（kubectl 経由で `partialStdout` を拾い直しているのと
+        // 同じ判断）。**全部が駄目だったときだけ投げる。**
+        if result.objects.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
+           let first = failures.first {
+            throw first
+        }
+        return result
     }
 
     /// - Parameter unknown: ここまでに「サーバが知らない」と言われた種別。
@@ -977,6 +1240,16 @@ actor Kubectl {
     /// `api-resources` ではなく CRD そのものを読む。表示列
     /// （`additionalPrinterColumns`）が要るためで、これは CRD にしか無い。
     func customResourceTypes(context: String) async -> [CustomResourceType] {
+        if let api = await api(for: context) {
+            let objects = (try? await httpObjects(
+                api, resourceName: "customresourcedefinitions.apiextensions.k8s.io",
+                context: context, namespace: nil, assuming: nil)) ?? []
+            return objects
+                .compactMap(CustomResourceType.init(crd:))
+                .sorted { lhs, rhs in
+                    lhs.group == rhs.group ? lhs.kind < rhs.kind : lhs.group < rhs.group
+                }
+        }
         guard let result = try? await run(
             ["get", "customresourcedefinitions", "-o", "json",
              "--request-timeout=\(requestTimeout)", "--ignore-not-found=true"],
@@ -1003,6 +1276,13 @@ actor Kubectl {
         resource: String, namespaced: Bool, context: String, namespace: String?,
         assuming kind: ResourceKind? = nil
     ) async throws -> [K8sObject] {
+        if let api = await api(for: context) {
+            return try await recoveringDiscovery(context: context) {
+                try await httpObjects(
+                    api, resourceName: resource, context: context,
+                    namespace: namespaced ? namespace : nil, assuming: kind)
+            }
+        }
         var arguments = ["get", resource, "-o", "json",
                          "--request-timeout=\(requestTimeout)"]
         if namespaced {
@@ -1018,6 +1298,16 @@ actor Kubectl {
 
     /// イベントは新しい順に見たいので、取得時に並べ替える。
     func events(context: String, namespace: String?, limit: Int = 200) async throws -> [K8sObject] {
+        if let api = await api(for: context) {
+            let objects = try await httpObjects(
+                api, resourceName: ResourceKind.event.resourceName, context: context,
+                namespace: namespace, assuming: .event)
+            // **並べ替えはこちらで持つ。** kubectl の `--sort-by=.lastTimestamp` も
+            // クライアント側の並べ替えで、しかも `lastTimestamp` を持たず
+            // `eventTime` だけのイベントを「時刻が無いもの」として扱う。
+            // `lastSeen` は両方を見るので、そちらで並べたほうが正しい。
+            return Array(Self.newestFirst(objects).prefix(limit))
+        }
         var arguments = ["get", "events", "-o", "json",
                          "--sort-by=.lastTimestamp",
                          "--request-timeout=\(requestTimeout)"]
@@ -1025,6 +1315,15 @@ actor Kubectl {
         let result = try await run(arguments, context: context)
         let objects = try K8sObject.list(from: result.stdout, assuming: .event)
         return Array(objects.reversed().prefix(limit))
+    }
+
+    /// 新しい順。`lastTimestamp` / `eventTime` / `creationTimestamp` の順に見る
+    /// （`ResourceTable.lastSeen`）。
+    static func newestFirst(_ objects: [K8sObject]) -> [K8sObject] {
+        objects.sorted {
+            (ResourceTable.lastSeen($0) ?? .distantPast)
+                > (ResourceTable.lastSeen($1) ?? .distantPast)
+        }
     }
 
     /// 1 つのオブジェクトに紐づくイベント。
@@ -1051,13 +1350,26 @@ actor Kubectl {
             selectors.append("involvedObject.uid=\(object.uid)")
         }
 
-        var arguments = ["get", "events", "-o", "json",
-                         "--field-selector=\(selectors.joined(separator: ","))",
-                         "--request-timeout=\(requestTimeout)"]
+        let fieldSelector = selectors.joined(separator: ",")
         // Namespace を持たないもの（Node / PV）のイベントは default に載る。
         // 決め打ちせず全体から引く。
-        if let namespace = object.namespace, !namespace.isEmpty {
-            arguments += ["-n", namespace]
+        let scopedNamespace = object.namespace?.isEmpty == false ? object.namespace : nil
+
+        if let api = await api(for: context) {
+            let objects = try await httpObjects(
+                api, resourceName: ResourceKind.event.resourceName, context: context,
+                namespace: scopedNamespace, assuming: .event,
+                // **URL に手で組み込まない。** `URLQueryItem` に渡せば
+                // `involvedObject.uid=…` の `=` も含めて正しく符号化される。
+                query: [URLQueryItem(name: "fieldSelector", value: fieldSelector)])
+            return Array(Self.newestFirst(objects).prefix(limit))
+        }
+
+        var arguments = ["get", "events", "-o", "json",
+                         "--field-selector=\(fieldSelector)",
+                         "--request-timeout=\(requestTimeout)"]
+        if let scopedNamespace {
+            arguments += ["-n", scopedNamespace]
         } else {
             arguments.append("--all-namespaces")
         }
@@ -1095,6 +1407,13 @@ actor Kubectl {
             .sorted()
             .joined(separator: ",")
 
+        if let api = await api(for: context) {
+            return try await httpObjects(
+                api, resourceName: ResourceKind.pod.resourceName, context: context,
+                namespace: namespace.isEmpty ? nil : namespace, assuming: .pod,
+                query: [URLQueryItem(name: "labelSelector", value: selector)])
+        }
+
         var arguments = ["get", ResourceKind.pod.resourceName, "-o", "json",
                          "--selector=\(selector)",
                          "--request-timeout=\(requestTimeout)",
@@ -1115,15 +1434,21 @@ actor Kubectl {
     /// 対象は名前と種別で突き合わせる。`scaleTargetRef` は uid を持たない
     /// （HPA は「その名前のもの」を指す作りで、作り直しても追随する）。
     func autoscalers(for object: K8sObject, context: String) async throws -> [K8sObject] {
-        var arguments = ["get", ResourceKind.horizontalPodAutoscaler.resourceName,
-                         "-o", "json",
-                         "--request-timeout=\(requestTimeout)",
-                         "--ignore-not-found=true"]
-        if let namespace = object.namespace, !namespace.isEmpty {
-            arguments += ["-n", namespace]
+        let scoped = object.namespace?.isEmpty == false ? object.namespace : nil
+        let all: [K8sObject]
+        if let api = await api(for: context) {
+            all = try await httpObjects(
+                api, resourceName: ResourceKind.horizontalPodAutoscaler.resourceName,
+                context: context, namespace: scoped, assuming: .horizontalPodAutoscaler)
+        } else {
+            var arguments = ["get", ResourceKind.horizontalPodAutoscaler.resourceName,
+                             "-o", "json",
+                             "--request-timeout=\(requestTimeout)",
+                             "--ignore-not-found=true"]
+            if let scoped { arguments += ["-n", scoped] }
+            let result = try await run(arguments, context: context)
+            all = try K8sObject.list(from: result.stdout, assuming: .horizontalPodAutoscaler)
         }
-        let result = try await run(arguments, context: context)
-        let all = try K8sObject.list(from: result.stdout, assuming: .horizontalPodAutoscaler)
         return all.filter { hpa in
             guard let ref = hpa.spec?["scaleTargetRef"] else { return false }
             guard ref["name"]?.stringValue == object.name else { return false }
@@ -1203,6 +1528,23 @@ actor Kubectl {
     /// **ノードだけで判定しない。** 管理されたクラスタはノードの指標を拒みつつ
     /// Pod の指標は通すことがある。**1 つでも引けたなら「入っている」。**
     func metricsServerAvailable(context: String, namespace: String? = nil) async -> Bool {
+        if let api = await api(for: context) {
+            // **ノードだけで判定しない**（管理されたクラスタはノードの指標を
+            // 拒みつつ Pod の指標は通す）。1 つでも引けたら入っている。
+            var paths: [(String, String?)] = [("nodes.metrics.k8s.io", nil),
+                                              ("pods.metrics.k8s.io", nil)]
+            if let namespace, !namespace.isEmpty {
+                paths.append(("pods.metrics.k8s.io", namespace))
+            }
+            for (resource, scoped) in paths {
+                if (try? await httpObjects(
+                    api, resourceName: resource, context: context, namespace: scoped,
+                    assuming: nil, chunked: false)) != nil {
+                    return true
+                }
+            }
+            return false
+        }
         var attempts: [[String]] = [
             ["get", "nodes.metrics.k8s.io", "-o", "name"],
             ["get", "pods.metrics.k8s.io", "-o", "name", "--all-namespaces"],
@@ -1227,11 +1569,10 @@ actor Kubectl {
     /// Pod 側だけ空、ということが起きるため。
     func metrics(context: String, namespace: String?) async -> MetricsSnapshot {
         var snapshot = MetricsSnapshot()
+        let api = await api(for: context)
 
-        if let data = try? await run(
-            ["get", "nodes.metrics.k8s.io", "-o", "json",
-             "--request-timeout=\(requestTimeout)"],
-            context: context).stdout,
+        if let data = await metricsData(
+            api, resource: "nodes.metrics.k8s.io", context: context, namespace: nil),
            let root = try? JSONDecoder().decode(JSONValue.self, from: data) {
             for item in root["items"]?.arrayValue ?? [] {
                 guard let name = item.path("metadata.name")?.stringValue else { continue }
@@ -1239,14 +1580,8 @@ actor Kubectl {
             }
         }
 
-        var podArguments = ["get", "pods.metrics.k8s.io", "-o", "json",
-                            "--request-timeout=\(requestTimeout)"]
-        if let namespace, !namespace.isEmpty {
-            podArguments += ["-n", namespace]
-        } else {
-            podArguments.append("--all-namespaces")
-        }
-        if let data = try? await run(podArguments, context: context).stdout,
+        if let data = await metricsData(
+            api, resource: "pods.metrics.k8s.io", context: context, namespace: namespace),
            let root = try? JSONDecoder().decode(JSONValue.self, from: data) {
             for item in root["items"]?.arrayValue ?? [] {
                 guard let name = item.path("metadata.name")?.stringValue else { continue }
@@ -1268,6 +1603,34 @@ actor Kubectl {
         }
 
         return snapshot
+    }
+
+    /// metrics API の生 JSON。
+    ///
+    /// **経路が違っても読む側は変えない。** 返る形は `kubectl get` の出力と
+    /// 同じ List（`items[].usage` / `items[].containers[].usage`）で、
+    /// これは `--raw` で引いたときと同じでもある。
+    ///
+    /// **`--chunk-size` を掛けない。** metrics API は `limit` / `continue` を
+    /// 実装していないことがあり、掛けると空が返りうる。量も一覧より小さい。
+    private func metricsData(
+        _ api: APIClient?, resource: String, context: String, namespace: String?
+    ) async -> Data? {
+        if let api {
+            guard let found = try? await APIDiscovery.shared.resource(
+                for: resource, context: context, client: api) else { return nil }
+            return try? await api.data(path: found.listPath(namespace: namespace))
+        }
+        var arguments = ["get", resource, "-o", "json",
+                         "--request-timeout=\(requestTimeout)"]
+        if resource.hasPrefix("pods") {
+            if let namespace, !namespace.isEmpty {
+                arguments += ["-n", namespace]
+            } else {
+                arguments.append("--all-namespaces")
+            }
+        }
+        return try? await run(arguments, context: context).stdout
     }
 
     private static func usage(from value: JSONValue?) -> ResourceUsage {
@@ -1559,10 +1922,19 @@ actor Kubectl {
         guard !selector.isEmpty else { return [:] }
         let expression = selector.map { "\($0.key)=\($0.value)" }
             .sorted().joined(separator: ",")
-        let data = try await run(
-            ["get", "pods.metrics.k8s.io", "-o", "json", "-n", namespace,
-             "-l", expression, "--request-timeout=\(requestTimeout)"],
-            context: context).stdout
+        let data: Data
+        if let api = await api(for: context),
+           let found = try? await APIDiscovery.shared.resource(
+            for: "pods.metrics.k8s.io", context: context, client: api) {
+            data = try await api.data(
+                path: found.listPath(namespace: namespace),
+                query: [URLQueryItem(name: "labelSelector", value: expression)])
+        } else {
+            data = try await run(
+                ["get", "pods.metrics.k8s.io", "-o", "json", "-n", namespace,
+                 "-l", expression, "--request-timeout=\(requestTimeout)"],
+                context: context).stdout
+        }
 
         guard let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [:] }
         var result: [String: [ResourceUsage]] = [:]

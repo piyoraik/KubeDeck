@@ -124,6 +124,23 @@ struct K8sObject: Identifiable, Sendable, Hashable {
         try list(from: data, assuming: nil, expecting: expected)
     }
 
+    /// metadata だけを頼んで引いた一覧（`PartialObjectMetadataList`）。
+    ///
+    /// **items の `kind` は `PartialObjectMetadata` で返る**（実測）ので、
+    /// 要求した種別と突き合わせると**全部弾かれる**。実際これを踏み、概要と
+    /// サイドバーで metadata だけ引いた 10 種別の件数が**そろって空欄になった**
+    /// （数字が出ていたのは中身まで引く 4 種別だけ。しかも他の種別は読めて
+    /// いるので画面は失敗にならず、**黙って件数が消える**）。
+    ///
+    /// 種別の確かめは **List の `kind`** のほうで済ませてある
+    /// （`Kubectl.verifyListKind` が `PartialObjectMetadataList` を、
+    /// **頼んだときだけ**通す）ので、ここでは 1 件ずつ突き合わせない。
+    static func metadataList(
+        from data: Data, assuming fallbackKind: ResourceKind?
+    ) throws -> [K8sObject] {
+        try list(from: data, assuming: fallbackKind, expecting: [])
+    }
+
     private static func list(
         from data: Data, assuming fallbackKind: ResourceKind?, expecting expected: [ResourceKind]
     ) throws -> [K8sObject] {

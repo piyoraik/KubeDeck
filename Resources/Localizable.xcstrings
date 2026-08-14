@@ -516,6 +516,16 @@
         }
       }
     },
+    "%@ は、このクラスタの API 一覧に見つかりませんでした。\n`kubectl api-resources` に出るか確認してください。\n出るのに見つからない場合は、集約 API サーバ（`kubectl get apiservices` の\nAVAILABLE=False）を確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ was not found in this cluster's API list.\nCheck whether it appears in `kubectl api-resources`.\nIf it does appear but still is not found, check the aggregated API servers\n(AVAILABLE=False in `kubectl get apiservices`)."
+          }
+        }
+      }
+    },
     "%@ はクラスタに見つかりませんでした（`kubectl` がこの種別を解決できていません）。読めたぶんだけ出しています。`kubectl api-resources` に出るかを確かめてください。": {
       "localizations": {
         "en": {
@@ -1236,6 +1246,16 @@
         }
       }
     },
+    "%lld 秒待っても API サーバから応答がありませんでした。\n認証は通っていて、そこから先の経路で止まっている可能性があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No response from the API server after %lld seconds.\nAuthentication succeeded, so something beyond that point may be stalling."
+          }
+        }
+      }
+    },
     "%lld 行": {
       "localizations": {
         "en": {
@@ -1492,6 +1512,16 @@
         }
       }
     },
+    "API の一覧を引けませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not fetch the API list."
+          }
+        }
+      }
+    },
     "API の一覧（discovery）の置き場所": {
       "localizations": {
         "en": {
@@ -1508,6 +1538,16 @@
         }
       }
     },
+    "API の応答を読み取れませんでした。%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not read the API response. %@"
+          }
+        }
+      }
+    },
     "API グループ": {
       "localizations": {
         "en": {
@@ -1520,6 +1560,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "API グループ"
+          }
+        }
+      }
+    },
+    "API サーバが %lld を返しました。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API server returned %lld."
           }
         }
       }
@@ -1760,6 +1810,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "HPA が管理しているかは確認できませんでした。"
+          }
+        }
+      }
+    },
+    "HTTP の応答ではありませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That was not an HTTP response."
           }
         }
       }
@@ -2612,6 +2672,16 @@
         }
       }
     },
+    "URL を組み立てられませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not build the URL."
+          }
+        }
+      }
+    },
     "YAML": {
       "localizations": {
         "en": {
@@ -2852,6 +2922,56 @@
         }
       }
     },
+    "kubectl proxy が待ち受けを始めませんでした。\n%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kubectl proxy never started listening.\n%@"
+          }
+        }
+      }
+    },
+    "kubectl proxy に繋がりませんでした。\n%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not reach kubectl proxy.\n%@"
+          }
+        }
+      }
+    },
+    "kubectl proxy を常駐させて HTTP で読む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep kubectl proxy running and read over HTTP"
+          }
+        }
+      }
+    },
+    "kubectl proxy を立ち上げられませんでした。%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not start kubectl proxy. %@"
+          }
+        }
+      }
+    },
+    "kubectl proxy 経由（HTTP）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Through kubectl proxy (HTTP)"
+          }
+        }
+      }
+    },
     "kubectl が %lld 秒のあいだ何も返さなかったので打ち切りました。\n待ち上限（`--request-timeout`）は API への要求しか縛りません。kubeconfig の exec 認証プラグイン（`gke-gcloud-auth-plugin` など）が返ってこない場合は、ここで打ち切るまで待つことになります。\nターミナルで同じコンテキストに `kubectl cluster-info` を実行して、そちらの言い分を確かめてください。設定の「接続」で待ち上限を延ばすと、kubectl 自身の理由を最後まで受け取れることがあります。": {
       "localizations": {
         "en": {
@@ -2948,6 +3068,26 @@
         }
       }
     },
+    "kubectl を毎回起こす": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launch kubectl for every request"
+          }
+        }
+      }
+    },
+    "kubectl を毎回起こす（常駐を立てられませんでした）\n%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launching kubectl for every request (the resident proxy could not be started)\n%@"
+          }
+        }
+      }
+    },
     "kubelet": {
       "localizations": {
         "en": {
@@ -3024,6 +3164,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "metrics-server を選んでいますが、このクラスタには入っていません。"
+          }
+        }
+      }
+    },
+    "pid %@ · %@ から": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pid %@ · since %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "new",
+            "value": "pid %1$@ · %2$@ から"
           }
         }
       }
@@ -3296,6 +3452,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "いまの目標"
+          }
+        }
+      }
+    },
+    "いまの読み取り": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading through"
           }
         }
       }
@@ -3940,6 +4106,16 @@
         }
       }
     },
+    "この操作を行う権限がありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You do not have permission for this operation."
+          }
+        }
+      }
+    },
     "この時点で Pod はありません。": {
       "localizations": {
         "en": {
@@ -4352,6 +4528,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "はい"
+          }
+        }
+      }
+    },
+    "ほかで変更されています。読み直してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It was changed elsewhere. Reload it."
           }
         }
       }
@@ -5744,6 +5930,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "バージョン"
+          }
+        }
+      }
+    },
+    "プロセス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process"
           }
         }
       }
@@ -8132,6 +8328,16 @@
         }
       }
     },
+    "取り消されました。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelled."
+          }
+        }
+      }
+    },
     "取り直す間隔": {
       "localizations": {
         "en": {
@@ -9281,6 +9487,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "待ち上限"
+          }
+        }
+      }
+    },
+    "待ち受け": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listening on"
+          }
+        }
+      }
+    },
+    "待ち受け先を読み取れませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not read the listening address."
           }
         }
       }
@@ -11269,6 +11495,16 @@
         }
       }
     },
+    "立て直す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart"
+          }
+        }
+      }
+    },
     "第 %lld 世代": {
       "localizations": {
         "en": {
@@ -11989,6 +12225,16 @@
         }
       }
     },
+    "見つかりませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not found."
+          }
+        }
+      }
+    },
     "見つけたら先にダウンロードしておく": {
       "localizations": {
         "en": {
@@ -12309,6 +12555,26 @@
         }
       }
     },
+    "認証の委ね先は変わりません。入れても切っても、資格情報を扱うのは kubectl（の中の client-go）のままで、exec 認証プラグインもトークンの更新もそちらが行います。変わるのは「取得のたびに 1 プロセス起こす」か「1 本を常駐させて HTTP で読む」かだけです。書き込み・drain・rollout・exec・ログは、どちらでも kubectl を起こします。常駐は 127.0.0.1 だけで待ち受け、URL の秘密の前置きを知らない相手には 404 を返します。立てられなかったときは kubectl 経由に落ちますが、その理由をここに出します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who handles authentication does not change. On or off, credentials stay with kubectl (and the client-go inside it), including exec credential plugins and token refresh. What changes is only whether a process is launched for every request or a single one stays resident and is read over HTTP. Writes, drain, rollout, exec and logs launch kubectl either way. The resident proxy listens on 127.0.0.1 only and answers 404 to anyone who does not know the secret URL prefix. If it cannot be started, reads fall back to kubectl and the reason is shown here."
+          }
+        }
+      }
+    },
+    "読み取りの経路": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How reads reach the cluster"
+          }
+        }
+      }
+    },
     "読み取り専用": {
       "localizations": {
         "en": {
@@ -12465,6 +12731,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "調整の範囲"
+          }
+        }
+      }
+    },
+    "資格情報が受け付けられませんでした（401）。\n%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The credentials were rejected (401).\n%@"
           }
         }
       }
@@ -13073,6 +13349,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "（kubectl は %lld 秒で返らなかったので打ち切っています。上は打ち切るまでに書き出されていた失敗です。）"
+          }
+        }
+      }
+    },
+    "（proxy は何も書き出していません）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(the proxy wrote nothing)"
           }
         }
       }

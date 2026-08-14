@@ -559,6 +559,33 @@ private struct ConnectionSettings: View {
     @State private var variables: [String: String] = [:]
     @State private var cacheDirectory: String?
     @State private var lastDiscoveryReset: Date?
+    @State private var transport: Kubectl.ReadTransport?
+    @State private var proxyDiagnostics: ClusterProxy.Diagnostics?
+
+    /// いま何経由で読んでいるか。**「立てられなかった」を黙らせない。**
+    private var transportLabel: String {
+        switch transport {
+        case .apiProxy:
+            return String(localized: "kubectl proxy 経由（HTTP）")
+        case .kubectl(let reason):
+            guard let reason, !reason.isEmpty else {
+                return String(localized: "kubectl を毎回起こす")
+            }
+            return String(localized: """
+                kubectl を毎回起こす（常駐を立てられませんでした）
+                \(reason)
+                """)
+        case nil:
+            return String(localized: "確認中")
+        }
+    }
+
+    private var transportIsProxy: Bool { transport == .apiProxy }
+
+    private func refreshTransport() async {
+        transport = await Kubectl.shared.readTransport(for: store.currentContext)
+        proxyDiagnostics = await Kubectl.shared.proxyDiagnostics(for: store.currentContext)
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -575,6 +602,54 @@ private struct ConnectionSettings: View {
                 .disabled(!store.autoRefresh)
             } header: {
                 Text("一覧の更新")
+            }
+
+            Section {
+                Toggle("kubectl proxy を常駐させて HTTP で読む", isOn: $preferences.usesAPIProxy)
+                LabeledContent("いまの読み取り") {
+                    // **「使えないから黙って別の先」をしない。**
+                    Text(transportLabel)
+                        .foregroundStyle(transportIsProxy ? .secondary : Color(Palette.color(for: .warning)))
+                        .multilineTextAlignment(.trailing)
+                }
+                if let proxy = proxyDiagnostics {
+                    LabeledContent("待ち受け") {
+                        // **prefix は出さない。** あれは資格情報と同じ扱い。
+                        Text(proxy.address)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("プロセス") {
+                        // **pid を数値として補間しない。** SwiftUI は桁区切りを
+                        // 付けるので `pid 14,403` になる（そのまま `kill` に
+                        // 貼れない値を出す）。文字列にしてから渡す。
+                        Text("pid \(String(proxy.pid)) · \(proxy.startedAt.formatted(date: .omitted, time: .standard)) から")
+                            .foregroundStyle(.secondary)
+                    }
+                    if !proxy.recentOutput.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(proxy.recentOutput.suffix(6).enumerated()), id: \.offset) {
+                                Text($0.element)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                Button("立て直す") {
+                    Task {
+                        await Kubectl.shared.releaseTransports(keeping: "")
+                        await refreshTransport()
+                    }
+                }
+            } header: {
+                Text("読み取りの経路")
+            } footer: {
+                Text("認証の委ね先は変わりません。入れても切っても、資格情報を扱うのは kubectl（の中の client-go）のままで、exec 認証プラグインもトークンの更新もそちらが行います。変わるのは「取得のたびに 1 プロセス起こす」か「1 本を常駐させて HTTP で読む」かだけです。書き込み・drain・rollout・exec・ログは、どちらでも kubectl を起こします。常駐は 127.0.0.1 だけで待ち受け、URL の秘密の前置きを知らない相手には 404 を返します。立てられなかったときは kubectl 経由に落ちますが、その理由をここに出します。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -680,7 +755,9 @@ private struct ConnectionSettings: View {
             let cache = await Kubectl.shared.resolvedCacheDirectory()
             cacheDirectory = cache.path
             lastDiscoveryReset = cache.lastReset
+            await refreshTransport()
         }
+        .task(id: preferences.usesAPIProxy) { await refreshTransport() }
     }
 }
 

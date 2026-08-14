@@ -268,9 +268,252 @@ kubectl の `DESIRED`（ReplicaSet の `spec.replicas`）に `Preferred` を当�
 
 ## クラスタへの接続は kubectl 経由
 
-API サーバを直接叩かず、`kubectl ... -o json` の標準出力を読む（`Services/Kubectl.swift`）。**この方針を変えない。** kubeconfig の exec 認証プラグイン（EKS の `aws`、GKE の `gke-gcloud-auth-plugin`）、クライアント証明書、OIDC のトークン更新、プロキシ設定を、すべて kubectl に肩代わりさせるため。自前で URLSession を張ると、この認証まわりを全部実装することになる。
+認証は kubectl（の中の client-go）に丸ごと委ねる（`Services/Kubectl.swift`）。**この方針を変えない。** kubeconfig の exec 認証プラグイン（EKS の `aws`、GKE の `gke-gcloud-auth-plugin`）、クライアント証明書、OIDC のトークン更新、プロキシ設定を、すべて kubectl に肩代わりさせるため。自前で URLSession を張ると、この認証まわりを全部実装することになる。
+
+**委ね方は 2 つある。** 読み取りは `kubectl proxy` を 1 本常駐させて HTTP で引き（`Services/ClusterProxy.swift` / `APIClient.swift` / `APIDiscovery.swift`）、書き込み・`drain`・`rollout`・`exec`・ログは従来どおり `kubectl ... -o json` を起こす。**認証の委ね先はどちらも同じ**で、変わるのは「取得のたびに 1 プロセス起こす」か「1 本に HTTP で聞く」かだけ（`Preferences.usesAPIProxy`。次の節）。
 
 **`PATH` を子プロセスに明示して渡す。** Finder から起動した GUI アプリの `PATH` は `/usr/bin:/bin:/usr/sbin:/sbin` しかなく、Homebrew の kubectl も、kubeconfig が呼ぶ認証プラグインも見つからない。`Kubectl.searchPath(loginShellPath:)` がログインシェルの `PATH` と、Homebrew / krew / gcloud SDK の決め打ちの場所を足している。ここを削るとターミナルからは動くのに `.app` からは動かない、という切り分けの難しい壊れ方をする。
+
+### 読み取りは常駐 proxy 経由の HTTP（`ClusterProxy`）
+
+`kubectl proxy --port=0 --api-prefix=/<16 桁 hex>/` をコンテキストごとに 1 本立て、
+`http://127.0.0.1:<ポート>/<prefix>/api/...` を URLSession で引く。**この形は
+Freelens（旧 Lens）と同じ** —— あちらは kubectl バイナリではなく
+`k8s.io/kubectl/pkg/proxy` を埋めた Go バイナリを spawn するが、中身は同じ
+client-go で、**ログインシェルを `-l` に加えて `-i` で起こす**という細部まで
+独立に一致していた。
+
+**なぜ変えたか（実測）。** kubectl を毎回起こす経路は、遅い経路で 1 回 9.7〜15.2 秒
+かかって更新間隔 10 秒を追い越していた。ローカルの kind で同じ 13 種別を引くと:
+
+| | 13 種別 | 単発 `pods -A` |
+|---|---|---|
+| kubectl（1 本にまとめて） | 0.93〜2.10s | 0.14〜0.23s |
+| proxy 経由（並行 13 本） | **0.08〜0.13s** | 0.02〜0.03s |
+
+常駐は RSS 31MB・10 スレッド・待機中 0.0% CPU、起動から応答可能まで 1.20〜1.50 秒。
+**`kubectl get -w` で watch する案は採れない** —— `--watch` は種別を 1 つしか
+受けず（`error: you may only specify a single resource type`）、1 本あたり
+RSS 50MB・26 スレッドなので 13 種別で 650MB になる。
+
+**遅い経路でも測った（Connect Gateway 越しの GKE、概要の 14 種別、Pod 228 /
+Secret 184 / ConfigMap 159）。** ここが本題なので、交互に測ってある。
+
+| | 秒 | 受信量 |
+|---|---|---|
+| いまの kubectl（まとめ取り） | 14.7〜20.8 | 15.0MB |
+| proxy 経由・並行（全部ふつうに引く） | 2.9〜5.7 | 12.7MB |
+| **＋ 件数しか使わない種別は metadata だけ** | **1.1〜4.9** | **4.8MB** |
+| ＋ 同時 6 に絞る（実装した形） | 3.0〜7.4 | 4.8MB |
+
+**回線の機嫌で 2 倍ぶれる**ので、片方を続けて測らない（A/B/A/B と交互にする）。
+
+**そして「委ね先を統一する」案（client-go を同梱）も、いまは採らない。**
+Freelens と同じ Go バイナリを実際に書いて測ったら、素の `kubectl proxy` と
+挙動も速さも常駐コストもほぼ同じ（0.02〜0.05s / RSS 29.8MB）で、配布物が
+**+38.7MB**（`-s -w`。素のビルドは 56.2MB）・CI に Go・105 モジュールの追随が
+増えるだけだった。しかも**認証失敗の文言は body に乗らない**（下記）ので、
+いちばん欲しかったものが買えない。アプリから見える形は素の proxy と同一なので、
+必要になったら 60 行で差し替えられる。
+
+#### `--append-server-path` を必ず付ける（踏んだ）
+
+**Connect Gateway 越しの GKE は `server:` にパスが入る。**
+
+```
+https://connectgateway.googleapis.com/v1/projects/<番号>/locations/global/memberships/<名前>
+```
+
+`kubectl proxy` は既定でこのパスを付け直さないので、`/api/v1/nodes` はホスト直下へ
+飛んで **404**（実測）。kubectl 自身が起動時に
+`Your kube context contains a server path …, use --append-server-path` と警告するが、
+**その警告は stderr に 1 行出るだけ**で、アプリから見ると「200 でも 404 でもなく
+ただ読めない」に見える（最初にこれを踏んだとき、原因の切り分けに時間を使った）。
+
+付ければ 200 で **0.2〜0.6 秒**。**パスの無いクラスタでも害が無い**（付け足すものが
+無いだけ。kind で 200・0.01 秒）。だから条件を見て出し入れせず、**常に付ける** ——
+出し入れすると「あの環境だけ 404」という、いちばん切り分けにくい壊れ方の余地を残す。
+
+#### 期限切れをまたいでも切れない（実測）
+
+40 秒で切れるトークンを返す exec プラグインを kind に向けて仕込み、常駐 proxy に
+10 秒ごとに引かせた。**142 秒間ずっと 200 で、プラグインは 40 秒ごとに呼び直されて
+いた**（17:02:26 → 17:03:06 → 17:03:47 → 17:04:28）。`provideClusterInfo: true` の
+`KUBERNETES_EXEC_INFO` も渡っている。**「常駐にすると認証が切れる」はしない。**
+
+#### 待ち受けは loopback ＋ ランダムな URL prefix
+
+`kubectl proxy` には認証が無いので、prefix を知らない相手に 404 を返させることで
+札の代わりにする（正しい prefix で 200、知らなければ 404。127.0.0.1 のみ LISTEN。
+実測）。
+
+- **prefix は資格情報として扱う。** ログにも画面にも出さない。`URLError` の
+  `localizedDescription` には失敗した URL がそのまま入るので、外へ出す文言は
+  `Endpoint.redacting(_:)` を通す（`APITransportTests`）。
+- **`ps` では他ユーザに見えない（実測）。** prefix は引数に載るが、macOS の
+  `KERN_PROCARGS2` は他ユーザのプロセスに EINVAL を返す（root の pid 1 で確認。
+  自分のプロセスでは 0）。同じユーザなら見えるが、その相手は `~/.kube/config` を
+  直接読めるので、この proxy が増やす露出ではない。
+- **unix ソケットにしない。** 0700 で塞げる（実測 `srwx------`）代わりに
+  `sun_path` の 104 バイト制限に当たる（実際のコンテキスト名を混ぜたパスは
+  147 バイトで `bind: invalid argument`）。URLSession は unix ソケットを喋れない
+  ので、そこを取るなら HTTP クライアントを別に抱えることになる。
+
+#### 立ち上げを重ねない（踏んだ）
+
+**アクターは再入する。** 1 度に 1 つの呼び出ししか通さないが、`await` で中断して
+いるあいだは別の呼び出しが入る。起動には数秒かかるので、その隙に他の読み手が
+「まだ無い」と判断して**自分の proxy を立てる**。実測で 1 回の立て直しで **3 本**
+同時に立ち（pid 90803 / 90804 / 90805）、アプリが落ちたあと 3 本とも孤児として
+残った。走っている起動を `starting[context]` に持ち、後から来た読み手はそれに
+乗せる（`APIDiscovery.loading` と同じ手当て）。
+
+**置き忘れも片付ける。** `kubectl proxy` は親の死を見ないので、アプリが
+SIGKILL されると待ち受けたまま残る。pid を `<キャッシュ>/kube/proxy/<pid>.pid`
+に控えて次の起動で始末する。**pid だけで殺さない**（使い回された pid が別の
+プロセスに当たる）—— 引数に `kubectl` と `proxy` が入っているかを見る。
+**コンテキストごとに 1 ファイルにしない** —— 立て直しが重なると最後の書き込みか
+削除だけが残り、**残りの pid が記録から消えた**（実測）。
+
+#### 失うもの（実測で確かめた）
+
+- **認証失敗の文言が薄くなる。** body は
+  `getting credentials: exec: executable … failed with exit code 1` だけで、
+  **プラグイン本人の文言は proxy の stderr にしか出ない**（素の `kubectl proxy`
+  でも、client-go を自分で埋めた版でも同じだった）。だから stderr を汲み続けて
+  直近 40 行を持ち、設定の「接続」に出す（`Diagnostics.recentOutput`）。
+  **汲まないと詰まる** —— パイプが埋まった時点で proxy 自身が書き込みで止まる。
+- **到達できないと応答が来ない。** 12 秒待っても `http=000`・body 空。だから
+  待ち上限は URLSession 側で持つ（`--request-timeout` は proxy に渡さない ——
+  全要求に上限が掛かると watch が切られる）。
+- **kubeconfig の拾い直しが効かない。** 取得ごとに kubectl を起こしていたときは
+  呼び出しのたびに読み直されていた。常駐は起動時に 1 度読むだけなので、
+  mtime と大きさの指紋を持って**変わったら立て直す**（`matchesKubeconfig`）。
+
+#### `managedFields` は落としてから木にする
+
+**大きさではなく復号の費用の話。** 実測（Pod 39 件、`K8sObject.list` まで通す）:
+
+| 経路 | 大きさ | 復号 |
+|---|---|---|
+| kubectl の pretty・MF なし | 474KB | 119ms |
+| API の compact・MF あり | 273KB | **270ms** |
+| API の compact・MF を落とす | 273KB → 178KB | **135ms** |
+
+バイト数は減っているのに、落とさないと**倍以上かかる** —— `JSONValue` は節の数だけ
+`try?` の連鎖を通るので、`f:metadata` のような小さな入れ子が大量に増えるのが効く。
+`JSONSerialization` は 10 倍以上速いので、落とす費用（約 5ms）より木が小さくなる
+得のほうが大きい（`APIClient.pruned`）。**落とせなかったら元のまま返す。**
+
+**そして `?pretty` は User-Agent で決まる（実測）。** curl の既定 UA では
+563KB の pretty が返り、`KubeDeck/0.1` と名乗れば 273.8KB の compact になる。
+名乗らないと**倍近い量を運んで復号する**ことになるので、
+`APIClient` は UA を必ず送る（監査ログに出る意味もある）。
+
+#### 件数しか使わない取得に、中身を運ばせない
+
+**遅い経路でいちばん効いた最適化。** 概要の 14 種別で 15.0MB を運んでいたが、
+そのうち**中身を使っているのは 4 種別だけ**（Pod・Deployment・StatefulSet・
+DaemonSet。状態のリングを作るため）。残り 10 種別は `counts` に数えるためだけに
+引いていた。`refreshSidebarCounts` の 16 種別は**全部が件数だけ**。
+
+`Accept: application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1` を
+渡すと `metadata` だけが返る（実測、Connect Gateway 越しの GKE）:
+
+| 種別 | ふつう | metadata だけ |
+|---|---|---|
+| secrets | 6.85MB / 2.95〜3.98s | **51KB / 0.13〜0.27s** |
+| configmaps | 1.72MB / 0.51〜0.54s | 141KB / 0.21〜0.22s |
+| pods | 2.62MB / 0.39〜0.40s | 122KB / 0.20〜0.41s |
+
+**gzip では代わりにならない。** 圧縮は効いている（URLSession が自動で
+`Accept-Encoding` を送る。secrets は 6.85MB → 4.67MB）が、**時間は
+2.98〜3.97s のまま**だった。運ぶ量ではなく、サーバがその量を組み立てる費用が
+効いている。だから「圧縮する」ではなく「**運ばせない**」を選ぶ。
+
+**入れ替えたら黙って壊れる。** metadata だけの応答には `spec` / `status` が
+無いので、状態の集計に使う種別をここへ入れると**リングが黙って空になる**
+（「取れていない」を「無い」にする、このアプリでいちばん避けたい間違い）。
+だから指定は呼び出し側（`loadOverview` / `refreshSidebarCounts`）に書く ——
+**何に使っているかを知っているのはあちら**なので。返る `kind` は
+`PartialObjectMetadataList` になるので、`verifyListKind` は**頼んだときだけ**
+それを通す（頼んでいないのに来たら、これまでどおり「取れていない」として扱う）。
+
+**kubectl 経由では効かない**（metadata だけを返す口が無い）。指定は無視される。
+
+**items の `kind` も変わる（踏んだ）。** 1 件ずつは
+`{"kind":"PartialObjectMetadata", …}` で返るので、要求種別と突き合わせる
+`K8sObject.list(from:assuming:)` に通すと**全部弾かれる**。実際これで、概要と
+サイドバーの **metadata だけ引いた 10 種別の件数がそろって空欄になった**
+（数字が出ていたのは中身まで引く 4 種別だけ。他の種別は読めているので画面は
+失敗にならず、**黙って件数が消える** —— いちばん気付きにくい壊れ方）。
+`K8sObject.metadataList(from:assuming:)` を通す（確かめは List の `kind` の
+ほうで済ませてある）。`APITransportTests` が実物の応答の形で固めてある。
+
+**気付けたのは画面を撮ったから。** 単体テストは自分で書いた JSON を通すので、
+`PartialObjectMetadata` という実際の `kind` を知らないかぎり書けない。
+**遅い経路の確認は、数字だけでなく画面まで見る。**
+
+#### 種別ごとの結果は状態コードで分かる
+
+kubectl 経由では「読めたぶんは標準出力・拒まれた種別は stderr の文言」から拾い
+分けていた（書式に依存するので `KubectlTests` で固めてある）。HTTP なら:
+
+- **403** → 拒否（`Status` の `reason: Forbidden`）。`PartialList.denied`。
+- **404** → サーバがその種別を知らない。`PartialList.unknown`。
+  **知らない API グループでは JSON が来ない**（素のテキストで
+  `404 page not found`）ので、そこで投げると種別 1 つのせいで全部を捨てる。
+- どちらも**0 件とは混ぜない**。この規則は経路が変わっても同じ。
+
+**404 を「無い」と断定してよいのは、いま discovery を引いているから。** kubectl 経由
+では、ディスクのキャッシュが縮退しているだけでも「知らない種別」と言われるので、
+捨てて引き直せたときだけ外す判断に使っていた（`discoveryWasFresh`）。こちらは
+毎起動でサーバに聞いた表なので、その一過性が入り込む余地がない。
+
+#### discovery は自分で引く（縮退が消える）
+
+`/api` と `/apis` に集約 discovery（`APIGroupDiscoveryList`）を要求すると
+**2 本で全部揃う**（実測: 18.6KB ＋ 7.1KB で 21 グループ・53 リソース。`scope` 付き。
+k8s 1.30 以降）。古いクラスタは従来の形を返すので、そのときはグループごとに
+引き直す。**ディスクに書かない**ので、CLAUDE.md が「未解決」と書いている縮退
+（コアの `versions` が null になり、全種別が消えるか NodeMetrics に流れる）は
+この経路では起こらない。
+
+**片方だけで済ませない。** `/api` は集約で読めたのに `/apis` が従来の形だった、
+という食い違いをそのまま採ると core しか無い表になり、「Deployment という種別が
+無い」に化ける。両方揃ったときだけ集約として使う。
+
+**種別名の書式は kubectl と同じものを解く**（`resource.version.group`）。
+`pods.v1.` は複数形 `pods` ＋ 版 `v1` ＋ core、`deployments` は複数形だけ（グループは
+サーバに聞く）、`poddisruptionbudgets.policy` はグループ指定。**グループを書いた
+種別は、そのグループ以外へ流さない** —— 同じ複数形が別グループにも居る
+（Calico の `networkpolicies`）。素の複数形は core を優先する（`nodes` が
+`metrics.k8s.io` の NodeMetrics に流れると全ノードが Unknown になる）。
+`APITransportTests` が固めてある。
+
+**返ってきた `kind` も見る。** List には `PodList` のように付く（items 側には
+付かない。実測）ので、要求と食い違ったら「取れていない」として投げ、覚えた表を
+1 度だけ捨てて引き直す（`Kubectl.verifyListKind`）。パスを自分で組むので同じ形の
+事故は起きないが、**別の道で流れてきたら気付く**網は残す。
+
+#### ログと書き込みは kubectl のまま
+
+- **ログ**: まとめ読みの `--prefix` / `--max-log-requests` / `-l` での複数 Pod の
+  混ぜ読みは**kubectl 側の機能**で、API には無い（API は 1 Pod 1 コンテナずつ）。
+  自前で混ぜると、その実装ごと抱えることになる。
+- **`drain` / `rollout undo`**: kubectl のクライアント実装（eviction ループ、PDB、
+  世代の解き方）と `--dry-run=server` の答えに依存していて、こちらで組み直すと
+  「押す前に kubectl に答えさせる」という判断がずれる。
+- **`exec`**: ターミナルに任せる（既定の `--reject-paths` が proxy 側でも
+  exec / attach を 403 で塞ぐ。実測）。
+
+#### まだやっていない: watch
+
+`watch=1` は proxy 経由で流れる（`{"type":"ADDED",…}`、`allowWatchBookmarks` も
+効く。`URLSession.bytes(for:)` で行に割れて、`Task.cancel()` で止まることも実測済み）。
+だが**いまは 10 秒ポーリングのまま**で、載せ替えていない。載せるときは
+**期限切れ（`{"type":"ERROR",…,"reason":"Expired","code":410}`）で再 list するのが
+こちらの責務**になる。
 
 ### exec 認証プラグインの場所は決め打ちで当てられない
 
@@ -712,6 +955,11 @@ false —— 確かめていないほうが安全側**）、`Kubectl.kindsToDrop
 ため。**アプリ側の読み込み量は変わらない** —— そこは種別と Namespace を絞って
 もらう話で、この指定で直るのは取りに行き方だけ。
 
+**proxy 経由でも同じことをする。** あちらは `?limit=500` と `continue` を自分で
+回す（実測で `metadata.continue` と `remainingItemCount` が返る）。
+**metrics API には掛けない** —— `limit` / `continue` を実装していないことがあり、
+掛けると空が返りうる（量も一覧より小さい）。
+
 **隠れているあいだは自動更新を止める**（`ClusterStore.isWindowVisible`）。
 止めないと、しまってあるノート PC でも 10 秒ごとに kubectl が 4〜8 本立ち上がり
 続ける。**`scenePhase` では足りない** —— 他のアプリを触っているだけで
@@ -840,6 +1088,10 @@ xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck -destination 'platf
 | `Kubectl.deniedKinds` | 依存している kubectl の stderr の書式 |
 | `Kubectl.checkedName` | フラグに化ける名前が位置引数へ通る（1 件の削除が `--all` に化ける）。逆に `system:` 付きを弾くと ClusterRole を操作できなくなる |
 | `Kubectl.hidesValue` | 伏せ字が値の 1 文字目で無効になる（設定画面は貼って共有される場所） |
+| `APIDiscovery.parse` / `match` | 種別名を解き損ねてパスが崩れる。グループを書いた種別が別グループへ流れる（`nodes` が NodeMetrics になる） |
+| `APIClient.error` | 403（拒否）と 404（知らない）を 0 件と混ぜる。JSON でない 404 で全部を捨てる |
+| `APIClient.pruned` | `managedFields` を落とすときに他の中身まで変える。復号が倍になる |
+| `Endpoint.redacting` | proxy の秘密の prefix が失敗の文言に載る |
 | `SettingGroup.id` / `SettingRow.id` | 補間の入った鍵が全部同じ id になり、`ForEach` が行を取り違える |
 | 概要の読み込み中 | まだ数えていないのに 0 のリングを出す。逆に読み込み中のまま留まる |
 | `MetricsPhase` | まだ引いていない使用量を `—`（取れなかった）と書く。探している最中に「入っていません」と断定する |

@@ -79,6 +79,11 @@ final class ClusterStore {
             // いちばん遅れて返り、**A で見つけた場所を B のものとして
             // `UserDefaults` に永続化していた**（B に同名の Service が無ければ、
             // 以後ずっと推移が出ないまま黙る）。
+            // **常駐している proxy も切り替える。** 1 本あたり RSS 31MB・
+            // 10 スレッド（実測）なので、行き来するだけで積み上がる。
+            // 覚えた API の一覧もクラスタごとなので一緒に捨てる。
+            let keeping = currentContext
+            Task { await Kubectl.shared.releaseTransports(keeping: keeping) }
             refreshClusterInfo()
             reload()
         }
@@ -961,7 +966,19 @@ final class ClusterStore {
             .persistentVolume, .namespace,
         ]
 
-        async let resources = kubectl.list(kinds: kinds, context: context, namespace: namespace)
+        // **中身を使う種別と、数えるだけの種別を分ける。**
+        //
+        // この関数が `byKind` から中身を取り出すのは Pod・Deployment・
+        // StatefulSet・DaemonSet の 4 つだけ（状態のリングを作るため）。残りは
+        // `counts` に数えるためだけに引いている。だから残りには `spec` /
+        // `status` を運ばせない。**入れ替えると状態の集計が黙って空になる**ので、
+        // 下の `StatusTally.make` が読む種別をここへ入れないこと。
+        let countedOnly: Set<ResourceKind> = [
+            .replicaSet, .job, .cronJob, .service, .ingress, .configMap, .secret,
+            .persistentVolumeClaim, .persistentVolume, .namespace,
+        ]
+        async let resources = kubectl.list(
+            kinds: kinds, context: context, namespace: namespace, metadataOnly: countedOnly)
         async let nodes = kubectl.list(.node, context: context, namespace: nil)
         async let events = kubectl.events(context: context, namespace: namespace, limit: 30)
         async let version = kubectl.serverVersion(context: context)
@@ -1256,8 +1273,13 @@ final class ClusterStore {
         let context = currentContext
         guard case .resource = selection, !context.isEmpty else { return }
         let token = token ?? contextGeneration
+        // **数えるだけなので中身を運ばせない。** ここは 16 種別を引くが、
+        // 使うのは件数だけ（下のループを見れば分かるとおり `object.kind` しか
+        // 触らない）。Connect Gateway 越しの GKE では、これだけで secrets が
+        // 6.85MB・3 秒から 51KB・0.13 秒になる（実測）。
         guard let listed = try? await kubectl.list(
-            kinds: Self.countedKinds, context: context, namespace: selectedNamespace)
+            kinds: Self.countedKinds, context: context, namespace: selectedNamespace,
+            metadataOnly: Set(Self.countedKinds))
         else { return }
         guard token == contextGeneration else { return }
 
