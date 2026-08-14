@@ -520,7 +520,7 @@ struct APITransportTests {
                 APIResource(group: "", version: "v1", plural: "pods",
                             kind: "Pod", namespaced: true),
             ],
-            cacheable: false,
+            isComplete: false,
             missingGroups: ["metrics.k8s.io"])
         // 引けたものは引ける。
         #expect(APIDiscovery.match(APIDiscovery.parse("pods.v1."), in: table.entries) != nil)
@@ -531,7 +531,68 @@ struct APITransportTests {
         // （欠けたグループに属するなら `empty`、そうでなければ
         // `unknownResource`）。ここでは印が立っていることだけを見る。
         #expect(table.missingGroups.contains("metrics.k8s.io"))
-        #expect(!table.cacheable)
+        #expect(!table.isComplete)
+    }
+
+    /// **欠けた表も覚える。ただし短く。**
+    ///
+    /// 「欠けているから覚えない」にすると、`metrics.k8s.io` の APIService が
+    /// 登録されたまま metrics-server が落ちている（ふつうに起きる）あいだ
+    /// **一度も覚えられない** —— 従来 discovery はグループごとに 1 本引くので、
+    /// 10 秒ごとの自動更新のたびに 25 往復することになる。しかも
+    /// `tables[context]` が空のままなので「引き直して確かめる」が
+    /// **一度も働かない**（`loadedAt` が無い）。
+    @Test func shortensLifetimeInsteadOfRefusingToCache() {
+        let whole = APIDiscovery.Table(entries: [], isComplete: true)
+        let partial = APIDiscovery.Table(entries: [], isComplete: false,
+                                         missingGroups: ["metrics.k8s.io"])
+        #expect(whole.lifetime == 10 * 60)
+        #expect(partial.lifetime == 60)
+        // **0 にしない**（＝毎回引き直す、が「覚えない」の実体）。
+        #expect(partial.lifetime > 0)
+        #expect(partial.lifetime < whole.lifetime)
+    }
+
+    /// **集約 discovery の `freshness` を読み飛ばさない。**
+    ///
+    /// 集約 API サーバが応答しなかったグループは、落ちるのではなく
+    /// `freshness: "Stale"` が付いて返る（KEP-3352）。読み飛ばすと、そこの
+    /// 種別は「表に無い」＝ `unknownResource` になり、画面は
+    /// 「クラスタに見つかりませんでした」と断定する。しかも集約は
+    /// k8s 1.30 以降の**主たる経路**。
+    @Test func marksStaleAggregatedGroups() throws {
+        let json = """
+        {"kind":"APIGroupDiscoveryList","items":[
+          {"metadata":{"name":"apps"},"versions":[{"version":"v1","freshness":"Current",
+            "resources":[{"resource":"deployments","responseKind":{"kind":"Deployment"},
+                          "scope":"Namespaced"}]}]},
+          {"metadata":{"name":"metrics.k8s.io"},"versions":[{"version":"v1beta1",
+            "freshness":"Stale","resources":[]}]}
+        ]}
+        """
+        let root = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let parsed = APIDiscovery.parseAggregated(root)
+        #expect(parsed.entries.count == 1)
+        #expect(parsed.entries.first?.plural == "deployments")
+        // 落ちているグループには印が立ち、健全なほうには立たない。
+        #expect(parsed.stale == ["metrics.k8s.io"])
+    }
+
+    /// **`freshness` を書いていない版で、印を立てない。** この形を返す最初期の
+    /// サーバには項目そのものが無い。無いことを「古い」と読むと、健全な
+    /// クラスタで表がずっと「欠けている」扱いになる。
+    @Test func treatsAbsentFreshnessAsCurrent() throws {
+        let json = """
+        {"kind":"APIGroupDiscoveryList","items":[
+          {"metadata":{"name":""},"versions":[{"version":"v1",
+            "resources":[{"resource":"pods","responseKind":{"kind":"Pod"},
+                          "scope":"Namespaced"}]}]}
+        ]}
+        """
+        let root = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let parsed = APIDiscovery.parseAggregated(root)
+        #expect(parsed.entries.count == 1)
+        #expect(parsed.stale.isEmpty)
     }
 
     // MARK: - 待ち受け先の読み取り

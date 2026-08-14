@@ -139,15 +139,16 @@ actor ClusterProxy {
             return instance.endpoint
         }
 
-        if let failure = failures[context],
-           Date().timeIntervalSince(failure.at) < Self.retryCooldown {
-            // **同じ前置きを 2 度足さない。** `failure.reason` はすでに
-            // 「kubectl proxy を立ち上げられませんでした。…」に整形済みなので、
-            // `.unavailable` で包み直すと設定画面に前置きが二重に出る。
-            throw ClusterProxyError.remembered(failure.reason)
-        }
-
-        // 死んだもの、kubeconfig が変わったものは片付けてから立て直す。
+        // 死んだもの、kubeconfig が変わったものは片付ける。
+        //
+        // **覚えた失敗より先に片付ける。** ここまで来たということは、上の
+        // 「生きていて kubeconfig も合っている」を通らなかったということ ——
+        // つまり `instances[context]` にあるのは死んだか**別のクラスタを
+        // 指した** proxy で、どちらにせよもう配れない。なのに以前は
+        // 覚えた失敗を先に見て `remembered` を投げていたので、待つあいだ
+        // **前のクラスタの proxy が生きたまま残り**、設定画面が
+        // 「常駐 proxy 経由（HTTP）」と出していた（読み取りは kubectl に
+        // 落ちているのに）。
         //
         // **kubeconfig を見張る理由。** 取得ごとに kubectl を起こしていたときは
         // 呼び出しのたびに読み直されていたので、「到達できない `server:` を
@@ -156,6 +157,14 @@ actor ClusterProxy {
         if let instance = instances.removeValue(forKey: context) {
             instance.terminate()
             removePIDFile(pid: instance.pid)
+        }
+
+        if let failure = failures[context],
+           Date().timeIntervalSince(failure.at) < Self.retryCooldown {
+            // **同じ前置きを 2 度足さない。** `failure.reason` はすでに
+            // 「kubectl proxy を立ち上げられませんでした。…」に整形済みなので、
+            // `.unavailable` で包み直すと設定画面に前置きが二重に出る。
+            throw ClusterProxyError.remembered(failure.reason)
         }
 
         let task = Task { try await self.start(context: context) }
@@ -331,6 +340,10 @@ actor ClusterProxy {
     ///
     /// **pid だけで殺さない。** 使い回された pid が別のプロセスに当たっている
     /// ことがあるので、引数に `kubectl` と `proxy` が入っているかを確かめる。
+    /// 外から 1 度だけ叩く口（設定を読み込んだとき）。中身は同じで、
+    /// 2 度目からは何もしない。
+    func reapOrphans() { reapStalePIDsIfNeeded() }
+
     private func reapStalePIDsIfNeeded() {
         guard !reapedStalePIDs else { return }
         reapedStalePIDs = true
@@ -656,7 +669,14 @@ extension ClusterProxy {
 
             guard let resolved = await address.wait(timeout: timeout) else {
                 abandon(process)
-                throw ClusterProxyError.startupTimedOut(output.lines().joined(separator: "\n"))
+                // **ここも伏せてから外へ出す。** この文言は帯にも設定画面にも
+                // そのまま出る。待ち受け先はまだ決まっていない（`Endpoint` が
+                // 無い）が prefix は手元にあるので、`Endpoint` と同じ規則で
+                // 落としてから渡す —— 起動に失敗した kubectl が引数を書き戻す
+                // 版があっても漏れないように。
+                throw ClusterProxyError.startupTimedOut(
+                    Endpoint(baseURL: URL(fileURLWithPath: "/"), secret: secret)
+                        .redacting(output.lines().joined(separator: "\n")))
             }
             guard let url = URL(string: "http://\(resolved)/\(secret)") else {
                 abandon(process)

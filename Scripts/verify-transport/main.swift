@@ -62,12 +62,148 @@ func kubectlLines(_ arguments: [String], context: String) async -> [String] {
         .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
 }
 
+/// 標準入力から `apply` する（**kind 専用**。`--mutating` のときだけ呼ばれる）。
+func kubectlApply(_ yaml: String, context: String) async -> Bool {
+    guard let environment = try? await Kubectl.shared.environment() else { return false }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: environment.executable)
+    process.arguments = ["--context", context, "--cache-dir=\(Kubectl.cacheDirectory)",
+                         "apply", "-f", "-"]
+    process.environment = environment.variables
+    let input = Pipe()
+    process.standardInput = input
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do { try process.run() } catch { return false }
+    input.fileHandleForWriting.write(Data(yaml.utf8))
+    input.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+    return process.terminationStatus == 0
+}
+
 func kubectlCount(_ resource: String, context: String, namespace: String?) async -> Int? {
     var arguments = ["get", resource, "-o", "name", "--request-timeout=60s"]
     if let namespace, !namespace.isEmpty { arguments += ["-n", namespace] }
     else { arguments.append("--all-namespaces") }
     let lines = await kubectlLines(arguments, context: context)
     return lines.isEmpty ? 0 : lines.count
+}
+
+// MARK: - 引き直しの取り合い
+
+/// 表を引いたあとに足された CRD を、**存在しない種別と同時に**解く。
+///
+/// **「引き直しの取り合い」の再現ではない。** 指摘としては「先に来たほうが
+/// `invalidate` で走っている引き直しをキャンセルし、実在する種別が
+/// `unknownResource` に化ける」という筋書きだったが、**実測では起きなかった**
+/// （旧実装のままで 2 回とも通った。存在しない種別 3 本を先に投げて順序も
+/// 寄せた）。理由はコードの並びにある —— `resource()` は先頭で
+/// `loadedTable` に入るので、表が捨てられたあとに来た側は**走っている取得に
+/// 相乗りする**。相乗り側は古い表を持たないまま新しい表を受け取るので、
+/// `invalidate` のある枝に**そもそも到達しない**。
+///
+/// ここが見ているのは、引き直しの経路そのもの ——
+/// **アプリを開いたまま入れた CRD が、同時に走る他の解決に巻き込まれずに
+/// 使えるようになるか。** 経路を書き換えたときの回帰網として残す。
+///
+/// **手元の表にある種別で確かめない。** `services` を相手にすると `match` が
+/// 即座に見つけて返すので、**引き直しの枝に一度も入らない**（実測。旧実装の
+/// ままでも通ってしまった ——「歯の無い検査」）。表を引いたあとに CRD を
+/// 足して、はじめてその枝に入る。
+///
+/// **本番側に検証用の口を足さない。** 表を古くする近道を作るより、実際の
+/// 間隔（`refreshCooldown` ＝ 30 秒）をそのまま待つ。引き直しに入る条件を
+/// すり替えると、確かめたつもりになる。
+func checkRefreshRace(context: String, client: APIClient, mayMutate: Bool) async {
+    guard mayMutate else {
+        await Report.shared.skip(
+            "引き直しの取り合い", "CRD を足すので --mutating のときだけ（kind 専用）")
+        return
+    }
+    let crd = """
+    apiVersion: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    metadata:
+      name: refreshprobes.kubedeck.test
+    spec:
+      group: kubedeck.test
+      names:
+        kind: RefreshProbe
+        listKind: RefreshProbeList
+        plural: refreshprobes
+        singular: refreshprobe
+      scope: Namespaced
+      versions:
+        - name: v1alpha1
+          served: true
+          storage: true
+          schema:
+            openAPIV3Schema:
+              type: object
+    """
+    defer {
+        // **確かめたら消す。**
+        let done = Task.detached {
+            _ = await kubectlLines(
+                ["delete", "crd", "refreshprobes.kubedeck.test", "--ignore-not-found"],
+                context: context)
+        }
+        _ = done
+    }
+    guard await kubectlApply(crd, context: context) else {
+        await Report.shared.ng("引き直しの取り合い", "CRD を置けなかった")
+        return
+    }
+    print("  … 表が古くなるまで 31 秒待つ（refreshCooldown）")
+    try? await Task.sleep(for: .seconds(31))
+
+    // **`async let` で書かない。** ここは最上位から呼ばれるが、`async let` に
+    // すると子タスクが隔離の検査に当たって `dispatch_assert_queue_fail` で
+    // 落ちた（実測。EXC_BREAKPOINT）。`withTaskGroup` は**アプリが実際に
+    // 14 種別を同時に解いている形そのもの**なので、再現としても正しい。
+    // **存在しない種別を先に投げる。** 引き直しに入る順序で結果が変わりうる
+    // ので、CRD 側を最後に置いて不利な順序に寄せる。
+    let outcome = await withTaskGroup(of: (Bool, String?).self) { group in
+        for _ in 0..<3 {
+            group.addTask {
+                do {
+                    _ = try await APIDiscovery.shared.resource(
+                        for: "hoges.example.com", context: context, client: client)
+                    return (false, "解決できてしまった")
+                } catch let error as APIDiscoveryError {
+                    if case .unknownResource = error { return (false, nil) }
+                    return (false, "\(error)")
+                } catch {
+                    return (false, "\(error)")
+                }
+            }
+        }
+        group.addTask {
+            do {
+                let found = try await APIDiscovery.shared.resource(
+                    for: "refreshprobes.kubedeck.test", context: context, client: client)
+                return (true, "\(found.plural)/\(found.version)")
+            } catch {
+                return (true, nil)
+            }
+        }
+        var real: String?
+        var fakeDetail: String?
+        var fakeIsUnknown = false
+        for await (isReal, detail) in group {
+            if isReal { real = detail } else {
+                fakeDetail = detail
+                fakeIsUnknown = detail == nil
+            }
+        }
+        return (real: real, fakeIsUnknown: fakeIsUnknown, fakeDetail: fakeDetail)
+    }
+    await check(
+        "同時に引き直しても、足した CRD が解ける", outcome.real != nil,
+        outcome.real ?? "解けなかった")
+    await check(
+        "同時でも「無い」は「無い」のまま", outcome.fakeIsUnknown,
+        outcome.fakeIsUnknown ? "unknownResource" : (outcome.fakeDetail ?? ""))
 }
 
 // MARK: - 入口
@@ -113,6 +249,18 @@ print("[2] 種別名の解決")
 var resolved: [ResourceKind: APIResource] = [:]
 if let endpoint = try? await ClusterProxy.shared.endpoint(for: context) {
     let client = APIClient(endpoint: endpoint, timeout: 60)
+    // **健全なクラスタの表を「欠けている」扱いにしていないか。**
+    //
+    // 集約 discovery の `freshness` を読むようにしたので、読み違えると
+    // **どのクラスタでも表が partial になり**、覚えていられる時間が
+    // 10 分から 1 分に落ちる（そのぶん discovery を引き直す）。しかも
+    // 画面には出ないので、測らないと気付けない。
+    if let table = try? await APIDiscovery.shared.loadedTable(for: context, client: client) {
+        await check("表に欠けが無い", table.isComplete,
+                    table.isComplete
+                        ? "\(table.entries.count) 種別 / 覚える \(Int(table.lifetime)) 秒"
+                        : "欠け: \(table.missingGroups.sorted().joined(separator: ", "))")
+    }
     for kind in ResourceKind.allCases {
         do {
             let resource = try await APIDiscovery.shared.resource(
@@ -280,6 +428,8 @@ if let endpoint = try? await ClusterProxy.shared.endpoint(for: context) {
     } catch {
         await Report.shared.ng("知らないグループ", "\(error)")
     }
+
+    await checkRefreshRace(context: context, client: client, mayMutate: mayMutate)
 }
 
 // MARK: - 7. 取り消し

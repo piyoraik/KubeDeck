@@ -88,6 +88,13 @@ actor Kubectl {
         if trimmed != self.executableOverride { cachedEnvironment = nil }
         self.timeoutSeconds = max(3, timeoutSeconds)
         self.executableOverride = trimmed
+        // **置き忘れの後始末は、常駐を使うかどうかと関係なく行う。**
+        // 前回アプリが落ちたときに残った proxy は、`kubectl proxy` が親の死を
+        // 見ないので待ち受け続ける。片付けは `endpoint(for:)` の入口にしか
+        // 無かったので、**常駐を切っている環境（＝この設定を切るのは、
+        // まさに常駐で困った人）では一度も走らなかった。** `stopAll()` は
+        // 自分が立てたものしか知らないので、あちらでは片付かない。
+        Task { await ClusterProxy.shared.reapOrphans() }
         if usesAPIProxy != self.usesAPIProxy {
             self.usesAPIProxy = usesAPIProxy
             proxyFailure = nil
@@ -823,10 +830,19 @@ actor Kubectl {
 
     func readTransport(for context: String) async -> ReadTransport {
         guard usesAPIProxy else { return .kubectl(reason: nil) }
+        // **走っているかより先に、落ちているかを見る。** proxy が動いていても
+        // 使えないことがある —— kubeconfig が書き換わって立て直しに失敗し、
+        // その失敗を覚えている（`retryCooldown`）あいだは、`api(for:)` が
+        // `remembered` を受けて nil を返し、読み取りは kubectl に落ちている。
+        // なのに `instances` には**前のクラスタを指した proxy が生きたまま**
+        // 残るので、走っているかだけを見ると「常駐 proxy 経由」と出る。
+        // それはこの表示が無くそうとした「黙って別の先へ流す」そのもの。
+        // `proxyFailure` は `api(for:)` が成功するたびに消えるので、
+        // 立っていれば**いま落ちている**。
+        if let proxyFailure { return .kubectl(reason: proxyFailure) }
         if await ClusterProxy.shared.diagnostics(for: context)?.isRunning == true {
             return .apiProxy
         }
-        if let proxyFailure { return .kubectl(reason: proxyFailure) }
         let failure = await ClusterProxy.shared.failure(for: context)
         return .kubectl(reason: failure?.reason)
     }

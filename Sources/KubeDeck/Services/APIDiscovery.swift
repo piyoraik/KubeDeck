@@ -63,20 +63,50 @@ actor APIDiscovery {
     /// 「知らない種別を毎周期たずねない」と決めたのと同じ話）。
     private static let refreshCooldown: TimeInterval = 30
 
+    /// 欠けたまま覚えておく時間。
+    ///
+    /// **欠けた表を「覚えない」にすると、引き直しが止まらない。** 集約 API
+    /// サーバが 1 つ落ちている（`metrics.k8s.io` の APIService は登録されて
+    /// いるが metrics-server が落ちている）のは運用中ふつうに起きる状態で、
+    /// そのあいだ表は毎回「欠けている」ので**一度も覚えられない**。従来の
+    /// discovery はグループごとに 1 本引くので、10 秒ごとの自動更新のたびに
+    /// 25 往復することになる。しかも `tables[context]` が空のままなので、
+    /// 下の「引き直して確かめる」が**一度も働かない**（`loadedAt` が無い）。
+    ///
+    /// **欠けを覚えても嘘にはならない。** `missingGroups` が表に付いて回るので、
+    /// そのグループの種別は `unknownResource` ではなく `empty` に倒れる。
+    /// 覚えるのは「引けたぶん」であって「無いという判断」ではない。
+    private static let partialLifetime: TimeInterval = 60
+
     struct Table {
         var entries: [APIResource]
-        /// 覚えてよいか。**欠けている表は覚えない**（次の周期で引き直す）。
-        var cacheable = true
+        /// 欠けが無いか。**「覚えてよいか」ではない**（欠けた表も短く覚える）。
+        var isComplete = true
         /// 引けなかったグループ（`apps/v1` の形）。
         ///
         /// **ここに属する種別を「サーバが知らない」と言わない。** 引けなかった
         /// だけなので、`unknownResource` ではなく `unreachable` として返す。
         var missingGroups: Set<String> = []
         var loadedAt = Date()
+
+        /// 覚えていられる時間。欠けている表は短く。
+        var lifetime: TimeInterval {
+            isComplete ? APIDiscovery.tableLifetime : APIDiscovery.partialLifetime
+        }
     }
 
     private var tables: [String: Table] = [:]
     private var loading: [String: Task<Table, Error>] = [:]
+    /// 「見つからない」を受けて引き直している最中の 1 本。
+    ///
+    /// **引き直しを取り合わせない。** `httpList` は 14 種別を同時に解くので、
+    /// 表に無い種別が 2 つあると 2 つとも引き直しに入る。以前はそこで
+    /// `invalidate` を通していたため、**後から来たほうが前の引き直しを
+    /// キャンセルし**、前のほうは「引き直しても見つからなかった」として
+    /// `unknownResource` を投げていた。画面は「クラスタに見つかりませんでした」
+    /// と**断定**する —— 引き直しは、まさにその断定を避けるために置いたもの
+    /// なのに。1 本にまとめて、両方が同じ結果を見る。
+    private var refreshing: [String: Task<Table, Error>] = [:]
     /// 捨てた回数。**引いている最中に捨てられたら、その結果を採らない。**
     private var generations: [String: Int] = [:]
 
@@ -171,10 +201,16 @@ actor APIDiscovery {
         // たずねる画面があると、そのたびに discovery を引くことになる。
         if let loadedAt = tables[context]?.loadedAt,
            Date().timeIntervalSince(loadedAt) > Self.refreshCooldown {
-            invalidate(context: context)
-            if let refreshed = try? await self.loadedTable(for: context, client: client),
-               let found = Self.match(query, in: refreshed.entries) {
-                return found
+            // **引き直せなかったことを「無い」にしない。** 確かめるために
+            // 引き直したのだから、確かめられなかったなら判断を保留する
+            // （kubectl 経由で「捨てられなかったときに引き直さない」と
+            // 決めたのと同じ、`DiscoveryReset.notChecked` の側）。
+            guard let refreshed = try? await self.refreshedTable(for: context, client: client)
+            else { throw APIDiscoveryError.empty }
+            if let found = Self.match(query, in: refreshed.entries) { return found }
+            if !refreshed.missingGroups.isEmpty,
+               query.group.map({ refreshed.missingGroups.contains($0) }) ?? true {
+                throw APIDiscoveryError.empty
             }
         }
         throw APIDiscoveryError.unknownResource(resourceName)
@@ -208,7 +244,7 @@ actor APIDiscovery {
 
     func loadedTable(for context: String, client: APIClient) async throws -> Table {
         if let table = tables[context],
-           Date().timeIntervalSince(table.loadedAt) < Self.tableLifetime {
+           Date().timeIntervalSince(table.loadedAt) < table.lifetime {
             return table
         }
         if let task = loading[context] { return try await task.value }
@@ -218,7 +254,6 @@ actor APIDiscovery {
         do {
             let table = try await task.value
             if loading[context] == task { loading[context] = nil }
-            guard table.cacheable else { return table }
             // **捨てられていたら覚え直さない。** 引いている最中に
             // `invalidate` が走っていたら、この結果はもう古い相手のもの
             // （コンテキストを切り替えた直後にこの窓を踏む）。
@@ -237,6 +272,25 @@ actor APIDiscovery {
         }
     }
 
+    /// 「見つからない」を受けて引き直す。**同時に何本も引き直さない。**
+    ///
+    /// `invalidate` を使わないのは、あれが「別のクラスタを指した」の意味だから
+    /// （走っている取得を打ち切り、世代を進める）。ここでやりたいのは
+    /// **同じクラスタに聞き直す**ことなので、走っているものを止めずに 1 本足し、
+    /// 引き直しに来た全員が同じ結果を見る。
+    func refreshedTable(for context: String, client: APIClient) async throws -> Table {
+        if let task = refreshing[context] { return try await task.value }
+        let generation = generations[context] ?? 0
+        let task = Task { try await Self.load(client: client) }
+        refreshing[context] = task
+        defer { if refreshing[context] == task { refreshing[context] = nil } }
+        let table = try await task.value
+        // **捨てられていたら覚え直さない**（`loadedTable` と同じ理由）。
+        guard generations[context] ?? 0 == generation else { return table }
+        tables[context] = table
+        return table
+    }
+
     /// クラスタを切り替えたら捨てる。
     ///
     /// **他のコンテキストのぶんを残さない理由は無い**が、切り替えのたびに
@@ -249,6 +303,8 @@ actor APIDiscovery {
         // 完了と同時に覚え直される（世代でも弾くが、無駄に引かせない）。
         loading[context]?.cancel()
         loading[context] = nil
+        refreshing[context]?.cancel()
+        refreshing[context] = nil
     }
 
     func invalidateAll() {
@@ -257,8 +313,10 @@ actor APIDiscovery {
             task.cancel()
             generations[context, default: 0] += 1
         }
+        for task in refreshing.values { task.cancel() }
         tables.removeAll()
         loading.removeAll()
+        refreshing.removeAll()
     }
 
     // MARK: - 引いて表を作る
@@ -276,24 +334,58 @@ actor APIDiscovery {
         // **片方だけで済ませない。** `/api` は集約で読めたのに `/apis` が
         // 従来の形だった、という食い違いをそのまま採ると core しか無い表になり、
         // 「Deployment という種別が無い」に化ける。両方揃ったときだけ使う。
-        if !coreEntries.isEmpty, !groupEntries.isEmpty {
-            return Table(entries: coreEntries + groupEntries)
+        if !coreEntries.entries.isEmpty, !groupEntries.entries.isEmpty {
+            let missing = coreEntries.stale.union(groupEntries.stale)
+            return Table(
+                entries: coreEntries.entries + groupEntries.entries,
+                isComplete: missing.isEmpty,
+                missingGroups: missing)
         }
         return try await legacy(client: client)
     }
 
     /// 集約 discovery の形を読む。**従来の形なら空を返し、引けなければ投げる。**
+    ///
+    /// - Returns: 読めた種別と、**答えが古いと自分で言っているグループ**。
+    ///
+    /// **`freshness` を読み飛ばさない。** 集約 discovery は、集約 API サーバが
+    /// 応答しなかったグループを**落とさずに** `freshness: "Stale"` を付けて
+    /// 返す（KEP-3352）。中身は空か、覚えていた古いもの。読み飛ばすと、
+    /// そのグループの種別は表に無い＝`unknownResource` になり、画面は
+    /// 「クラスタに見つかりませんでした」と**断定**する。しかも集約は
+    /// k8s 1.30 以降の**主たる経路**なので、従来の形にだけ
+    /// `missingGroups` を持たせていたこの手当ては、いちばん通る道で
+    /// 効いていなかった（`kubectl get apiservices` の AVAILABLE=False ——
+    /// `discoveryHint` が「ここを見ろ」と言っている当の状態）。
+    ///
+    /// **読めたぶんは捨てない。** Stale でも覚えていた中身が付いてくることが
+    /// あるので、印だけ立てて種別はそのまま使う。
     private static func aggregated(
         path: String, client: APIClient
-    ) async throws -> [APIResource] {
+    ) async throws -> (entries: [APIResource], stale: Set<String>) {
         let data = try await client.data(path: path, accept: aggregatedAccept)
-        guard let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
-        guard root["kind"]?.stringValue == "APIGroupDiscoveryList" else { return [] }
+        guard let root = try? JSONDecoder().decode(JSONValue.self, from: data)
+        else { return ([], []) }
+        return parseAggregated(root)
+    }
+
+    /// 集約 discovery の応答を読む（取りに行かない側）。
+    static func parseAggregated(
+        _ root: JSONValue
+    ) -> (entries: [APIResource], stale: Set<String>) {
+        guard root["kind"]?.stringValue == "APIGroupDiscoveryList" else { return ([], []) }
         var result: [APIResource] = []
+        var stale: Set<String> = []
         for group in root["items"]?.arrayValue ?? [] {
             let name = group.path("metadata.name")?.stringValue ?? ""
             for version in group["versions"]?.arrayValue ?? [] {
                 guard let versionName = version["version"]?.stringValue else { continue }
+                // **「Current でない」で見る。** 将来 `freshness` が増えても、
+                // 知らない値を「新しい」側に倒さない（安全側）。書いていない
+                // 版（この形を返す最初期）だけは、印を立てない。
+                if let freshness = version["freshness"]?.stringValue, freshness != "Current" {
+                    stale.insert(name)
+                }
                 for resource in version["resources"]?.arrayValue ?? [] {
                     guard let plural = resource["resource"]?.stringValue else { continue }
                     result.append(APIResource(
@@ -305,7 +397,7 @@ actor APIDiscovery {
                 }
             }
         }
-        return result
+        return (result, stale)
     }
 
     /// 従来の discovery（グループごとに 1 本）。
@@ -371,9 +463,9 @@ actor APIDiscovery {
         // 失敗にすると、**画面全部が「取得できません」になる** —— kubectl 経由
         // ではそのグループが欠けるだけだったので、経路を変えたことによる回帰。
         // 逆に欠けた表を 10 分覚えると「その種別は存在しない」と言い続ける。
-        // だから**今回限りの表として返し、覚えない。**
+        // だから**短いあいだだけ覚える**（`partialLifetime`）。
         return Table(
-            entries: result, cacheable: failed.isEmpty,
+            entries: result, isComplete: failed.isEmpty,
             missingGroups: Set(failed.map { $0.contains("/") ? String($0.split(separator: "/")[0]) : "" }))
     }
 
