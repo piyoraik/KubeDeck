@@ -506,6 +506,34 @@ struct APITransportTests {
         #expect(fresh.errorDescription?.contains("kubectl proxy を立ち上げられませんでした") == true)
     }
 
+    // MARK: - 引けなかったグループ
+
+    /// **引けなかったグループの種別を「無い」と言わない。**
+    ///
+    /// 集約 API サーバが 1 つ落ちている（`AVAILABLE=False`）のは運用中ふつうに
+    /// 起きる。そのグループの種別を `unknownResource` にすると、画面は
+    /// 「クラスタに見つかりませんでした。`kubectl api-resources` に出るかを
+    /// 確かめてください」と**断定**する。
+    @Test func keepsMissingGroupsOutOfUnknown() {
+        let table = APIDiscovery.Table(
+            entries: [
+                APIResource(group: "", version: "v1", plural: "pods",
+                            kind: "Pod", namespaced: true),
+            ],
+            cacheable: false,
+            missingGroups: ["metrics.k8s.io"])
+        // 引けたものは引ける。
+        #expect(APIDiscovery.match(APIDiscovery.parse("pods.v1."), in: table.entries) != nil)
+        // 引けなかったグループの種別は、表に無い。
+        #expect(APIDiscovery.match(
+            APIDiscovery.parse("nodes.metrics.k8s.io"), in: table.entries) == nil)
+        // **その「無い」を種別の話にしない**のが `resource(...)` の役目
+        // （欠けたグループに属するなら `empty`、そうでなければ
+        // `unknownResource`）。ここでは印が立っていることだけを見る。
+        #expect(table.missingGroups.contains("metrics.k8s.io"))
+        #expect(!table.cacheable)
+    }
+
     // MARK: - 待ち受け先の読み取り
 
     /// `kubectl proxy` の 1 行目から待ち受け先を取る。手元の v1.32.13 と v1.36.2 は
