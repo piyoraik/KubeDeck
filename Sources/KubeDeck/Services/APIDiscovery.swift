@@ -176,8 +176,12 @@ actor APIDiscovery {
         // 集約が効くなら 2 本で済む。
         async let core = aggregated(path: "api", client: client)
         async let grouped = aggregated(path: "apis", client: client)
-        let coreEntries = await core
-        let groupEntries = await grouped
+        // **届かないクラスタで段を下りない。** ここを「引けなければ従来の形」
+        // として扱っていたら、待ち上限 × 3（集約 2 本 → 従来 2 本）を黙って
+        // 待つことになる（実測。8 秒設定で 25.7 秒かかった）。**取れなかったのと、
+        // 古い形だったのは別**なので、通信の失敗はそのまま投げる。
+        let coreEntries = try await core
+        let groupEntries = try await grouped
         // **片方だけで済ませない。** `/api` は集約で読めたのに `/apis` が
         // 従来の形だった、という食い違いをそのまま採ると core しか無い表になり、
         // 「Deployment という種別が無い」に化ける。両方揃ったときだけ使う。
@@ -187,11 +191,12 @@ actor APIDiscovery {
         return try await legacy(client: client)
     }
 
-    /// 集約 discovery の形を読む。従来の形が返ってきたら（または引けなければ）空。
-    private static func aggregated(path: String, client: APIClient) async -> [APIResource] {
-        guard let data = try? await client.data(path: path, accept: aggregatedAccept),
-              let root = try? JSONDecoder().decode(JSONValue.self, from: data)
-        else { return [] }
+    /// 集約 discovery の形を読む。**従来の形なら空を返し、引けなければ投げる。**
+    private static func aggregated(
+        path: String, client: APIClient
+    ) async throws -> [APIResource] {
+        let data = try await client.data(path: path, accept: aggregatedAccept)
+        guard let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
         guard root["kind"]?.stringValue == "APIGroupDiscoveryList" else { return [] }
         var result: [APIResource] = []
         for group in root["items"]?.arrayValue ?? [] {

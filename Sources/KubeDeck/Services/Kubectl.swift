@@ -37,6 +37,22 @@ enum KubectlError: LocalizedError {
     }
 }
 
+/// 常駐 proxy 経由の取得が失敗したときに、**proxy が書き出した文言まで含めて**
+/// 伝える型。
+///
+/// 帯は最初の段落を見出しにして残りを畳むので、**言い換えを先に置く**
+/// （`RootView.splitError` と同じ約束）。
+struct TransportError: LocalizedError {
+    /// HTTP の応答から分かること（「N 秒待っても応答がありません」など）。
+    let summary: String
+    /// proxy が書き出した文言を `Kubectl.explain` に通したもの。
+    let detail: String
+
+    var errorDescription: String? {
+        detail.isEmpty ? summary : "\(detail)\n\n\(summary)"
+    }
+}
+
 /// kubectl の呼び出し口。
 ///
 /// API サーバを直接叩かず kubectl を経由するのは、認証のためだけ。
@@ -769,9 +785,13 @@ actor Kubectl {
             // 避ける理由（discovery を通らないと Connect Gateway で 404 になる）
             // に当たらない** —— あれは metrics API の話で、`/version` は
             // 集約 API サーバ越しではなく本体が答える。
-            let data = try await api.data(path: "version")
-            let root = try JSONDecoder().decode(JSONValue.self, from: data)
-            return root["gitVersion"]?.stringValue ?? String(localized: "不明")
+            do {
+                let data = try await api.data(path: "version")
+                let root = try JSONDecoder().decode(JSONValue.self, from: data)
+                return root["gitVersion"]?.stringValue ?? String(localized: "不明")
+            } catch {
+                throw await explained(error, context: context)
+            }
         }
         let result = try await run(
             ["version", "-o", "json", "--request-timeout=\(requestTimeout)"],
@@ -847,16 +867,22 @@ actor Kubectl {
         assuming kind: ResourceKind?, query: [URLQueryItem] = [], chunked: Bool = true,
         metadataOnly: Bool = false
     ) async throws -> [K8sObject] {
-        let resource = try await APIDiscovery.shared.resource(
-            for: resourceName, context: context, client: api)
-        let path = resource.listPath(namespace: namespace)
-        let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
+        let resource: APIResource
         let pages: [Data]
-        if chunked {
-            pages = try await api.list(
-                path: path, query: query, chunk: Self.chunkSize, accept: accept)
-        } else {
-            pages = [try await api.data(path: path, query: query, accept: accept)]
+        do {
+            resource = try await APIDiscovery.shared.resource(
+                for: resourceName, context: context, client: api)
+            let path = resource.listPath(namespace: namespace)
+            let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
+            if chunked {
+                pages = try await api.list(
+                    path: path, query: query, chunk: Self.chunkSize, accept: accept)
+            } else {
+                pages = [try await api.data(path: path, query: query, accept: accept)]
+            }
+        } catch {
+            // **proxy が書いたものを添えてから投げる**（`explained` の説明を参照）。
+            throw await explained(error, context: context)
         }
         var objects: [K8sObject] = []
         for page in pages {
@@ -890,6 +916,40 @@ actor Kubectl {
         guard received != "\(expected)List", received != expected else { return }
         throw K8sObject.UnexpectedKind(
             requested: requested.map { [$0] } ?? [], received: received)
+    }
+
+    /// HTTP の失敗に、proxy が書き出した文言を添えて言い換える。
+    ///
+    /// **元の文言を捨てない、をこの経路でも守る。** 認証プラグインが失敗した
+    /// とき、HTTP の body に来るのは
+    /// `getting credentials: exec: executable … failed with exit code 1` だけで、
+    /// **プラグイン本人の文言は proxy の stderr にしか出ない**（実測）。
+    /// そこを拾わないと、利用者に見えるのは「exit code 1」だけになり、
+    /// しかも `explain(_:)` の言い換え（期限切れの再ログイン、CA の検証、
+    /// 経路の問題）が**1 つも発火しない** —— kubectl 経由では出ていた説明が、
+    /// 経路を変えたせいで消える。
+    ///
+    /// **種別ごとの拒否や NotFound には添えない。** あれは応答そのものが理由を
+    /// 言っているので、proxy の古い行を足すとかえって読み違える。
+    private func explained(_ error: any Error, context: String) async -> any Error {
+        guard let apiError = error as? APIError else { return error }
+        switch apiError {
+        case .forbidden, .notFound, .conflict:
+            return error
+        case .unauthorized, .status, .timedOut, .unreachable, .malformed:
+            break
+        }
+        let output = await ClusterProxy.shared.diagnostics(for: context)?.recentOutput ?? []
+        // proxy 自身の「中継に失敗した」行は body と同じことを言っているだけ、
+        // 待ち受けを始めた行はそもそも失敗ではない。どちらも落とす。
+        // **プラグインの行は残す。**
+        let interesting = output.filter {
+            !$0.contains("proxy_server.go") && ClusterProxy.Instance.parseAddress($0) == nil
+        }
+        guard !interesting.isEmpty else { return error }
+        let stderr = Self.condense(interesting.joined(separator: "\n"))
+        return TransportError(
+            summary: error.localizedDescription, detail: Self.explain(stderr))
     }
 
     /// 一覧の `kind` が食い違ったら、覚えた API の一覧を捨てて 1 度だけ引き直す。
@@ -1087,7 +1147,7 @@ actor Kubectl {
         // 呼び出し側が「取得できません」を出せるように、最初の失敗を渡す。
         if result.objects.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
            let first = kinds.compactMap({ failures[$0] }).first {
-            throw first
+            throw await explained(first, context: context)
         }
         return result
     }
