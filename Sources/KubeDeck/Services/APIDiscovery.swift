@@ -56,13 +56,15 @@ actor APIDiscovery {
     /// まま戻らなくなる）。kubectl の discovery キャッシュも 10 分で切れる。
     private static let tableLifetime: TimeInterval = 10 * 60
 
-    private struct Table {
+    struct Table {
         var entries: [APIResource]
-        var loadedAt: Date
+        /// 覚えてよいか。**欠けている表は覚えない**（次の周期で引き直す）。
+        var cacheable = true
+        var loadedAt = Date()
     }
 
     private var tables: [String: Table] = [:]
-    private var loading: [String: Task<[APIResource], Error>] = [:]
+    private var loading: [String: Task<Table, Error>] = [:]
     /// 捨てた回数。**引いている最中に捨てられたら、その結果を採らない。**
     private var generations: [String: Int] = [:]
 
@@ -168,18 +170,20 @@ actor APIDiscovery {
            Date().timeIntervalSince(table.loadedAt) < Self.tableLifetime {
             return table.entries
         }
-        if let task = loading[context] { return try await task.value }
+        if let task = loading[context] { return try await task.value.entries }
         let generation = generations[context] ?? 0
         let task = Task { try await Self.load(client: client) }
         loading[context] = task
         do {
-            let entries = try await task.value
+            let table = try await task.value
+            let entries = table.entries
             if loading[context] == task { loading[context] = nil }
+            guard table.cacheable else { return entries }
             // **捨てられていたら覚え直さない。** 引いている最中に
             // `invalidate` が走っていたら、この結果はもう古い相手のもの
             // （コンテキストを切り替えた直後にこの窓を踏む）。
             guard generations[context] ?? 0 == generation else { return entries }
-            tables[context] = Table(entries: entries, loadedAt: Date())
+            tables[context] = table
             return entries
         } catch {
             if loading[context] == task { loading[context] = nil }
@@ -213,7 +217,7 @@ actor APIDiscovery {
 
     // MARK: - 引いて表を作る
 
-    private static func load(client: APIClient) async throws -> [APIResource] {
+    private static func load(client: APIClient) async throws -> Table {
         // 集約が効くなら 2 本で済む。
         async let core = aggregated(path: "api", client: client)
         async let grouped = aggregated(path: "apis", client: client)
@@ -227,7 +231,7 @@ actor APIDiscovery {
         // 従来の形だった、という食い違いをそのまま採ると core しか無い表になり、
         // 「Deployment という種別が無い」に化ける。両方揃ったときだけ使う。
         if !coreEntries.isEmpty, !groupEntries.isEmpty {
-            return coreEntries + groupEntries
+            return Table(entries: coreEntries + groupEntries)
         }
         return try await legacy(client: client)
     }
@@ -263,17 +267,20 @@ actor APIDiscovery {
     /// **優先バージョンだけ引く。** 全バージョンを引くと、`autoscaling` の
     /// v1 と v2 のように併存するぶんだけ往復が増える。アプリが明示している
     /// バージョン（`pods.v1.`）は core なので、これで足りる。
-    private static func legacy(client: APIClient) async throws -> [APIResource] {
+    private static func legacy(client: APIClient) async throws -> Table {
         var groupVersions: [String] = []
         // **引けなかったら投げる。`try?` で流さない。**
         // ここを握りつぶすと、core が引けなかっただけで表から `pods` や
         // `services` が丸ごと落ち、呼び出し側は「サーバがその種別を知らない」
         // と読む（しかも 10 分覚える）。**「取れなかった」を「無い」にしない。**
         let core = try await client.data(path: "api")
-        if let root = try? JSONDecoder().decode(JSONValue.self, from: core) {
-            for version in root["versions"]?.arrayValue ?? [] {
-                if let name = version.stringValue { groupVersions.append(name) }
-            }
+        // **復号の失敗も流さない。** 200 で壊れた JSON（縮退したゲートウェイの
+        // 応答）を握りつぶすと、`v1` が版一覧に入らないまま先へ進み、
+        // **core 抜きの表**ができる（`pods` も `services` も `nodes` も
+        // 「サーバが知らない」になる）。
+        let coreVersions = try JSONDecoder().decode(JSONValue.self, from: core)
+        for version in coreVersions["versions"]?.arrayValue ?? [] {
+            if let name = version.stringValue { groupVersions.append(name) }
         }
         let groups = try await client.data(path: "apis")
         let root = try JSONDecoder().decode(JSONValue.self, from: groups)
@@ -300,13 +307,16 @@ actor APIDiscovery {
                 if let entries { result += entries } else { failed.append(groupVersion) }
             }
         }
-        // **欠けたまま覚えない。** 1 グループでも引けなかったら、その表は
-        // 「そのグループの種別は存在しない」と読まれてしまう（10 分覚える）。
-        // 集約 discovery で「片方だけで済ませない」としたのと同じ理由。
-        guard failed.isEmpty, !result.isEmpty else {
-            throw APIDiscoveryError.empty
-        }
-        return result
+        guard !result.isEmpty else { throw APIDiscoveryError.empty }
+        // **欠けたまま覚えない。ただし読めたぶんは捨てない。**
+        //
+        // 集約 API サーバが 1 つ落ちている（`kubectl get apiservices` に
+        // AVAILABLE=False がある）のは運用中ふつうに起きる。そこで表ごと
+        // 失敗にすると、**画面全部が「取得できません」になる** —— kubectl 経由
+        // ではそのグループが欠けるだけだったので、経路を変えたことによる回帰。
+        // 逆に欠けた表を 10 分覚えると「その種別は存在しない」と言い続ける。
+        // だから**今回限りの表として返し、覚えない。**
+        return Table(entries: result, cacheable: failed.isEmpty)
     }
 
     static func parseResourceList(_ list: JSONValue, groupVersion: String) -> [APIResource] {

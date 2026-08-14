@@ -265,15 +265,20 @@ actor ClusterProxy {
     ///
     /// **開いたぶんだけ常駐させない。** 1 本あたり RSS 31MB・10 スレッド（実測）
     /// なので、切り替えて回るだけで積み上がる。
-    func keepOnly(_ context: String) async {
+    /// - Returns: 畳んだコンテキスト。呼び出し側が、そのぶんだけ覚えた
+    ///   API の一覧を捨てられるようにする（残したほうまで捨てない）。
+    @discardableResult
+    func keepOnly(_ context: String) async -> [String] {
         // **覚えている失敗も忘れる。** 人が「立て直す」を押すのは、失敗した
         // 直後（＝立て直しの間隔の最中）。忘れないと、押しても間隔に掛かって
         // 何も起きず、**古い理由がそのまま出続ける。**
         failures.removeAll()
         await drainStarts(except: context)
-        for key in instances.keys where key != context {
+        let dropped = instances.keys.filter { $0 != context }
+        for key in dropped {
             await stop(context: key)
         }
+        return dropped
     }
 
     func stopAll() async {
@@ -320,18 +325,28 @@ actor ClusterProxy {
         let live = Set(instances.values.map(\.pid))
         for file in files where file.hasSuffix(".pid") {
             let url = directory.appendingPathComponent(file)
-            defer { try? FileManager.default.removeItem(at: url) }
             // **ファイル名から読む。** 中身が壊れていても pid は分かる。
             let named = Int32(file.replacingOccurrences(of: ".pid", with: ""))
             let stored = (try? String(contentsOf: url, encoding: .utf8))
                 .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            guard let pid = named ?? stored, pid > 1, !live.contains(pid) else { continue }
+            guard let pid = named ?? stored, pid > 1, !live.contains(pid) else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
             // **pid だけで殺さない。** 使い回された pid が別のプロセスに当たって
             // いることがあるので、引数に kubectl と proxy が入っているかを見る。
             // **そして孤児だけを殺す** —— 生きている親がいるなら、それは別の
             // インスタンスが使っている最中のもの。
-            guard Self.looksLikeOurProxy(pid: pid), Self.isOrphan(pid: pid) else { continue }
+            guard Self.looksLikeOurProxy(pid: pid) else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            // **見送ったなら記録も残す。** 消してしまうと、その proxy が
+            // あとで孤児になったときに**誰も回収できなくなる**（prefix を
+            // 持ったまま loopback で待ち受け続ける）。
+            guard Self.isOrphan(pid: pid) else { continue }
             kill(pid, SIGTERM)
+            try? FileManager.default.removeItem(at: url)
         }
     }
 
@@ -569,6 +584,7 @@ extension ClusterProxy {
 
             let output = OutputBuffer()
             let address = AddressWaiter()
+            let stderrDone = DispatchSemaphore(value: 0)
 
             do {
                 try process.run()
@@ -598,12 +614,19 @@ extension ClusterProxy {
                 // `error: context … does not exist` を出して 0.12 秒で終わる）。
                 // すると最初の取得が 25 秒固まり、しかも立て直しの間隔は
                 // 10 秒なので、35 秒ごとに 25 秒固まり続ける。
+                // **stderr 側の読み手が終わるのを待ってから諦める。**
+                // 両方のパイプは同時に EOF になるので、待たずに読み出すと
+                // `error: context … does not exist` のような**理由が
+                // まだ書かれていない**（「proxy は何も書き出していません」
+                // だけが残る）。
+                stderrDone.wait(timeout: .now() + 2)
                 address?.giveUp()
             }
             detach { [weak output] in
                 readLines(from: stderr.fileHandleForReading) { line in
                     output?.append(line)
                 }
+                stderrDone.signal()
             }
 
             guard let resolved = await address.wait(timeout: timeout) else {

@@ -157,6 +157,12 @@ struct APIClient: Sendable {
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = maxConnections
+        // **システムのプロキシ設定を引き継がない。** 相手は 127.0.0.1 で、
+        // 経由する意味が無い。TLS を覗く社内プロキシが入っていて loopback が
+        // 除外に無い環境では、**この要求がそちらへ回されて落ちる** ——
+        // 症状は「kubectl proxy に繋がりません」だけで、ターミナルの kubectl は
+        // 通るので、いちばん切り分けにくい形になる。
+        configuration.connectionProxyDictionary = [:]
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpAdditionalHeaders = [
             "Accept": "application/json",

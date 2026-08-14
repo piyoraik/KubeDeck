@@ -834,9 +834,20 @@ actor Kubectl {
 
     /// コンテキストを切り替えたときに呼ぶ。要らなくなった proxy を畳み、
     /// 覚えた API の一覧も捨てる。
+    /// - Parameter keeping: 残すコンテキスト。それ以外の常駐と、覚えた
+    ///   API の一覧を畳む。
+    ///
+    /// **残すほうの表まで捨てない。** 以前は `invalidateAll()` を呼んで
+    /// いたので、切り替え直後に走り出した**切り替え先の** discovery を
+    /// 自分で打ち切っていた。打ち切られた側は `try?` で握られる経路
+    /// （`metricsServerAvailable` / `customResourceTypes`）で
+    /// **false や空**になり、「探している最中」を「入っていません」
+    /// 「CRD が 1 つも無い」と断定していた。
     func releaseTransports(keeping context: String) async {
-        await ClusterProxy.shared.keepOnly(context)
-        await APIDiscovery.shared.invalidateAll()
+        let dropped = await ClusterProxy.shared.keepOnly(context)
+        for other in dropped {
+            await APIDiscovery.shared.invalidate(context: other)
+        }
         proxyFailure = nil
     }
 
@@ -877,8 +888,8 @@ actor Kubectl {
     ///   `spec` / `status` が来なくなるので、**中身を見る経路では使わない。**
     private func httpObjects(
         _ api: APIClient, resourceName: String, context: String, namespace: String?,
-        assuming kind: ResourceKind?, query: [URLQueryItem] = [], chunked: Bool = true,
-        metadataOnly: Bool = false
+        assuming kind: ResourceKind?, query: [URLQueryItem] = [],
+        chunk: Int? = Kubectl.chunkSize, metadataOnly: Bool = false
     ) async throws -> [K8sObject] {
         let resource: APIResource
         let pages: [Data]
@@ -888,9 +899,9 @@ actor Kubectl {
                 for: resourceName, context: context, client: api)
             let path = resource.listPath(namespace: namespace)
             let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
-            if chunked {
+            if let chunk {
                 pages = try await api.list(
-                    path: path, query: query, chunk: Self.chunkSize, accept: accept)
+                    path: path, query: query, chunk: chunk, accept: accept)
             } else {
                 pages = [try await api.data(path: path, query: query, accept: accept)]
             }
@@ -950,14 +961,21 @@ actor Kubectl {
     private func explained(
         _ error: any Error, context: String, since: Date
     ) async -> any Error {
-        // **包んだぶんを剥がしてから見る。** 一覧を引く途中の失敗は
-        // `APIDiscoveryError.unreachable` に包んである（種別の話と混ぜない
-        // ため）。剥がさないと、**いちばん出したい経路 —— 起動直後の認証
-        // 失敗 —— でプラグインの文言が添えられない**（実際そうなった）。
-        if case APIDiscoveryError.unreachable(let inner) = error {
-            return await explained(inner, context: context, since: since)
+        // **包みは剥がして中身を見るが、返す値は包んだまま。**
+        //
+        // 一覧を引く途中の失敗は `APIDiscoveryError.unreachable` に包んである
+        // （種別の話と混ぜないため）。中を見ないと、いちばん出したい経路 ——
+        // 起動直後の認証失敗 —— でプラグインの文言を添えられない。
+        // **かといって剥がして返すと、今度は `APIError.notFound` が素で出て、
+        // 呼び出し側が「その種別は無い」と読む**（`/api` が 404 を返しただけで
+        // 全種別が「クラスタに存在しない」になる）。1 度これで壊した。
+        let inner: any Error
+        if case APIDiscoveryError.unreachable(let wrapped) = error {
+            inner = wrapped
+        } else {
+            inner = error
         }
-        guard let apiError = error as? APIError else { return error }
+        guard let apiError = inner as? APIError else { return error }
         switch apiError {
         case .forbidden, .notFound, .conflict:
             return error
@@ -1001,6 +1019,13 @@ actor Kubectl {
     /// **アプリ側の読み込み量は変わらない** —— そこは種別と Namespace を
     /// 絞ってもらう話で、この指定で直るのは取りに行き方だけ。
     static let chunkSize = 500
+
+    /// イベントを刻む単位。**一覧より大きくする。**
+    ///
+    /// 欲しいのは新しい順の数十件だが、API は時刻順に返さないので全部引いて
+    /// から並べ替えることになる（kubectl の `--sort-by` も同じ）。500 ずつだと
+    /// 逐次の往復が積み上がるので、大きめに 1 度で取り切る側へ寄せる。
+    static let eventChunkSize = 2_000
 
     func list(
         _ kind: ResourceKind, context: String, namespace: String?
@@ -1422,12 +1447,13 @@ actor Kubectl {
     /// イベントは新しい順に見たいので、取得時に並べ替える。
     func events(context: String, namespace: String?, limit: Int = 200) async throws -> [K8sObject] {
         if let api = await api(for: context) {
-            // **刻まない。** kubectl も 1 回の要求で全部取って手元で並べ替えて
-            // いる。刻むと 500 件ごとに**逐次**の往復になり、直近 30 件が欲しい
-            // だけなのにイベント全部を何往復もして運ぶことになる。
+            // **刻むが、細かくしない。** 500 件ずつだと直近 30 件が欲しい
+            // だけなのに逐次の往復を何度もすることになる。かといって一撃で
+            // 全件を要求すると、「API サーバに一度に大きな応答を作らせない」
+            // という `--chunk-size` の方針がここだけ外れる。
             let objects = try await httpObjects(
                 api, resourceName: ResourceKind.event.resourceName, context: context,
-                namespace: namespace, assuming: .event, chunked: false)
+                namespace: namespace, assuming: .event, chunk: Self.eventChunkSize)
             // **並べ替えはこちらで持つ。** kubectl の `--sort-by=.lastTimestamp` も
             // クライアント側の並べ替えで、しかも `lastTimestamp` を持たず
             // `eventTime` だけのイベントを「時刻が無いもの」として扱う。
@@ -1488,7 +1514,7 @@ actor Kubectl {
                 // **URL に手で組み込まない。** `URLQueryItem` に渡せば
                 // `involvedObject.uid=…` の `=` も含めて正しく符号化される。
                 query: [URLQueryItem(name: "fieldSelector", value: fieldSelector)],
-                chunked: false)
+                chunk: Self.eventChunkSize)
             return Array(Self.newestFirst(objects).prefix(limit))
         }
 
@@ -1666,7 +1692,7 @@ actor Kubectl {
             for (resource, scoped) in paths {
                 if (try? await httpObjects(
                     api, resourceName: resource, context: context, namespace: scoped,
-                    assuming: nil, chunked: false)) != nil {
+                    assuming: nil, chunk: nil)) != nil {
                     return true
                 }
             }
