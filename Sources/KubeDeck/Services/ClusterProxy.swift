@@ -312,9 +312,25 @@ actor ClusterProxy {
             guard let pid = named ?? stored, pid > 1, !live.contains(pid) else { continue }
             // **pid だけで殺さない。** 使い回された pid が別のプロセスに当たって
             // いることがあるので、引数に kubectl と proxy が入っているかを見る。
-            guard Self.looksLikeOurProxy(pid: pid) else { continue }
+            // **そして孤児だけを殺す** —— 生きている親がいるなら、それは別の
+            // インスタンスが使っている最中のもの。
+            guard Self.looksLikeOurProxy(pid: pid), Self.isOrphan(pid: pid) else { continue }
             kill(pid, SIGTERM)
         }
+    }
+
+    /// 親を失っているか（＝前回の起動が落ちて残ったもの）。
+    ///
+    /// **生きている親がいるものを殺さない。** 控えた pid だけで判断すると、
+    /// もう 1 つ走っているインスタンス（開発中のハーネス、終了しかけの前の
+    /// アプリ）の proxy まで巻き添えにする。**回収したいのは孤児だけ**なので、
+    /// 親が 1（launchd に引き取られた）のものに限る。
+    static func isOrphan(pid: Int32) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return info.kp_eproc.e_ppid == 1
     }
 
     /// その pid が `kubectl proxy` かどうか。**同じユーザのプロセスしか見えない**
