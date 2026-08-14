@@ -477,6 +477,35 @@ struct APITransportTests {
         #expect(TransportError(summary: "そのまま", detail: "").errorDescription == "そのまま")
     }
 
+    // MARK: - 失敗の文言
+
+    /// **同じ段落を 2 度出さない。** 言い換え（`Kubectl.explain`）は元の文言を
+    /// 末尾に残す作りなので、そのまま繋ぐと同じ文が並ぶ（403 の対処を
+    /// 添えたときに実際そうなった）。
+    @Test func doesNotRepeatTheOriginalMessage() {
+        let original = "secrets is forbidden: User \"x\" cannot list resource \"secrets\""
+        let hinted = "権限が足りません。…\n\n\(original)"
+        let composed = TransportError(summary: original, detail: hinted)
+        #expect(composed.errorDescription == hinted)
+
+        // 含まれていなければ、これまでどおり続けて出す。
+        let separate = TransportError(summary: "8 秒待っても…", detail: "gke-…: ERROR")
+        #expect(separate.errorDescription == "gke-…: ERROR\n\n8 秒待っても…")
+
+        // 添えるものが無ければ元の文言だけ。
+        #expect(TransportError(summary: "そのまま", detail: "").errorDescription == "そのまま")
+    }
+
+    /// 立て直しの間隔中に覚えている理由は、**整形済みなので包み直さない**。
+    @Test func doesNotDoublePrefixRememberedFailures() {
+        let remembered = ClusterProxyError.remembered("kubectl proxy を立ち上げられませんでした。exec: …")
+        #expect(remembered.errorDescription == "kubectl proxy を立ち上げられませんでした。exec: …")
+
+        // これから整形するほうは、前置きが付く。
+        let fresh = ClusterProxyError.unavailable("畳まれました。")
+        #expect(fresh.errorDescription?.contains("kubectl proxy を立ち上げられませんでした") == true)
+    }
+
     // MARK: - 待ち受け先の読み取り
 
     /// `kubectl proxy` の 1 行目から待ち受け先を取る。手元の v1.32.13 と v1.36.2 は
