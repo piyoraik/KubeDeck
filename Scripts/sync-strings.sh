@@ -79,11 +79,30 @@ targets = sorted({lang
                   if lang != source} | {"en"})
 
 print(f"鍵 {len(strings)} 件（ソース言語 {source}）")
+
+# **使われなくなった鍵を黙って残さない。** `xcstringstool sync` は消えた鍵を
+# 削らず `extractionState: stale` を付けるだけで、**どこも失敗しない。**
+# ここで出しておかないと、気付くのは CI の「表示文言の訳を確かめる」だけに
+# なる（実際そうなって、push してから止められた）。未訳と同じ扱い ——
+# 気付く手立てを、遠いところに 1 つだけ置かない。
+stale = [key for key, entry in strings.items()
+         if entry.get("extractionState") == "stale"]
+if stale:
+    print(f"  使われていない鍵 {len(stale)} 件（消してよいか見て、カタログから外す）")
+    for key in stale[:20]:
+        print(f"    使われていない: {key!r}")
+    if len(stale) > 20:
+        print(f"    使われていない: 他 {len(stale) - 20} 件")
+
 for lang in targets:
     done, review, missing = [], [], []
     for key, entry in strings.items():
         # `shouldTranslate: false` は訳さないと決めたもの。分母から外す。
         if entry.get("shouldTranslate") is False:
+            continue
+        # 使われていない鍵は上で数えてある。訳の埋まり具合には混ぜない
+        # （CI の判定とも揃える）。
+        if entry.get("extractionState") == "stale":
             continue
         unit = entry.get("localizations", {}).get(lang, {}).get("stringUnit")
         if unit is None or not unit.get("value"):

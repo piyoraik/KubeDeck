@@ -3078,17 +3078,6 @@
         }
       }
     },
-    "kubectl を毎回起こす": {
-      "extractionState": "stale",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Launch kubectl for every request"
-          }
-        }
-      }
-    },
     "kubectl を毎回起こす（まだ立てていません）": {
       "localizations": {
         "en": {
@@ -8503,23 +8492,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "取得元は %@ です。ただしノードの使用量が引けないため、クラスタ全体の割合は出せません。管理されたクラスタでは、ノードの指標だけ拒まれることがあります。Pod ごとの使用量は一覧の列に出ます。"
-          }
-        }
-      }
-    },
-    "取得元を確認しています。": {
-      "extractionState": "stale",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Checking the source."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取得元を確認しています。"
           }
         }
       }
