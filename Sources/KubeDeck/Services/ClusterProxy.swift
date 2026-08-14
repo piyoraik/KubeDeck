@@ -138,9 +138,19 @@ actor ClusterProxy {
 
         let task = Task { try await self.start(context: context) }
         starting[context] = task
-        defer { starting[context] = nil }
+        defer { if starting[context] == task { starting[context] = nil } }
         do {
             let instance = try await task.value
+            // **畳まれていたら登録し直さない。** 待っているあいだに
+            // `keepOnly` / `stopAll`（コンテキスト切り替え・設定の切り替え・
+            // 終了）が走ると、`drainStarts` がこの起動を引き取って**すでに
+            // 終わらせている**。それを生きているものとして覚えると、死んだ
+            // proxy の待ち受け先を配り、しかも `failures` を消すので理由も
+            // 残らない。
+            guard starting[context] == task else {
+                throw ClusterProxyError.unavailable(
+                    String(localized: "立ち上げの途中で畳まれました。"))
+            }
             instances[context] = instance
             failures[context] = nil
             return instance.endpoint
@@ -195,7 +205,14 @@ actor ClusterProxy {
             arguments: arguments,
             environment: environment.variables,
             secret: secret,
-            timeout: Self.startupTimeout)
+            timeout: Self.startupTimeout,
+            // **proxy に渡した環境の `KUBECONFIG` を見張る。**
+            // アプリ自身の環境を見ていたら、`.zshrc` で `KUBECONFIG` を
+            // 立てている人の**別のファイルを見張ることになる**（Finder から
+            // 起動した `.app` の環境にはそれが無いので `~/.kube/config` に
+            // 落ちる）。実際に proxy が読んでいるのはログインシェルの環境の
+            // ほうなので、そちらと揃える。
+            kubeconfig: environment.variables["KUBECONFIG"])
         writePIDFile(pid: instance.pid)
         return instance
     }
@@ -311,25 +328,14 @@ actor ClusterProxy {
         try? FileManager.default.removeItem(at: Self.pidFile(pid: pid))
     }
 
-    /// 起動をまたいで同じ名前になる必要があるので、`hashValue` は使わない
-    /// （Swift の Hasher は実行ごとに種が変わる）。
-    static func stableHash(_ text: String) -> String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in Array(text.utf8) {
-            hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
-        }
-        return String(format: "%016llx", hash)
-    }
-
     // MARK: - 終了時の後始末
 
     /// 走っている proxy の pid。**アクターの外から同期で殺すために持つ。**
     ///
-    /// `NSApplication.willTerminateNotification` を待って
-    /// `await stopAll()` を呼ぶ形にしていたら、**アプリが先に終わって proxy が
-    /// 残った**（実測。⌘Q と同じ経路で終了させても 1 本残る）。AppKit は終了を
-    /// 非同期の後始末のために待ってくれないので、ここは待ち合わせ無しで殺せる
-    /// 形にしておく。
+    /// `NSApplication.willTerminateNotification` を待って `await stopAll()` を
+    /// 呼ぶ形にしていたら、**アプリが先に終わって proxy が残った**（実測。
+    /// ⌘Q と同じ経路で終了させても 1 本残る）。AppKit は終了を非同期の後始末の
+    /// ために待ってくれないので、ここは待ち合わせ無しで殺せる形にしておく。
     private static let livePIDs = LivePIDs()
 
     final class LivePIDs: @unchecked Sendable {
@@ -357,8 +363,7 @@ actor ClusterProxy {
     /// アプリが終わるときに呼ぶ。**同期で殺す。**
     ///
     /// `SIGTERM` で足りる（kubectl proxy は Go なので既定で終わる）。控えた
-    /// pid ファイルも消す —— 消し忘れると、次の起動で「使い回された pid」を
-    /// 見に行くことになる（そのための引数の確認は残してあるが、無駄な手間）。
+    /// pid ファイルも消す。
     nonisolated static func terminateAllNow() {
         for pid in livePIDs.drain() {
             kill(pid, SIGTERM)
@@ -413,9 +418,14 @@ extension ClusterProxy {
         private let output: OutputBuffer
         private let kubeconfigFingerprint: String
 
+        /// 見張っている kubeconfig（`KUBECONFIG` の中身。nil なら既定の場所）。
+        private let kubeconfig: String?
+
         private init(
-            process: Process, endpoint: Endpoint, output: OutputBuffer, fingerprint: String
+            process: Process, endpoint: Endpoint, output: OutputBuffer, fingerprint: String,
+            kubeconfig: String?
         ) {
+            self.kubeconfig = kubeconfig
             self.process = process
             self.endpoint = endpoint
             self.pid = process.processIdentifier
@@ -432,7 +442,7 @@ extension ClusterProxy {
 
         /// 起動したときと同じ kubeconfig か。
         func matchesKubeconfig() -> Bool {
-            kubeconfigFingerprint == Instance.fingerprintKubeconfig()
+            kubeconfigFingerprint == Instance.fingerprintKubeconfig(kubeconfig)
         }
 
         func diagnostics(context: String) -> Diagnostics {
@@ -475,7 +485,8 @@ extension ClusterProxy {
             arguments: [String],
             environment: [String: String],
             secret: String,
-            timeout: TimeInterval
+            timeout: TimeInterval,
+            kubeconfig: String?
         ) async throws -> Instance {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -504,6 +515,13 @@ extension ClusterProxy {
                     output?.append(line)
                     if let found = parseAddress(line) { address?.resolve(found) }
                 }
+                // **待ち受けを言わずに終わったら、そこで諦める。**
+                // ここを待ち上限だけに任せていると、**即死しても 25 秒黙る**
+                // （実測: 存在しないコンテキストを渡した kubectl proxy は
+                // `error: context … does not exist` を出して 0.12 秒で終わる）。
+                // すると最初の取得が 25 秒固まり、しかも立て直しの間隔は
+                // 10 秒なので、35 秒ごとに 25 秒固まり続ける。
+                address?.giveUp()
             }
             detach { [weak output] in
                 readLines(from: stderr.fileHandleForReading) { line in
@@ -525,7 +543,8 @@ extension ClusterProxy {
                 process: process,
                 endpoint: Endpoint(baseURL: url, secret: secret),
                 output: output,
-                fingerprint: fingerprintKubeconfig())
+                fingerprint: fingerprintKubeconfig(kubeconfig),
+                kubeconfig: kubeconfig)
             ClusterProxy.livePIDs.add(instance.pid)
             return instance
         }
@@ -546,9 +565,12 @@ extension ClusterProxy {
         }
 
         /// kubeconfig の指紋。`KUBECONFIG` が複数を並べる形にも合わせる。
-        static func fingerprintKubeconfig() -> String {
+        ///
+        /// - Parameter value: proxy に渡した環境の `KUBECONFIG`。
+        ///   **アプリ自身の環境を見ない**（上の `kubeconfig` の説明を参照）。
+        static func fingerprintKubeconfig(_ value: String?) -> String {
             let paths: [String]
-            if let value = ProcessInfo.processInfo.environment["KUBECONFIG"], !value.isEmpty {
+            if let value, !value.isEmpty {
                 paths = value.split(separator: ":").map(String.init)
             } else {
                 paths = [NSHomeDirectory() + "/.kube/config"]
@@ -618,16 +640,29 @@ extension ClusterProxy {
     private final class AddressWaiter: @unchecked Sendable {
         private let lock = NSLock()
         private var value: String?
+        /// proxy が待ち受けを言わずに終わった。
+        private var gaveUp = false
         private var continuations: [CheckedContinuation<String?, Never>] = []
 
         func resolve(_ address: String) {
             lock.lock()
-            guard value == nil else { lock.unlock(); return }
+            guard value == nil, !gaveUp else { lock.unlock(); return }
             value = address
             let waiting = continuations
             continuations = []
             lock.unlock()
             for continuation in waiting { continuation.resume(returning: address) }
+        }
+
+        /// もう待ち受けは来ない（proxy が終わった）。
+        func giveUp() {
+            lock.lock()
+            guard value == nil, !gaveUp else { lock.unlock(); return }
+            gaveUp = true
+            let waiting = continuations
+            continuations = []
+            lock.unlock()
+            for continuation in waiting { continuation.resume(returning: nil) }
         }
 
         func wait(timeout: TimeInterval) async -> String? {
@@ -641,6 +676,11 @@ extension ClusterProxy {
                 if let value {
                     lock.unlock()
                     continuation.resume(returning: value)
+                    return
+                }
+                if gaveUp {
+                    lock.unlock()
+                    continuation.resume(returning: nil)
                     return
                 }
                 continuations.append(continuation)

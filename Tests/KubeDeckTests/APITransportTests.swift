@@ -406,6 +406,42 @@ struct APITransportTests {
         }
     }
 
+    // MARK: - 取れなかった種別
+
+    /// **「取れなかった」を「0 件」にしない。**
+    ///
+    /// 種別ごとに引くようになって初めて起きる形。kubectl にまとめて渡していた
+    /// ときは、失敗すれば呼び出し全体が投げるので「一部だけ落ちる」が無かった。
+    /// HTTP は種別ごとに独立して失敗するので、`failed` に入れておかないと
+    /// 呼び出し側が `uncounted` に無い種別を 0 で埋めてしまう。
+    @Test func failedKindsAreNotCounted() {
+        var list = Kubectl.PartialList()
+        list.objects = []
+        list.denied = [.secret]
+        list.unknown = [.ingress]
+        list.failed = [.pod]
+        // 数えてはいけない種別に、3 つとも入ること。
+        #expect(Set(list.uncounted) == Set([.secret, .ingress, .pod]))
+        // 拒否とは別に持つこと（見に行く場所が違う）。
+        #expect(list.isDenied)
+        #expect(!list.failed.contains(.secret))
+    }
+
+    // MARK: - ページ送り
+
+    /// **続きの目印が進まない相手に、無限に問い続けない。**
+    /// ただし「41 ページで黙って切る」もしない —— 2 万件を超えるクラスタで
+    /// 一覧を途中まで出して全部だと言うことになる。
+    @Test func stopsWhenContinueTokenDoesNotAdvance() {
+        let page = Data(#"{"kind":"PodList","metadata":{"continue":"same"},"items":[]}"#.utf8)
+        #expect(APIClient.continueToken(in: page) == "same")
+        // 空の目印は「終わり」として読む（`""` を続きと解釈しない）。
+        let last = Data(#"{"kind":"PodList","metadata":{"continue":""},"items":[]}"#.utf8)
+        #expect(APIClient.continueToken(in: last) == nil)
+        // JSON でない応答でも落ちない。
+        #expect(APIClient.continueToken(in: Data("404 page not found".utf8)) == nil)
+    }
+
     // MARK: - 待ち受け先の読み取り
 
     /// `kubectl proxy` の 1 行目から待ち受け先を取る。手元の v1.32.13 と v1.36.2 は
@@ -447,16 +483,6 @@ struct APITransportTests {
         #expect(url?.absoluteString
                 == "http://127.0.0.1:5000/abc/api/v1/namespaces/kube-system/events"
                 + "?fieldSelector=involvedObject.uid%3D1234-5678")
-    }
-
-    /// pid ファイルの名前に使う指紋は、**起動をまたいで同じ**でなければならない
-    /// （`hashValue` は実行ごとに種が変わるので使えない）。
-    @Test func stableHashIsStableAndDistinct() {
-        #expect(ClusterProxy.stableHash("kind-kubedeck")
-                == ClusterProxy.stableHash("kind-kubedeck"))
-        #expect(ClusterProxy.stableHash("kind-kubedeck")
-                != ClusterProxy.stableHash("kind-other"))
-        #expect(ClusterProxy.stableHash("").count == 16)
     }
 
     /// `continue` を読み落とすと、2 ページ目以降が黙って消える。

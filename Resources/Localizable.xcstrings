@@ -654,6 +654,16 @@
         }
       }
     },
+    "%@ を取得できませんでした。この画面にはこれらが出ていません（0 件という意味ではありません）。次の更新で取れることがあります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not fetch %@. They are not shown on this screen (which does not mean there are none). The next refresh may pick them up."
+          }
+        }
+      }
+    },
     "%@ を絞り込む": {
       "localizations": {
         "en": {
@@ -3069,11 +3079,22 @@
       }
     },
     "kubectl を毎回起こす": {
+      "extractionState": "stale",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Launch kubectl for every request"
+          }
+        }
+      }
+    },
+    "kubectl を毎回起こす（まだ立てていません）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launching kubectl for every request (the resident proxy is not up yet)"
           }
         }
       }
@@ -3084,6 +3105,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Launching kubectl for every request (the resident proxy could not be started)\n%@"
+          }
+        }
+      }
+    },
+    "kubectl を毎回起こす（設定で切ってあります）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launching kubectl for every request (turned off in settings)"
           }
         }
       }
@@ -6868,6 +6899,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "一覧の更新"
+          }
+        }
+      }
+    },
+    "一覧の続きを取れませんでした（続きの目印が進みません）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not fetch the rest of the list (the continue token stopped advancing)."
           }
         }
       }
@@ -11491,6 +11532,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "空にすると外します（未設定に戻します）。例: %@"
+          }
+        }
+      }
+    },
+    "立ち上げの途中で畳まれました。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It was shut down while starting up."
           }
         }
       }

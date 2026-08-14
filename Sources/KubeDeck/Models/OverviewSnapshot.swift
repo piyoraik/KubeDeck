@@ -120,6 +120,12 @@ struct OverviewSnapshot: Sendable {
     /// （権限の話ではないので、見る場所も対処も違う）。`counts` に
     /// 入れないのは拒まれた種別と同じ理由。
     var unknownKinds: [ResourceKind] = []
+    /// 引きに行ったが取れなかった種別。**0 件と混ぜない。**
+    ///
+    /// 種別ごとに引く経路（HTTP）では、一部の種別だけが時間切れや 5xx で
+    /// 落ちうる。ここに入れておかないと `counts` を 0 で埋める側がそれを
+    /// 「1 件も無い」として数える。
+    var failedKinds: [ResourceKind] = []
 
     func count(_ kind: ResourceKind) -> Int { counts[kind] ?? 0 }
 

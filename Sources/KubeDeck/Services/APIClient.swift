@@ -230,17 +230,35 @@ struct APIClient: Sendable {
             }
             let page = try await data(path: path, query: items, accept: accept)
             pages.append(page)
-            token = Self.continueToken(in: page)
-            // **際限なく回さない。** 途中で `continue` が変わらない実装に
-            // 当たったときに無限に引き続けないようにする。
-            if pages.count > 40 { break }
+            let next = Self.continueToken(in: page)
+            // **際限なく回さないが、黙って切らない。**
+            //
+            // 以前は「41 ページで打ち切る」だけにしていた。あれは 2 万件を超える
+            // クラスタで**一覧を途中まで出して全部だと言う**ことになり、しかも
+            // 画面のどこにも出ない（`--chunk-size` を付ける理由そのものの規模で
+            // 起きる）。守りたいのは「`continue` が進まない相手に無限に問い続け
+            // ない」ことだけなので、**進んでいるかどうかで見る。**
+            if let next, next == token {
+                throw APIError.malformed(
+                    String(localized: "一覧の続きを取れませんでした（続きの目印が進みません）。"))
+            }
+            token = next
         } while !(token ?? "").isEmpty
         return pages
     }
 
+    /// 続きの目印。
+    ///
+    /// **`JSONValue` に落として読まない。** あれは節の数だけ `try?` の連鎖を
+    /// 通るので、273KB のページで 135〜270ms かかる（この経路は取得のたびに
+    /// 通るうえ、読んだ本体はどのみち呼び出し側でもう 1 度木にする）。
+    /// `JSONSerialization` なら同じページが数 ms で済む。
     static func continueToken(in page: Data) -> String? {
-        guard let root = try? JSONDecoder().decode(JSONValue.self, from: page) else { return nil }
-        return root.path("metadata.continue")?.stringValue
+        guard let root = (try? JSONSerialization.jsonObject(with: page)) as? [String: Any],
+              let metadata = root["metadata"] as? [String: Any],
+              let token = metadata["continue"] as? String, !token.isEmpty
+        else { return nil }
+        return token
     }
 
     // MARK: - 失敗の訳し方

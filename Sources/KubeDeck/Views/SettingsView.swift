@@ -569,7 +569,10 @@ private struct ConnectionSettings: View {
             return String(localized: "kubectl proxy 経由（HTTP）")
         case .kubectl(let reason):
             guard let reason, !reason.isEmpty else {
-                return String(localized: "kubectl を毎回起こす")
+                // **「切ってある」と「まだ立てていない」を混ぜない。**
+                return preferences.usesAPIProxy
+                    ? String(localized: "kubectl を毎回起こす（まだ立てていません）")
+                    : String(localized: "kubectl を毎回起こす（設定で切ってあります）")
             }
             return String(localized: """
                 kubectl を毎回起こす（常駐を立てられませんでした）
@@ -640,10 +643,17 @@ private struct ConnectionSettings: View {
                 }
                 Button("立て直す") {
                     Task {
+                        // **畳むだけにしない。** 畳んだ直後に状態を読むと
+                        // 「kubectl を毎回起こす」に見えるが、実際は次の取得で
+                        // 立ち上がる。押した結果として立て直った姿を出したいので、
+                        // ここで 1 回引いてから読み直す。
                         await Kubectl.shared.releaseTransports(keeping: "")
+                        _ = try? await Kubectl.shared.serverVersion(
+                            context: store.currentContext)
                         await refreshTransport()
                     }
                 }
+                .disabled(!preferences.usesAPIProxy || store.currentContext.isEmpty)
             } header: {
                 Text("読み取りの経路")
             } footer: {

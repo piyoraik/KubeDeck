@@ -122,6 +122,7 @@ final class ClusterStore {
         overview = OverviewSnapshot()
         deniedKinds = []
         unknownKinds = []
+        failedKinds = []
         // **使用量も引き直しになる。** スナップショットそのものは捨てない
         // （すべての Namespace から 1 つへ絞ったときは、いま出ている値がその
         // まま正しい）が、**まだ引いていないことは印で言う** —— 残したまま
@@ -151,6 +152,7 @@ final class ClusterStore {
             // 移ると「○○ はクラスタに見つかりませんでした」の帯が、**その種別を
             // 要求してもいない画面に**出たままになっていた。
             unknownKinds = []
+            failedKinds = []
             // 配置の中身も別の画面のもの。残すと、配置へ戻ったとき取得中に
             // 古いノードの箱が出る（`objects` を捨てるのと同じ理由）。
             placementNodes = []
@@ -216,6 +218,8 @@ final class ClusterStore {
     /// **権限と混ぜない。** 対処が違ううえ、こちらは「本当に無い」場合と
     /// 「kubectl の一覧が欠けている」場合の両方がありうる。
     var unknownKinds: [ResourceKind] = []
+    /// 引きに行ったが取れなかった種別（時間切れ・5xx）。**0 件と混ぜない。**
+    var failedKinds: [ResourceKind] = []
 
     /// 欠けている種別の断り書き。読めているなら nil。
     ///
@@ -224,6 +228,7 @@ final class ClusterStore {
     var partialDataNotice: String? {
         let denied = deniedKinds.isEmpty ? overview.deniedKinds : deniedKinds
         let unknown = unknownKinds.isEmpty ? overview.unknownKinds : unknownKinds
+        let failed = failedKinds.isEmpty ? overview.failedKinds : failedKinds
         var lines: [String] = []
         if !denied.isEmpty {
             let names = denied.map(\.displayName).joined(separator: "・")
@@ -238,6 +243,15 @@ final class ClusterStore {
                 \(names) はクラスタに見つかりませんでした（`kubectl` がこの種別を\
                 解決できていません）。読めたぶんだけ出しています。\
                 `kubectl api-resources` に出るかを確かめてください。
+                """))
+        }
+        if !failed.isEmpty {
+            // **拒否とも「無い」とも書き分ける。** ここは権限の話でも、API に
+            // その種別が無い話でもなく、**今回だけ取れなかった**という話。
+            let names = failed.map(\.displayName).joined(separator: "・")
+            lines.append(String(localized: """
+                \(names) を取得できませんでした。この画面にはこれらが出ていません\
+                （0 件という意味ではありません）。次の更新で取れることがあります。
                 """))
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
@@ -914,6 +928,7 @@ final class ClusterStore {
                     // だけなのに「入口が無い」と読めてしまう。
                     self.deniedKinds = listed.denied
                     self.unknownKinds = listed.unknown
+                    self.failedKinds = listed.failed
                 case .resource(let target):
                     let loaded: [K8sObject]
                     if target.builtIn == .event {
@@ -1020,6 +1035,7 @@ final class ClusterStore {
         snapshot.counts = counts
         snapshot.deniedKinds = listed.denied + (readNodes == nil ? [.node] : [])
         snapshot.unknownKinds = listed.unknown
+        snapshot.failedKinds = listed.failed
 
         snapshot.pods = StatusTally.make(from: byKind[.pod] ?? [])
         snapshot.nodes = StatusTally.make(from: nodeObjects)
@@ -1297,6 +1313,7 @@ final class ClusterStore {
         overview.counts = counts
         overview.deniedKinds = listed.denied
         overview.unknownKinds = listed.unknown
+        overview.failedKinds = listed.failed
     }
 
     /// まとめて数える種別。Node も含めるので、概要の別取得とは別に持つ。

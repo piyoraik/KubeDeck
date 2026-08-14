@@ -819,11 +819,6 @@ actor Kubectl {
         proxyFailure = nil
     }
 
-    /// アプリを閉じるときに呼ぶ。**常駐を置き忘れない。**
-    func shutdownTransports() async {
-        await ClusterProxy.shared.stopAll()
-    }
-
     /// 読み取り用の HTTP の口。使えないときは nil（＝ kubectl 経由に落ちる）。
     private func api(for context: String) async -> APIClient? {
         guard usesAPIProxy, !context.isEmpty else { return nil }
@@ -956,10 +951,22 @@ actor Kubectl {
         /// こちらは「そもそも API に無い」か「kubectl の discovery に出てこない」
         /// 話。**0 件とも混ぜない** — 数えられていないだけ。
         var unknown: [ResourceKind] = []
+        /// 引きに行ったが失敗した種別（時間切れ・5xx など）。
+        ///
+        /// **種別ごとに引くようになって初めて必要になった。** kubectl に
+        /// まとめて渡していたときは、失敗すれば呼び出し全体が投げるので
+        /// 「一部だけ落ちる」が起こらなかった。HTTP は種別ごとに独立して
+        /// 失敗するので、ここを持たないと**読めなかった種別が 0 件になる**
+        /// （`counts` を 0 で埋める側が `uncounted` しか見ないため）。
+        ///
+        /// **拒否とも「知らない」とも混ぜない。** 権限の話でも、API に無い話でも
+        /// なく、単に取れていない。次の周期で取れるかもしれない。
+        var failed: [ResourceKind] = []
 
         var isDenied: Bool { !denied.isEmpty }
-        /// 数に入れてはいけない種別。拒まれたものと知られていないもの。
-        var uncounted: [ResourceKind] { denied + unknown }
+        /// 数に入れてはいけない種別。拒まれたもの・知られていないもの・
+        /// 取れなかったもの。
+        var uncounted: [ResourceKind] { denied + unknown + failed }
     }
 
     /// 複数種別を 1 回の kubectl で取る。概要画面が 10 個以上プロセスを
@@ -1056,7 +1063,7 @@ actor Kubectl {
         }
 
         var result = PartialList()
-        var failures: [any Error] = []
+        var failures: [ResourceKind: any Error] = [:]
         // **要求した順に並べる。** kubectl にまとめて渡したときも、返る items は
         // 種別を並べた順になる。並べ替えの既定（異常が上）や配置のタイルは
         // 手元の順序を土台にするので、経路で見え方が変わらないようにする。
@@ -1065,16 +1072,21 @@ actor Kubectl {
             case .objects(let objects): result.objects += objects
             case .denied: result.denied.append(kind)
             case .unknown: result.unknown.append(kind)
-            case .failed(let error): failures.append(error)
+            case .failed(let error):
+                // **失敗した種別を落とさない。** ここを捨てると、呼び出し側が
+                // `uncounted` に無い種別を 0 で埋めるので、**引けなかった種別が
+                // 「0 件」になる**（このアプリでいちばん避けたい取り違え）。
+                result.failed.append(kind)
+                failures[kind] = error
             case nil: break
             }
         }
 
-        // **1 種別でも「取れなかった」なら、それを黙らせない。** ただし読めた
-        // ぶんは捨てない（kubectl 経由で `partialStdout` を拾い直しているのと
-        // 同じ判断）。**全部が駄目だったときだけ投げる。**
+        // **読めたぶんは捨てない**（kubectl 経由で `partialStdout` を拾い直して
+        // いるのと同じ判断）。**全部が駄目だったときだけ投げる** —— そのときは
+        // 呼び出し側が「取得できません」を出せるように、最初の失敗を渡す。
         if result.objects.isEmpty, result.denied.isEmpty, result.unknown.isEmpty,
-           let first = failures.first {
+           let first = kinds.compactMap({ failures[$0] }).first {
             throw first
         }
         return result
@@ -1299,9 +1311,12 @@ actor Kubectl {
     /// イベントは新しい順に見たいので、取得時に並べ替える。
     func events(context: String, namespace: String?, limit: Int = 200) async throws -> [K8sObject] {
         if let api = await api(for: context) {
+            // **刻まない。** kubectl も 1 回の要求で全部取って手元で並べ替えて
+            // いる。刻むと 500 件ごとに**逐次**の往復になり、直近 30 件が欲しい
+            // だけなのにイベント全部を何往復もして運ぶことになる。
             let objects = try await httpObjects(
                 api, resourceName: ResourceKind.event.resourceName, context: context,
-                namespace: namespace, assuming: .event)
+                namespace: namespace, assuming: .event, chunked: false)
             // **並べ替えはこちらで持つ。** kubectl の `--sort-by=.lastTimestamp` も
             // クライアント側の並べ替えで、しかも `lastTimestamp` を持たず
             // `eventTime` だけのイベントを「時刻が無いもの」として扱う。
@@ -1361,7 +1376,8 @@ actor Kubectl {
                 namespace: scopedNamespace, assuming: .event,
                 // **URL に手で組み込まない。** `URLQueryItem` に渡せば
                 // `involvedObject.uid=…` の `=` も含めて正しく符号化される。
-                query: [URLQueryItem(name: "fieldSelector", value: fieldSelector)])
+                query: [URLQueryItem(name: "fieldSelector", value: fieldSelector)],
+                chunked: false)
             return Array(Self.newestFirst(objects).prefix(limit))
         }
 
