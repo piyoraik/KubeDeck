@@ -60,6 +60,11 @@ actor APIDiscovery {
         var entries: [APIResource]
         /// 覚えてよいか。**欠けている表は覚えない**（次の周期で引き直す）。
         var cacheable = true
+        /// 引けなかったグループ（`apps/v1` の形）。
+        ///
+        /// **ここに属する種別を「サーバが知らない」と言わない。** 引けなかった
+        /// だけなので、`unknownResource` ではなく `unreachable` として返す。
+        var missingGroups: Set<String> = []
         var loadedAt = Date()
     }
 
@@ -128,8 +133,11 @@ actor APIDiscovery {
         for resourceName: String, context: String, client: APIClient
     ) async throws -> APIResource {
         let table: [APIResource]
+        let missing: Set<String>
         do {
-            table = try await self.table(for: context, client: client)
+            let loaded = try await self.loadedTable(for: context, client: client)
+            table = loaded.entries
+            missing = loaded.missingGroups
         } catch let error as APIDiscoveryError {
             throw error
         } catch {
@@ -166,27 +174,36 @@ actor APIDiscovery {
 
     /// コンテキストごとの表。**同時に 2 本引かない。**
     func table(for context: String, client: APIClient) async throws -> [APIResource] {
+        try await loadedTable(for: context, client: client).entries
+    }
+
+    func loadedTable(for context: String, client: APIClient) async throws -> Table {
         if let table = tables[context],
            Date().timeIntervalSince(table.loadedAt) < Self.tableLifetime {
-            return table.entries
+            return table
         }
-        if let task = loading[context] { return try await task.value.entries }
+        if let task = loading[context] { return try await task.value }
         let generation = generations[context] ?? 0
         let task = Task { try await Self.load(client: client) }
         loading[context] = task
         do {
             let table = try await task.value
-            let entries = table.entries
             if loading[context] == task { loading[context] = nil }
-            guard table.cacheable else { return entries }
+            guard table.cacheable else { return table }
             // **捨てられていたら覚え直さない。** 引いている最中に
             // `invalidate` が走っていたら、この結果はもう古い相手のもの
             // （コンテキストを切り替えた直後にこの窓を踏む）。
-            guard generations[context] ?? 0 == generation else { return entries }
+            guard generations[context] ?? 0 == generation else { return table }
             tables[context] = table
-            return entries
+            return table
         } catch {
             if loading[context] == task { loading[context] = nil }
+            // **古い表を落ち先に使う。** 10 分を過ぎて引き直しに失敗しただけで
+            // 全種別を「取得できませんでした」にすると、直前まで使えていた表が
+            // 手元にあるのに画面が空になる。**捨てるのは「別のクラスタを指した」
+            // ときだけ**（`invalidate` が呼ばれたとき）で、期限切れは
+            // 「引き直したい」であって「もう信用できない」ではない。
+            if let stale = tables[context] { return stale }
             throw error
         }
     }
@@ -308,6 +325,16 @@ actor APIDiscovery {
             }
         }
         guard !result.isEmpty else { throw APIDiscoveryError.empty }
+        // **core が欠けた表は使わない。**
+        //
+        // 「読めたぶんは使う」は、周辺のグループ（metrics.k8s.io の
+        // APIService が落ちている、など）を想定した緩和。**core が落ちたら
+        // 話が違う** —— Pod も Service も ConfigMap も Secret も Node も
+        // 一度に「サーバが知らない」ことになり、画面は断定を出す。
+        // そこは緩和せず、表ごと引き直す。
+        if failed.contains(where: { !$0.contains("/") }) {
+            throw APIDiscoveryError.empty
+        }
         // **欠けたまま覚えない。ただし読めたぶんは捨てない。**
         //
         // 集約 API サーバが 1 つ落ちている（`kubectl get apiservices` に
@@ -316,7 +343,9 @@ actor APIDiscovery {
         // ではそのグループが欠けるだけだったので、経路を変えたことによる回帰。
         // 逆に欠けた表を 10 分覚えると「その種別は存在しない」と言い続ける。
         // だから**今回限りの表として返し、覚えない。**
-        return Table(entries: result, cacheable: failed.isEmpty)
+        return Table(
+            entries: result, cacheable: failed.isEmpty,
+            missingGroups: Set(failed.map { $0.contains("/") ? String($0.split(separator: "/")[0]) : "" }))
     }
 
     static func parseResourceList(_ list: JSONValue, groupVersion: String) -> [APIResource] {

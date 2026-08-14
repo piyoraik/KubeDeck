@@ -141,7 +141,10 @@ actor ClusterProxy {
 
         if let failure = failures[context],
            Date().timeIntervalSince(failure.at) < Self.retryCooldown {
-            throw ClusterProxyError.unavailable(failure.reason)
+            // **同じ前置きを 2 度足さない。** `failure.reason` はすでに
+            // 「kubectl proxy を立ち上げられませんでした。…」に整形済みなので、
+            // `.unavailable` で包み直すと設定画面に前置きが二重に出る。
+            throw ClusterProxyError.remembered(failure.reason)
         }
 
         // 死んだもの、kubeconfig が変わったものは片付けてから立て直す。
@@ -329,16 +332,22 @@ actor ClusterProxy {
             let named = Int32(file.replacingOccurrences(of: ".pid", with: ""))
             let stored = (try? String(contentsOf: url, encoding: .utf8))
                 .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            guard let pid = named ?? stored, pid > 1, !live.contains(pid) else {
+            // 読めない・自分がいま使っているものは、記録だけ片付ける。
+            guard let pid = named ?? stored, pid > 1 else {
                 try? FileManager.default.removeItem(at: url)
                 continue
             }
+            guard !live.contains(pid) else { continue }
             // **pid だけで殺さない。** 使い回された pid が別のプロセスに当たって
             // いることがあるので、引数に kubectl と proxy が入っているかを見る。
             // **そして孤児だけを殺す** —— 生きている親がいるなら、それは別の
             // インスタンスが使っている最中のもの。
+            // **確かめられなかったときに消さない。** `KERN_PROCARGS2` は
+            // 一過性に失敗しうる（相手が exec の最中など）。そこで記録を
+            // 消すと、あとで孤児になっても**誰も回収できない**。
+            // pid が誰にも使われていないと分かったときだけ片付ける。
             guard Self.looksLikeOurProxy(pid: pid) else {
-                try? FileManager.default.removeItem(at: url)
+                if kill(pid, 0) != 0 { try? FileManager.default.removeItem(at: url) }
                 continue
             }
             // **見送ったなら記録も残す。** 消してしまうと、その proxy が
@@ -454,7 +463,9 @@ actor ClusterProxy {
 // MARK: - 失敗
 
 enum ClusterProxyError: LocalizedError {
-    /// 立て直しの間隔を空けている最中。
+    /// 立て直しの間隔を空けている最中（理由は整形済み）。
+    case remembered(String)
+    /// 立て直しの間隔を空けている最中／畳まれた（これから整形する）。
     case unavailable(String)
     /// 立ち上がらなかった。
     case startupFailed(String)
@@ -463,6 +474,8 @@ enum ClusterProxyError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .remembered(let reason):
+            return reason
         case .unavailable(let reason), .startupFailed(let reason):
             return String(localized: "kubectl proxy を立ち上げられませんでした。\(reason)")
         case .startupTimedOut(let output):

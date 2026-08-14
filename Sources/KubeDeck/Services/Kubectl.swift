@@ -49,7 +49,11 @@ struct TransportError: LocalizedError {
     let detail: String
 
     var errorDescription: String? {
-        detail.isEmpty ? summary : "\(detail)\n\n\(summary)"
+        if detail.isEmpty { return summary }
+        // **同じ文を 2 度出さない。** 言い換え（`Kubectl.explain`）は元の文言を
+        // 末尾に残す作りなので、そのまま繋ぐと同じ段落が並ぶ。
+        if summary.isEmpty || detail.contains(summary) { return detail }
+        return "\(detail)\n\n\(summary)"
     }
 }
 
@@ -864,8 +868,12 @@ actor Kubectl {
         guard usesAPIProxy, !context.isEmpty else { return nil }
         do {
             let endpoint = try await ClusterProxy.shared.endpoint(for: context)
-            if lastEndpoints[context] != endpoint.baseURL {
-                lastEndpoints[context] = endpoint.baseURL
+            // **1 回目は捨てない。** 捨てる相手がまだ無いのに `invalidate` を
+            // 通すと、同時に走り出した別の読み手の discovery を巻き添えに
+            // 打ち切る（起動直後の 1 周期だけ「取得できませんでした」が出る）。
+            let previous = lastEndpoints[context]
+            lastEndpoints[context] = endpoint.baseURL
+            if let previous, previous != endpoint.baseURL {
                 await APIDiscovery.shared.invalidate(context: context)
             }
             proxyFailure = nil
@@ -891,23 +899,21 @@ actor Kubectl {
         assuming kind: ResourceKind?, query: [URLQueryItem] = [],
         chunk: Int? = Kubectl.chunkSize, metadataOnly: Bool = false
     ) async throws -> [K8sObject] {
-        let resource: APIResource
+        // **ここでは包まない。** 失敗の種類（403 / 404）で種別ごとに振り分ける
+        // のは `httpList` の仕事で、包むとその分類が効かなくなる（実際 403 が
+        // 「拒否」ではなく「取得できませんでした」に化けた）。利用者に出る
+        // 手前 —— 1 種別ぶんを投げる経路と、まとめ取りが全滅した経路 —— で
+        // `explained` を通す。
+        let resource = try await APIDiscovery.shared.resource(
+            for: resourceName, context: context, client: api)
+        let path = resource.listPath(namespace: namespace)
+        let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
         let pages: [Data]
-        let startedAt = Date()
-        do {
-            resource = try await APIDiscovery.shared.resource(
-                for: resourceName, context: context, client: api)
-            let path = resource.listPath(namespace: namespace)
-            let accept = metadataOnly ? APIClient.metadataOnlyAccept : nil
-            if let chunk {
-                pages = try await api.list(
-                    path: path, query: query, chunk: chunk, accept: accept)
-            } else {
-                pages = [try await api.data(path: path, query: query, accept: accept)]
-            }
-        } catch {
-            // **proxy が書いたものを添えてから投げる**（`explained` の説明を参照）。
-            throw await explained(error, context: context, since: startedAt)
+        if let chunk {
+            pages = try await api.list(
+                path: path, query: query, chunk: chunk, accept: accept)
+        } else {
+            pages = [try await api.data(path: path, query: query, accept: accept)]
         }
         var objects: [K8sObject] = []
         for page in pages {
@@ -977,7 +983,17 @@ actor Kubectl {
         }
         guard let apiError = inner as? APIError else { return error }
         switch apiError {
-        case .forbidden, .notFound, .conflict:
+        case .forbidden(let status):
+            // **拒まれたときの対処を落とさない。** kubectl 経由では
+            // `explain(stderr)` が `permissionHint` を通して「拒まれた動詞と
+            // 対象・いまの資格情報・`auth can-i` の打ち方・許し方」を出していた。
+            // ここを素通りさせると、サーバの生の message だけになって
+            // **対処が消える**（proxy の古い行は添えないが、言い換えは残す）。
+            let hinted = Self.explain(status.message)
+            return hinted == status.message
+                ? error
+                : TransportError(summary: status.message, detail: hinted)
+        case .notFound, .conflict:
             return error
         case .unauthorized, .status, .timedOut, .unreachable, .malformed:
             break
@@ -1031,10 +1047,15 @@ actor Kubectl {
         _ kind: ResourceKind, context: String, namespace: String?
     ) async throws -> [K8sObject] {
         if let api = await api(for: context) {
-            return try await recoveringDiscovery(context: context) {
-                try await httpObjects(
-                    api, resourceName: kind.resourceName, context: context,
-                    namespace: kind.isNamespaced ? namespace : nil, assuming: kind)
+            let startedAt = Date()
+            do {
+                return try await recoveringDiscovery(context: context) {
+                    try await httpObjects(
+                        api, resourceName: kind.resourceName, context: context,
+                        namespace: kind.isNamespaced ? namespace : nil, assuming: kind)
+                }
+            } catch {
+                throw await explained(error, context: context, since: startedAt)
             }
         }
         var arguments = ["get", kind.resourceName, "-o", "json",
@@ -1425,10 +1446,15 @@ actor Kubectl {
         assuming kind: ResourceKind? = nil
     ) async throws -> [K8sObject] {
         if let api = await api(for: context) {
-            return try await recoveringDiscovery(context: context) {
-                try await httpObjects(
-                    api, resourceName: resource, context: context,
-                    namespace: namespaced ? namespace : nil, assuming: kind)
+            let startedAt = Date()
+            do {
+                return try await recoveringDiscovery(context: context) {
+                    try await httpObjects(
+                        api, resourceName: resource, context: context,
+                        namespace: namespaced ? namespace : nil, assuming: kind)
+                }
+            } catch {
+                throw await explained(error, context: context, since: startedAt)
             }
         }
         var arguments = ["get", resource, "-o", "json",
@@ -1690,9 +1716,13 @@ actor Kubectl {
                 paths.append(("pods.metrics.k8s.io", namespace))
             }
             for (resource, scoped) in paths {
+                // **確かめるだけなので 1 件でよい。** kubectl 経路は `-o name`
+                // だったので名前しか運んでいなかった。全件引くと、数千 Pod の
+                // クラスタでコンテキストを切り替えるたびに数 MB を運んで捨てる。
                 if (try? await httpObjects(
                     api, resourceName: resource, context: context, namespace: scoped,
-                    assuming: nil, chunk: nil)) != nil {
+                    assuming: nil,
+                    query: [URLQueryItem(name: "limit", value: "1")], chunk: nil)) != nil {
                     return true
                 }
             }
