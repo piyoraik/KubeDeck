@@ -3252,6 +3252,54 @@
         }
       }
     },
+    "scale（レプリカ数を変えられます）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scale (replica count can be changed)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scale（レプリカ数を変えられます）"
+          }
+        }
+      }
+    },
+    "spec の必須項目": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Required in spec"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "spec の必須項目"
+          }
+        }
+      }
+    },
+    "status・scale（レプリカ数を変えられます）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "status, scale (replica count can be changed)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "status・scale（レプリカ数を変えられます）"
+          }
+        }
+      }
+    },
     "uncordon…": {
       "localizations": {
         "en": {
@@ -4990,6 +5038,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "カスタムリソース（CRD）を出す"
+          }
+        }
+      }
+    },
+    "カテゴリ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Categories"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "カテゴリ"
           }
         }
       }
@@ -7238,6 +7302,22 @@
         }
       }
     },
+    "件数を読み取れませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not read the item count."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "件数を読み取れませんでした。"
+          }
+        }
+      }
+    },
     "作成": {
       "localizations": {
         "en": {
@@ -7474,6 +7554,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "使用量を取得できません。"
+          }
+        }
+      }
+    },
+    "保存先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存先"
           }
         }
       }
@@ -8006,6 +8102,22 @@
         }
       }
     },
+    "別に更新できるもの": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subresources"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "別に更新できるもの"
+          }
+        }
+      }
+    },
     "別のウインドウで開く。並べて比べたいときと、この幅では読みにくいとき": {
       "localizations": {
         "en": {
@@ -8326,6 +8438,22 @@
         }
       }
     },
+    "単数形": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Singular"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "単数形"
+          }
+        }
+      }
+    },
     "参照している Pod は、動いているあいだは止まりませんが、次に作り直されるときに起動できなくなります。": {
       "localizations": {
         "en": {
@@ -8524,6 +8652,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "受け口"
+          }
+        }
+      }
+    },
+    "受け渡す版": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review versions"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受け渡す版"
           }
         }
       }
@@ -9472,6 +9616,22 @@
         }
       }
     },
+    "引ける": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Served"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引ける"
+          }
+        }
+      }
+    },
     "引数": {
       "localizations": {
         "en": {
@@ -9780,6 +9940,22 @@
         }
       }
     },
+    "指し先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指し先"
+          }
+        }
+      }
+    },
     "指標": {
       "localizations": {
         "en": {
@@ -10064,6 +10240,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "新しい行が来たら末尾までスクロールする。切っても取得は続くので、遡って読んでも行は消えない"
+          }
+        }
+      }
+    },
+    "方式": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Strategy"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方式"
           }
         }
       }
@@ -11012,6 +11204,54 @@
         }
       }
     },
+    "版": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版"
+          }
+        }
+      }
+    },
+    "版 %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版 %@"
+          }
+        }
+      }
+    },
+    "版の変換": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version conversion"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版の変換"
+          }
+        }
+      }
+    },
     "状態": {
       "localizations": {
         "en": {
@@ -11268,6 +11508,22 @@
         }
       }
     },
+    "短縮名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Short names"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "短縮名"
+          }
+        }
+      }
+    },
     "確かめています…": {
       "localizations": {
         "en": {
@@ -11424,6 +11680,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "種別ごとの件数を出す"
+          }
+        }
+      }
+    },
+    "種別名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kind name"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "種別名"
           }
         }
       }
@@ -11944,6 +12216,22 @@
         }
       }
     },
+    "落ちているあいだ、この種別は読み書きできません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "While this is down, the kind cannot be read or written"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "落ちているあいだ、この種別は読み書きできません"
+          }
+        }
+      }
+    },
     "行の詰め方": {
       "localizations": {
         "en": {
@@ -12116,6 +12404,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "表示中の行をコピー"
+          }
+        }
+      }
+    },
+    "複数形": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plural"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "複数形"
           }
         }
       }
@@ -13056,6 +13360,22 @@
         }
       }
     },
+    "適用範囲": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scope"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "適用範囲"
+          }
+        }
+      }
+    },
     "選ぶと、その世代の中身が出ます。": {
       "localizations": {
         "en": {
@@ -13340,6 +13660,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "青"
+          }
+        }
+      }
+    },
+    "非推奨": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deprecated"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "非推奨"
           }
         }
       }

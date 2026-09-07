@@ -98,6 +98,11 @@ enum SettingsDigest {
     private static let allNamespaces = String(localized: "すべての Namespace")
     private static let allPods = String(localized: "すべての Pod")
     private static let hasValue = String(localized: "設定あり")
+    /// **1 つの文に 1 つの鍵。** `status` と補足を `+` で継ぎ足すと、訳す側は
+    /// 語順を変えられない（`Spread (preferred)` になったのと同じ）。
+    private static let scaleWithStatus =
+        String(localized: "status・scale（レプリカ数を変えられます）")
+    private static let scaleOnly = String(localized: "scale（レプリカ数を変えられます）")
 
     static func groups(for object: K8sObject) -> [SettingGroup] {
         switch object.kind {
@@ -117,6 +122,7 @@ enum SettingsDigest {
         case .persistentVolume: return volumeGroups(object)
         case .node: return nodeGroups(object)
         case .namespace: return namespaceGroups(object)
+        case .customResourceDefinition: return crdGroups(object)
         // **選べる項目が決まっていないものは、木に落とす。** 種別を足すたびに
         // 空の設定タブが増えるより、`SpecOutline` で spec がそのまま見えるほうが
         // まだ役に立つ（CRD と同じ扱い）。
@@ -788,6 +794,138 @@ enum SettingsDigest {
                         joined(namespace.spec?["finalizers"])),
                 ])
         ]
+    }
+
+    // MARK: - CustomResourceDefinition
+
+    /// **スキーマを木で並べない。** `openAPIV3Schema` は数千行になることがあり、
+    /// それは YAML タブの持ち場（設定タブは「見るべき項目を選ぶ」場所で、
+    /// 木に落とすのはスキーマの分からない CRD の**中身**のほう）。ここに置くのは
+    /// **その種別が使えるかと、CR を書くときに要ること**だけ。
+    ///
+    /// **ふつうの値で埋めない。** 実測（188 CRD）で `conversion` は 179 件が
+    /// `None`、非推奨の版は 21 件だけ。どちらも常に出すと読まれなくなるので、
+    /// 当てはまるときだけ行を足す（HPA 管理下でないことを書かないのと同じ）。
+    private static func crdGroups(_ crd: K8sObject) -> [SettingGroup] {
+        var groups: [SettingGroup] = []
+        let spec = crd.spec
+        let names = spec?["names"]
+
+        groups.append(
+            SettingGroup(
+                title: "種別",
+                rows: [
+                    SettingRow("種別名", names?["kind"]?.stringValue),
+                    SettingRow("複数形", names?["plural"]?.stringValue),
+                    SettingRow("単数形", names?["singular"]?.stringValue),
+                    // **短縮名は kubectl の打ち方そのもの。** 実測で 78 件が持つ。
+                    SettingRow("短縮名", joined(names?["shortNames"])),
+                    SettingRow("カテゴリ", joined(names?["categories"])),
+                    SettingRow("API グループ", spec?["group"]?.stringValue),
+                    SettingRow("適用範囲", spec?["scope"]?.stringValue),
+                ]))
+
+        // **版ごとに 1 つ。番号を id に混ぜる。** 見出しに版名を補間すると
+        // `LocalizedStringResource.key` は書式指定子のまま（`"版 %@"`）なので、
+        // 版が複数ある CRD（実測で 27 件）で id が重なり、`ForEach` が行を
+        // 取り違える（`RBACTests` が固めているのと同じ形）。
+        for (index, version) in (spec?["versions"]?.arrayValue ?? []).enumerated() {
+            let name = version["name"]?.stringValue ?? ""
+            let served = version["served"]?.boolValue == true
+            var rows: [SettingRow] = [
+                // **`served: false` は「定義に残っているが引けない」。**
+                // 古い版を指したままの CR やマニフェストがここで詰まる。
+                SettingRow(
+                    "引ける", yesNo(served), level: served ? nil : .warning, ordinal: index),
+                SettingRow("保存先", yesNo(version["storage"]?.boolValue), ordinal: index),
+            ]
+            if version["deprecated"]?.boolValue == true {
+                // **警告の文があればそれを出す。** サーバが「いつ消えるか」を
+                // 書いてくれる唯一の場所で、こちらで組み立てようがない。
+                rows.append(
+                    SettingRow(
+                        "非推奨",
+                        version["deprecationWarning"]?.stringValue ?? yes,
+                        level: .warning, ordinal: index))
+            }
+            if let subresources = crdSubresources(version["subresources"]) {
+                rows.append(SettingRow("別に更新できるもの", subresources, ordinal: index))
+            }
+            // **CR を書くときにいちばん要るもの。** 実測で 219 版のうち 127 が
+            // `spec.required` を持っている。無い版では「未設定」になる。
+            rows.append(
+                SettingRow(
+                    "spec の必須項目",
+                    joined(version.path("schema.openAPIV3Schema.properties.spec.required")),
+                    ordinal: index))
+            groups.append(
+                SettingGroup(title: "版 \(name)", rows: rows, ordinal: index))
+        }
+
+        if spec?.path("conversion.strategy")?.stringValue == "Webhook" {
+            let service = spec?.path("conversion.webhook.clientConfig.service")
+            let namespace = service?["namespace"]?.stringValue ?? ""
+            let serviceName = service?["name"]?.stringValue ?? ""
+            groups.append(
+                SettingGroup(
+                    title: "版の変換",
+                    rows: [
+                        SettingRow("方式", "Webhook"),
+                        SettingRow(
+                            "指し先",
+                            serviceName.isEmpty ? nil : "\(namespace)/\(serviceName)"),
+                        SettingRow(
+                            "受け渡す版",
+                            joined(spec?.path("conversion.webhook.conversionReviewVersions"))),
+                    ],
+                    // **落ちたときに何が起きるかを書く**（`ValidatingWebhook`
+                    // の「失敗時」列と同じ判断）。実測で 9 件がこの形。
+                    subtitle: String(localized: "落ちているあいだ、この種別は読み書きできません")))
+        }
+
+        // **`Established=False` は「その種別が使えない」。** サイドバーには
+        // 出るのに押すと必ず空になる、その理由がここにしか無い。
+        let conditions = crd.status?["conditions"]?.arrayValue ?? []
+        if !conditions.isEmpty {
+            groups.append(
+                SettingGroup(
+                    title: "状態",
+                    rows: conditions.map { condition in
+                        let type = condition["type"]?.stringValue ?? ""
+                        let status = condition["status"]?.stringValue ?? ""
+                        // **理由と本文を落とさない。** 何が起きているかは
+                        // `message` にしか書いていない（元の文言を捨てない、
+                        // といつもの話）。
+                        let detail = [status,
+                                      condition["reason"]?.stringValue ?? "",
+                                      condition["message"]?.stringValue ?? ""]
+                            .filter { !$0.isEmpty }
+                            .joined(separator: " · ")
+                        return SettingRow(
+                            name: type, detail,
+                            level: status == "True"
+                                ? nil : (type == "Established" ? .critical : .warning))
+                    }))
+        }
+
+        return groups
+    }
+
+    /// 版が別に更新できるもの。**無ければ行そのものを出さない**ので nil を返す。
+    ///
+    /// **`scale` があることを「はい」で済ませない。** それは「レプリカ数を
+    /// 変えられる＝HPA を付けられる」という意味で、実測で 5 件だけが持っている
+    /// （`machinedeployments` など）。値の意味を読む側に組み立てさせない。
+    private static func crdSubresources(_ subresources: JSONValue?) -> String? {
+        let hasStatus = subresources?["status"] != nil
+        let hasScale = subresources?["scale"] != nil
+        switch (hasStatus, hasScale) {
+        case (true, true): return scaleWithStatus
+        case (false, true): return scaleOnly
+        // kubectl / Kubernetes の語なので訳さない。
+        case (true, false): return "status"
+        case (false, false): return nil
+        }
     }
 
     // MARK: - 値の整形

@@ -87,6 +87,7 @@ enum ResourceTable {
     private static let supported = String(localized: "可")
     private static let unsupported = String(localized: "不可")
     private static let localAPIService = String(localized: "ローカル（集約なし）")
+    private static let deprecatedVersion = String(localized: "非推奨")
     private static let unsetBase = String(localized: "未設定")
     /// 使用量をまだ引いていないセル。**並べ替えでは値として扱わない**ので、
     /// `ClusterStore.isMissing` からも引ける場所に置く（文字を 2 か所に書くと、
@@ -706,10 +707,94 @@ enum ResourceTable {
                         text: condition?["reason"]?.stringValue ?? "", emphasis: .secondary)
                 },
             ]
+
+        case .customResourceDefinition:
+            return [
+                // **複数形は名前列がもう出している**（`metadata.name` が
+                // `certificaterequests.cert-manager.io`）。ここは YAML の
+                // `kind:` に書く単数形で、重複ではない。
+                ResourceColumn(title: "種別", width: .flexible(min: 200)) {
+                    ResourceCell(text: $0.spec?.path("names.kind")?.stringValue ?? "")
+                },
+                // 幅は測って決めてある（`crdVersion` の説明。英語の
+                // `v1alpha3 (Deprecated)` が 140.1pt で、130pt では溢れた）。
+                ResourceColumn(title: "版", width: .fixed(150), value: crdVersion),
+                ResourceColumn(title: "適用範囲", width: .fixed(110)) {
+                    ResourceCell(
+                        text: $0.spec?["scope"]?.stringValue ?? "", emphasis: .secondary)
+                },
+                // **`Established=False` なら、その種別は使えない。** サイドバーに
+                // 出ていても押せば必ず空になるので、`APIService` の「利用可能」と
+                // 同じ持ち場に置く（どちらも `discoveryHint` が見に行けと言う値）。
+                ResourceColumn(title: "状態", width: .fixed(150), value: crdState),
+            ]
         }
     }
 
     // MARK: - 新しい種別のセル
+
+    /// CRD の版。**storage に指されている版だけ**を出す。
+    ///
+    /// **全部並べない。** 実測（188 CRD）で 1 版が 161・2 版が 23・3 版が 4 で、
+    /// 大半は 1 つ。読みたいのは「いま書き込まれる版」なので、そこを出す。
+    /// 版ごとの served / 非推奨は設定タブの表が持つ。
+    ///
+    /// **「他 N」も付けない。** 測ったら**日本語でも溢れた**（13pt で
+    /// `v1alpha1 (非推奨) 他 2` が 132.7pt、英語 `2 more` 付きは 186.3pt。
+    /// 列は 150pt）。1 版しかない 161 件のために 190pt の列を空けることに
+    /// なるので、複数版あることは設定タブに任せる。
+    ///
+    /// **非推奨は文字で言う。** 実測で `deprecated: true` の版は 21 個あり、
+    /// **そのうち 2 件は storage の版そのものが非推奨**だった
+    /// （`addresspools.metallb.io` の v1beta1 と
+    /// `virtualmachineinstancepresets.kubevirt.io` の v1alpha3。どちらも
+    /// `deprecationWarning` に移行先や削除予定が書いてある）。橙にするだけでは
+    /// 何が橙なのか決まらないので、色と文字を組にする。
+    /// 幅は測ってある（`v1alpha3 (非推奨)` 105.4pt / `(Deprecated)` 140.1pt）。
+    static func crdVersion(_ crd: K8sObject) -> ResourceCell {
+        let versions = crd.spec?["versions"]?.arrayValue ?? []
+        guard let stored = versions.first(where: { $0["storage"]?.boolValue == true }),
+              let name = stored["name"]?.stringValue
+        else {
+            // storage の版が無い CRD は API サーバが受け付けないが、
+            // **引けたものを「取れていない」ことにはしない**（空欄にする）。
+            return ResourceCell(text: "", emphasis: .secondary)
+        }
+        let deprecated = stored["deprecated"]?.boolValue == true
+        return ResourceCell(
+            text: deprecated ? "\(name) (\(deprecatedVersion))" : name,
+            emphasis: .mono, level: deprecated ? .warning : nil)
+    }
+
+    /// CRD の状態。
+    ///
+    /// **`Established=False` は「その種別が使えない」。** サイドバーには CRD 由来の
+    /// 種別として出るのに、押すと必ず空になる —— まさに「なぜ動かないか」を
+    /// 説明する値なので、一覧の列に出す。
+    ///
+    /// **正常なものを並べない。** 実測（188 CRD）で出る条件は `NamesAccepted` /
+    /// `Established` / `KubernetesAPIApprovalPolicyConformant` の 3 つで、
+    /// 健全なクラスタでは全部 True。3 つ並べると合格印で埋まるので、
+    /// そのときは `Established` と 1 つだけ書く（七角形の器に正常な状態の
+    /// しるしを付けないのと同じ判断）。
+    ///
+    /// **条件が無いことを異常にしない。** 作られた直後は空になる。
+    static func crdState(_ crd: K8sObject) -> ResourceCell {
+        let conditions = crd.status?["conditions"]?.arrayValue ?? []
+        guard !conditions.isEmpty else { return ResourceCell(text: "", emphasis: .secondary) }
+        let bad = conditions.filter { $0["status"]?.stringValue != "True" }
+        guard !bad.isEmpty else { return ResourceCell(text: "Established", level: .good) }
+        let names = bad.compactMap { condition -> String? in
+            guard let type = condition["type"]?.stringValue else { return nil }
+            return "\(type)=\(condition["status"]?.stringValue ?? "?")"
+        }
+        // **`Established` が落ちているのはいちばん重い**（種別ごと使えない）。
+        // 承認の条件（`KubernetesAPIApprovalPolicyConformant`）が落ちていても
+        // 種別は使えるので、そこは橙で留める。
+        let established = bad.contains { $0["type"]?.stringValue == "Established" }
+        return ResourceCell(
+            text: names.joined(separator: ", "), level: established ? .critical : .warning)
+    }
 
     /// PDB の最小/最大。**どちらか一方しか設定できない**ので、書いてあるほうを出す。
     static func budgetTarget(_ budget: K8sObject) -> String {

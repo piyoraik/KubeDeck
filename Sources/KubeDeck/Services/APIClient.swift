@@ -267,6 +267,81 @@ struct APIClient: Sendable {
         return token
     }
 
+    /// 件数だけを 1 往復で引く。総数が決められなければ nil。
+    ///
+    /// **数えるために一覧を運ばせない。** `?limit=1` に metadata だけの Accept を
+    /// 付けると、応答は 130 バイト（0 件）〜2.7KB（1 件ぶんの metadata）で、
+    /// 残りは `metadata.remainingItemCount` に入る（実測、Connect Gateway 越しの
+    /// GKE。3,118 件ある `certificaterequests` が 2,686 バイト・1 往復で分かる）。
+    ///
+    /// CRD の 188 種別を数えたときの実測（回線の機嫌で 2 倍以上ぶれるので
+    /// A/B/A/B と交互に測ってある）:
+    ///
+    /// | 経路 | 秒 |
+    /// |---|---|
+    /// | kubectl を種別ごとに起こす（並行 8） | 58.3 / 59.0 |
+    /// | proxy 経由・metadata・`?limit=1`（同時 6） | 7.9 / 19.5 |
+    ///
+    /// **`remainingItemCount` が無いことを 0 件にしない。** API はこれを
+    /// 「見積もり」と定めていて、返さない実装が許されている。items が空なら
+    /// 0 件は確定できるが、埋まっていて残りが分からないときは nil を返す
+    /// （＝数えられなかった。「無い」と「取れていない」を混ぜない）。
+    ///
+    /// **`JSONValue` に落として読まない。** 見たいのは items の数と整数 1 つ
+    /// だけなので、`continueToken` と同じく `JSONSerialization` で済ませる。
+    func count(path: String) async throws -> Int? {
+        let page = try await data(
+            path: path, query: [URLQueryItem(name: "limit", value: "1")],
+            accept: Self.metadataOnlyAccept)
+        switch Self.itemCount(in: page) {
+        case .total(let count): return count
+        case .unknown: return nil
+        case .unreadable:
+            throw APIError.malformed(String(localized: "件数を読み取れませんでした。"))
+        }
+    }
+
+    /// `?limit=1` の応答から読み取った件数。
+    ///
+    /// **3 つを混ぜない。** 「0 件だった」「1 件以上あるが総数は決まらない」
+    /// 「応答が読めなかった」は、呼び出し側で行き先が違う（前者は隠す判断に
+    /// 使えるが、後ろ 2 つは使えない）。
+    enum ItemCount: Sendable, Equatable {
+        case total(Int)
+        /// 応答は読めたが `remainingItemCount` が無い。API はこれを「見積もり」
+        /// と定めていて、**返さない実装が許されている。**
+        case unknown
+        case unreadable
+    }
+
+    static func itemCount(in page: Data) -> ItemCount {
+        guard let root = (try? JSONSerialization.jsonObject(with: page)) as? [String: Any]
+        else { return .unreadable }
+        // **0 件は `"items":[]` ではなく `"items":null` で返る**（実測。
+        // Go の nil スライスがそのまま出る。130 バイトの応答:
+        // `{"kind":"PartialObjectMetadataList",…,"items":null}`）。
+        //
+        // `[Any]` へのキャストだけで受けると NSNull で失敗するので、
+        // **0 件が「読めなかった」に化ける** —— このアプリでいちばん避けたい
+        // 取り違えの、ちょうど裏返し。実際これで「0 件の CRD を隠す」が
+        // **丸ごと効かなかった**（合成 JSON では `[]` と書いていたので
+        // テストは通り、画面を撮って初めて気付いた）。
+        let items: [Any]
+        switch root["items"] {
+        case let list as [Any]: items = list
+        case is NSNull: items = []
+        // `items` そのものが無い応答（`Status` など）は List ではない。
+        default: return .unreadable
+        }
+        // **空の items を「読めなかった」にしない。** 0 件はここで確定できる
+        // 唯一の値で、隠す判断に使えるのもこれだけ。
+        if items.isEmpty { return .total(0) }
+        guard let metadata = root["metadata"] as? [String: Any],
+              let remaining = metadata["remainingItemCount"] as? Int
+        else { return .unknown }
+        return .total(items.count + remaining)
+    }
+
     // MARK: - 失敗の訳し方
 
     private func translate(_ error: URLError) -> APIError {

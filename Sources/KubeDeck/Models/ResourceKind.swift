@@ -79,6 +79,24 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
     /// **`discoveryHint` が「ここを見ろ」と言っている当の場所。** 集約 API が
     /// 落ちると、その API グループが丸ごと一覧から消える。
     case apiService
+    /// **サイドバーに CRD 由来の種別を並べておきながら、定義そのものは
+    /// どこからも見られなかった。** `Kubectl.customResourceTypes` は
+    /// `kubectl get crd` を引いているのに、group / version / kind / plural /
+    /// scope / printerColumns だけ抜いて残りを捨てていた。捨てていたのは
+    /// **なぜその種別が使えないのかを説明する当の値**:
+    ///
+    /// | 捨てていたもの | それが無いと分からないこと |
+    /// |---|---|
+    /// | `openAPIV3Schema` | CR を作って弾かれた理由（必須項目・validation） |
+    /// | `versions[]` の served / storage / deprecated | どの版が正で、どれが非推奨か |
+    /// | `status.conditions` | `Established=False`（＝種別がサイドバーに出ない理由そのもの） |
+    /// | `conversion` | webhook が落ちていて読み書きできない |
+    /// | `subresources` | scale できるか（HPA を付けられるか） |
+    ///
+    /// しかも CRD を選ぶ画面が無いので、**YAML タブで原文を読む逃げ道も
+    /// なかった**（`APIService` を足したのと同じ判断 —— 「なぜ動かないか」を
+    /// 説明する側に回る種別は揃える）。
+    case customResourceDefinition
     case node
     case namespace
     case event
@@ -156,6 +174,8 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .mutatingWebhookConfiguration:
             return "mutatingwebhookconfigurations.admissionregistration.k8s.io"
         case .apiService: return "apiservices.apiregistration.k8s.io"
+        case .customResourceDefinition:
+            return "customresourcedefinitions.apiextensions.k8s.io"
         // **`nodes` と `pods` と `events` は同じ複数形が別グループにも居る**
         // （`metrics.k8s.io` / `events.k8s.io`）。実際に流れたのはここ。
         case .node: return "nodes.v1."
@@ -196,6 +216,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .validatingWebhookConfiguration: return "ValidatingWebhookConfiguration"
         case .mutatingWebhookConfiguration: return "MutatingWebhookConfiguration"
         case .apiService: return "APIService"
+        case .customResourceDefinition: return "CustomResourceDefinition"
         case .node: return "Node"
         case .namespace: return "Namespace"
         case .event: return "Event"
@@ -242,6 +263,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .validatingWebhookConfiguration: return "ValidatingWebhookConfiguration"
         case .mutatingWebhookConfiguration: return "MutatingWebhookConfiguration"
         case .apiService: return "APIService"
+        case .customResourceDefinition: return "CustomResourceDefinition"
         case .node: return "Node"
         case .namespace: return "Namespace"
         case .event: return String(localized: "イベント")
@@ -260,7 +282,8 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .serviceAccount, .role, .roleBinding, .clusterRole, .clusterRoleBinding:
             return .access
         case .persistentVolume, .node, .namespace, .event, .storageClass, .priorityClass,
-             .validatingWebhookConfiguration, .mutatingWebhookConfiguration, .apiService:
+             .validatingWebhookConfiguration, .mutatingWebhookConfiguration, .apiService,
+             .customResourceDefinition:
             // PersistentVolume はクラスタ全体のもので Namespace に属さない。
             // Kubernetes Dashboard も「クラスタ」に置いている。
             return .cluster
@@ -272,7 +295,7 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .node, .namespace, .persistentVolume, .clusterRole, .clusterRoleBinding,
              .storageClass, .priorityClass, .validatingWebhookConfiguration,
-             .mutatingWebhookConfiguration, .apiService:
+             .mutatingWebhookConfiguration, .apiService, .customResourceDefinition:
             return false
         default: return true
         }
@@ -309,6 +332,9 @@ enum ResourceKind: String, CaseIterable, Identifiable, Sendable {
         case .validatingWebhookConfiguration: return "checkmark.shield"
         case .mutatingWebhookConfiguration: return "wand.and.rays"
         case .apiService: return "point.topleft.down.curvedto.point.bottomright.up"
+        // CRD 由来の種別は `puzzlepiece.extension`。**同じにしない** ――
+        // あちらは「この CRD が定義した種別」、こちらは「定義そのもの」。
+        case .customResourceDefinition: return "puzzlepiece"
         case .node: return "server.rack"
         case .namespace: return "folder"
         case .event: return "bell"

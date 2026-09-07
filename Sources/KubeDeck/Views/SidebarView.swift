@@ -32,7 +32,7 @@ struct SidebarView: View {
             ForEach(Preferences.shared.showsCustomResources ? customGroups : [], id: \.name) { group in
                 Section(group.name) {
                     ForEach(group.types) { type in
-                        Label(type.displayName, systemImage: "puzzlepiece.extension")
+                        row(for: type)
                             .tag(ClusterStore.Selection.resource(.custom(type)))
                     }
                 }
@@ -59,14 +59,53 @@ struct SidebarView: View {
     }
 
     /// API グループごとにまとめた CRD。グループ名の昇順。
+    ///
+    /// **押しても空振りする種別を、既定で並べ続けない。** 実測（Connect Gateway
+    /// 越しの GKE）で、並んでいた 188 種別のうち中身があるのは **71 だけ**で、
+    /// 残り 117（62%）は押すと「ありません」しか出なかった。組み込みの種別は
+    /// `hidesEmptyKinds` で畳めるのに、ここは件数を見ていなかったので**設定が
+    /// 効いていなかった**（そもそも誰も CRD を数えていなかった）。
+    ///
+    /// **件数が分からないものは隠さない**（組み込みと同じ規則）。数えていない
+    /// のに隠すと「まだ分からない」が「使われていない」になる —— kubectl 経路
+    /// では 1 つも数えないので、そこでは全部そのまま出る。
+    ///
+    /// **Namespace を絞っても隠す判断は変えない。** 数えてあるのは全 Namespace の
+    /// 件数だが、**全 Namespace で 0 件ならどの Namespace でも 0 件**なので、
+    /// この値のままで正しい（件数の表示のほうは `row(for:)` で伏せる）。
     private var customGroups: [(name: String, types: [CustomResourceType])] {
-        Dictionary(grouping: store.customTypes, by: \.group)
+        Dictionary(grouping: store.customTypes.filter(isVisible), by: \.group)
             .map {
                 (name: $0.key.isEmpty
                     ? String(localized: "カスタムリソース") : $0.key,
                  types: $0.value)
             }
             .sorted { $0.name < $1.name }
+    }
+
+    private func isVisible(_ type: CustomResourceType) -> Bool {
+        guard Preferences.shared.hidesEmptyKinds else { return true }
+        guard let count = store.customCounts[type.resourceName] else { return true }
+        // いま開いているものは、0 件でも消さない。
+        return count > 0 || store.currentTarget?.customType == type
+    }
+
+    private func row(for type: CustomResourceType) -> some View {
+        HStack {
+            Label(type.displayName, systemImage: "puzzlepiece.extension")
+            Spacer(minLength: 4)
+            // **Namespace を絞っているあいだは出さない。** 数えてあるのは
+            // 全 Namespace の件数で（絞るたびに 188 往復を掛け直さないため）、
+            // 隣に並ぶ組み込みの数字は絞りに追従する。混ぜると、同じ列に
+            // 意味の違う数字が並ぶ。
+            if Preferences.shared.showsSidebarCounts, store.selectedNamespace == nil,
+               let count = store.customCounts[type.resourceName], count > 0 {
+                Text("\(count)")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func row(for kind: ResourceKind) -> some View {

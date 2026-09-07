@@ -18,6 +18,17 @@ xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
 
 既存ファイルの編集だけなら `xcodegen generate` は不要。`project.yml` がソースオブトゥルースで、`.xcodeproj` は生成物。**`.xcodeproj` を直接編集しない。**
 
+**`xcode-select -p` が CommandLineTools を指していることがある。** そのままだと
+`xcodebuild` は `tool 'xcodebuild' requires Xcode, but active developer directory
+'/Library/Developer/CommandLineTools' is a command line tools instance` で
+落ちる（`swift Scripts/*.swift` も同じ）。**`sudo xcode-select -s` で切り替えず**、
+その場だけ `DEVELOPER_DIR` を渡す（機械全体の設定を、このリポジトリの作業の
+ために書き換えない）。
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild …
+```
+
 **`xcodebuild` の出力を `head` に通さない。** パイプを早く閉じると `xcodebuild` が居残り、DerivedData の `XCBuildData/build.db` を握り続ける。次のビルドが `database is locked` で落ちるが、原因は自分の残骸であって同時ビルドではない。絞りたいときはログをファイルに落としてから `grep` する。
 
 起動確認:
@@ -1360,6 +1371,8 @@ xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck -destination 'platf
 | `APIClient.pruned` | `managedFields` を落とすときに他の中身まで変える。復号が倍になる |
 | `Endpoint.redacting` | proxy の秘密の prefix が失敗の文言に載る |
 | `SettingGroup.id` / `SettingRow.id` | 補間の入った鍵が全部同じ id になり、`ForEach` が行を取り違える |
+| `APIClient.itemCount` | 数えられなかった件数を 0 と混ぜる（使われている種別がサイドバーから消える）。`remainingItemCount` は「見積もり」で、返さない実装が許されている |
+| `ResourceTable.crdVersion` / `crdState` | 非推奨の版が色だけになる。`Established=False`（種別ごと使えない）を warning に落とす。条件が無いことを異常にする |
 | 概要の読み込み中 | まだ数えていないのに 0 のリングを出す。逆に読み込み中のまま留まる |
 | `MetricsPhase` | まだ引いていない使用量を `—`（取れなかった）と書く。探している最中に「入っていません」と断定する |
 | 並べ替え・しきい値 | 黙って意味が変わる（警告色が出なくなるなど） |
@@ -1462,6 +1475,7 @@ PNG も SVG もこの 1 つの配列から作る（`Scripts/generate-icon.sh` /
 | EndpointSlice | Service に**実際に**何が繋がっているか。セレクタからの推測ではなく、コントローラが書いた事実。**0 を空欄にしない** |
 | Validating / MutatingWebhookConfiguration | 作成が謎に失敗する理由。**失敗時の方針を出す**（`Fail` なら、落ちているあいだ対象の作成がすべて止まる） |
 | APIService | `discoveryHint` が「ここを見ろ」と言っている当の場所。**Available=False** のグループは種別ごと一覧から消える |
+| CustomResourceDefinition | サイドバーに CRD 由来の種別を並べておきながら、**定義そのものはどこからも見えなかった**（下記）。**Established=False** の CRD は、種別が並ぶのに押せば必ず空になる |
 
 **API グループを必ず付ける**（`poddisruptionbudgets.policy`、
 `storageclasses.storage.k8s.io`）。短い名前は別グループと衝突する。
@@ -1477,6 +1491,120 @@ spec がそのまま見えるほうがまだ役に立つ。
 **操作に使う種別名はオブジェクトから引かない。** `K8sObject.kind` は組み込みの enum で、CRD には対応する値が無い。いま開いている一覧（`currentResourceName`）から取る。
 
 **kubectl に渡す名前には API グループを付ける**（`applications.argoproj.io`）。別グループが同じ複数形を持つことがあり、短い名前だと別の種別を引く。
+
+### 定義そのものも一覧に置く（`ResourceKind.customResourceDefinition`）
+
+**サイドバーに CRD 由来の種別を並べておきながら、定義はどこからも見られな
+かった。** `Kubectl.customResourceTypes` は `kubectl get crd` を引いているのに、
+`CustomResourceType.init(crd:)` が group / version / kind / plural / scope /
+printerColumns だけ抜いて**残りを捨てていた**。捨てていたのは、まさに
+「なぜその種別が使えないのか」を説明する値。
+
+| 捨てていたもの | それが無いと分からないこと |
+|---|---|
+| `openAPIV3Schema` | CR を作って弾かれた理由（必須項目・validation） |
+| `versions[]` の served / storage / deprecated | どの版が正で、どれが非推奨か |
+| `status.conditions` | `Established=False`（＝種別が使えない理由そのもの） |
+| `conversion` | webhook が落ちていて読み書きできない |
+| `subresources` | scale できるか（HPA を付けられるか） |
+
+しかも CRD を選ぶ画面が無いので、**YAML タブで原文を読む逃げ道も無かった。**
+
+**サイドバーの CRD 節は残す。** 一覧に置き換えると、よく使う CRD へ行くのが
+2 段になる。定義を見るのと、その種別の中身を見るのは別の用事。
+
+一覧の列は 種別 / 版 / 適用範囲 / 状態。実測（Connect Gateway 越しの GKE、
+188 CRD）で決めてある。
+
+- **版は storage の版だけ。** 1 版が 161・2 版が 23・3 版が 4 件で、読みたいのは
+  「いま書き込まれる版」。**「他 N」も付けない** —— 測ったら**日本語でも
+  溢れた**（13pt で `v1alpha1 (非推奨) 他 2` が 132.7pt、列は 150pt。英語の
+  `2 more` 付きは 186.3pt）。複数版あることは設定タブの版ごとの表が持つ。
+- **非推奨は文字と色の両方で言う。** `deprecated: true` の版は 21 個あり、
+  **そのうち 2 件は storage の版そのものが非推奨**だった
+  （`addresspools.metallb.io` の v1beta1、
+  `virtualmachineinstancepresets.kubevirt.io` の v1alpha3。どちらも
+  `deprecationWarning` に移行先や削除予定が書いてある）。幅は
+  `v1alpha3 (非推奨)` 105.4pt / `(Deprecated)` 140.1pt で測ってある。
+- **状態は、正常なら `Established` の 1 語だけ。** 健全なクラスタでは
+  `NamesAccepted` / `Established` /
+  `KubernetesAPIApprovalPolicyConformant` が全部 True になる（実測で 188 件
+  すべて）。3 つ並べると合格印で埋まる。**`Established=False` は critical、
+  それ以外の条件が落ちているのは warning** —— 承認の条件が落ちていても種別は
+  使える。**条件が無いことは異常にしない**（作られた直後は空）。
+
+設定タブは版ごとに 1 節。**スキーマは木で並べない** —— `openAPIV3Schema` は
+数千行になるので YAML タブの持ち場で、ここに置くのは「その種別が使えるか」と
+「CR を書くときに要ること」だけ（`spec.required` は実測で 219 版のうち 127 が
+持っている）。**ふつうの値で埋めない** —— `conversion` は 179 件が `None`、
+非推奨は 21 個だけなので、当てはまるときだけ行を足す。
+
+**`scale` があることを「はい」で済ませない。** それは「レプリカ数を変えられる
+＝HPA を付けられる」の意味で、実測で 5 件だけが持つ（`machinedeployments` など）。
+
+**版の見出しは補間なので `ordinal:` を渡す。** `LocalizedStringResource.key` は
+書式指定子のまま（`"版 %@"`）なので、版が複数ある CRD（27 件）では 3 つとも
+同じ id になる（`RBACTests` が固めているのと同じ罠。`CustomResourceTests`）。
+
+### 並べた種別が空振りかを、押す前に言う
+
+**実測で、並んでいた 188 種別のうち中身があるのは 71 だけ**だった ——
+残り 117（62%）は押すと「ありません」しか出ない。組み込みの種別は
+`hidesEmptyKinds` で畳めるのに、CRD は**誰も数えていなかった**ので、件数も
+出せず設定も効かなかった（`SidebarView.customGroups` が件数を見ていなかった）。
+
+**数え方は proxy 経由の `?limit=1` ＋ metadata だけ**（`APIClient.count`）。
+1 往復・130 バイト〜2.7KB で、総数は `metadata.remainingItemCount` から出る
+（3,118 件ある `certificaterequests` が 2,686 バイトで分かる）。交互に測った値:
+
+| 経路 | 188 種別を数える |
+|---|---|
+| kubectl を種別ごとに起こす（並行 8） | 58.3 / 59.0 秒 |
+| proxy 経由・metadata・`?limit=1`（同時 6） | 7.9 / 19.5 秒 |
+| 同上（curl で同時 20） | 2.3 / 7.3 秒 |
+
+**kubectl 経路では数えない。** 58 秒かけてまでは数えないが、**数えていない
+ことを 0 件とは言わない**（`customCounts` に入れない ＝ まだ分からない）。
+`URLSession` の `httpMaximumConnectionsPerHost` は 6 のままにしてある ——
+同時 20 が速いのは curl での実測で、この口を広げると
+「14 本同時に投げると全滅した」ほうの実測（`APIClient.maxConnections`）に
+掛かる。開いたとき 1 回だけなので 19.5 秒でも足りる。
+
+**`remainingItemCount` が無いことを 0 件にしない。** API はこれを「見積もり」と
+定めていて、返さない実装が許されている。`APIClient.ItemCount` が
+「総数が分かった」「決まらない」「読めなかった」を分ける（`APITransportTests`）。
+
+#### 0 件は `"items":[]` ではなく `"items":null`（踏んだ）
+
+実測（Connect Gateway 越しの GKE、130 バイト）:
+
+```json
+{"kind":"PartialObjectMetadataList","apiVersion":"meta.k8s.io/v1",
+ "metadata":{"resourceVersion":"305833068"},"items":null}
+```
+
+Go の nil スライスがそのまま出る。`[Any]` へのキャストだけで受けると NSNull で
+失敗するので、**0 件が「読めなかった」に化ける** —— このアプリでいちばん
+避けたい取り違えの、ちょうど裏返し。そして数えられなかった種別は隠さない
+（それが正しい）ので、**「0 件の CRD を隠す」が丸ごと効かなかった。**
+
+**テストは通っていた。** 合成 JSON を `"items":[]` と書いていたので、
+実物の形を知らないかぎり書けない。**気付けたのは画面を撮ったから** ——
+`metadata` だけ引いた件数が空欄になったときと同じで、
+**単体テストの代わりに画面を見る場面がある。** いまは実測の形をそのまま
+テストに置いてある。
+
+**自動更新には乗せない。** 188 往復を 10 秒ごとに掛ける理由が無い。数え直すのは
+コンテキストを開いたときと、人が更新を押したときだけ。**`clusterInfoTask` にも
+混ぜない** —— あちらは `bootstrap` が完了を待つので、起動がそのぶん遅れる。
+
+**全 Namespace で数える。** 絞るたびに 188 往復を掛け直す価値はないし、
+**「全 Namespace で 0 件」はどの Namespace でも 0 件**なので隠す判断はこの値で
+正しい。ただし**絞っているあいだは件数を出さない** —— 隣に並ぶ組み込みの数字は
+絞りに追従するので、混ぜると同じ列に意味の違う数字が並ぶ。
+
+**前のクラスタの件数を持ち越さない。** 隠す判断に使う値なので、持ち越すと
+別のクラスタで実際に使われている種別が消える（世代番号でも守る）。
 
 ### 列は CRD 自身の宣言を使う
 

@@ -442,6 +442,57 @@ struct APITransportTests {
         #expect(APIClient.continueToken(in: Data("404 page not found".utf8)) == nil)
     }
 
+    // MARK: - 件数だけ引く
+
+    /// **「0 件」「総数が決まらない」「読めなかった」を混ぜない。**
+    ///
+    /// CRD の 188 種別を数えるのに、一覧を引くと kubectl 経路で 58 秒・
+    /// proxy 経由でもページ送りぶんの往復が積み上がる。`?limit=1` に metadata
+    /// だけの Accept を付けると 1 往復・130 バイト〜2.7KB で済むが、総数は
+    /// `metadata.remainingItemCount` からしか分からず、**API はこれを
+    /// 「見積もり」と定めていて返さない実装が許されている。** 無いことを
+    /// 0 件と読むと、実際に使われている種別がサイドバーから消える。
+    @Test func readsItemCountWithoutFetchingTheList() {
+        // 実測の応答（Connect Gateway 越しの GKE、`certificaterequests`）。
+        // 1 件ぶんの metadata と残り 3,117 で 3,118 件。
+        let many = Data(#"""
+            {"kind":"PartialObjectMetadataList","apiVersion":"meta.k8s.io/v1",
+             "metadata":{"resourceVersion":"1","continue":"abc","remainingItemCount":3117},
+             "items":[{"kind":"PartialObjectMetadata","metadata":{"name":"a"}}]}
+            """#.utf8)
+        #expect(APIClient.itemCount(in: many) == .total(3118))
+
+        // **0 件は `"items":null` で返る**（実測 130 バイト。Go の nil
+        // スライスがそのまま出る）。`[]` しか受けないと 0 件が
+        // `.unreadable` に化け、**「0 件の CRD を隠す」が丸ごと効かなくなる**
+        // —— 合成 JSON を `[]` で書いていたので、この形は画面を撮るまで
+        // 見つからなかった。**実物の形をそのまま置く。**
+        let none = Data(#"""
+            {"kind":"PartialObjectMetadataList","apiVersion":"meta.k8s.io/v1",
+             "metadata":{"resourceVersion":"305833068"},"items":null}
+            """#.utf8)
+        #expect(APIClient.itemCount(in: none) == .total(0))
+        // 空配列で返るサーバも同じ扱い。
+        let empty = Data(#"""
+            {"kind":"PartialObjectMetadataList","metadata":{"resourceVersion":"1"},"items":[]}
+            """#.utf8)
+        #expect(APIClient.itemCount(in: empty) == .total(0))
+
+        // **`remainingItemCount` を返さないサーバ。** 1 件以上あることは
+        // 分かるが総数は決まらないので、0 とも「1 件」とも言わない。
+        let unknown = Data(#"""
+            {"kind":"PartialObjectMetadataList","metadata":{"resourceVersion":"1"},
+             "items":[{"kind":"PartialObjectMetadata","metadata":{"name":"a"}}]}
+            """#.utf8)
+        #expect(APIClient.itemCount(in: unknown) == .unknown)
+
+        // JSON でない応答（知らない API グループは素のテキストで返る）。
+        #expect(APIClient.itemCount(in: Data("404 page not found".utf8)) == .unreadable)
+        // items そのものが無い応答を「0 件」にしない。
+        let status = Data(#"{"kind":"Status","reason":"Forbidden"}"#.utf8)
+        #expect(APIClient.itemCount(in: status) == .unreadable)
+    }
+
     // MARK: - 失敗の読み分け
 
     /// **一過性の discovery 失敗を「その種別は無い」にしない。**

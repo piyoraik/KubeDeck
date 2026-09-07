@@ -1475,6 +1475,59 @@ actor Kubectl {
             }
     }
 
+    /// CRD で定義された種別の件数。鍵は `CustomResourceType.resourceName`。
+    ///
+    /// **サイドバーに並べたものが空振りかどうかを、押す前に言うために要る。**
+    /// 実測（Connect Gateway 越しの GKE）で、並んでいた 188 種別のうち中身が
+    /// あるのは **71 種別だけ**で、残り 117（62%）は押しても 0 件だった。
+    /// 組み込みの種別は `refreshSidebarCounts` が数えているのに、こちらは
+    /// 一度も数えていなかったので、件数も出せず「0 件を隠す」設定も効かない。
+    ///
+    /// **kubectl 経路では数えない。** 種別ごとに 1 プロセス起こすことになり、
+    /// 実測で 58.3〜59.0 秒（並行 8）。proxy 経由なら 1 種別 1 往復・数 KB で
+    /// 済むので、同じ 188 種別が 7.9〜19.5 秒（`APIClient.count` の表）。
+    /// 数えられなければ空を返し、呼び出し側は件数を出さない —— **58 秒かけて
+    /// までは数えないが、数えていないことを 0 件とは言わない。**
+    ///
+    /// **全 Namespace で数える。** ここで欲しいのは「この種別がこのクラスタで
+    /// 使われているか」で、Namespace を絞るたびに 188 往復を掛け直す価値は
+    /// ない。**そして「全 Namespace で 0 件」はどの Namespace でも 0 件**
+    /// なので、隠す判断はこの値のままで正しい（絞っているあいだ件数そのものを
+    /// 出さないのは呼び出し側の仕事）。
+    ///
+    /// **数えられなかった種別は入れない。** 呼び出し側が nil を「まだ分からない」
+    /// として扱えるようにする（0 で埋めると「使われていない」ことになる）。
+    func customResourceCounts(
+        for types: [CustomResourceType], context: String
+    ) async -> [String: Int] {
+        guard !types.isEmpty, let api = await api(for: context) else { return [:] }
+        return await withTaskGroup(of: (String, Int?).self) { group in
+            for type in types {
+                group.addTask {
+                    do {
+                        let resource = try await APIDiscovery.shared.resource(
+                            for: type.resourceName, context: context, client: api)
+                        return (
+                            type.resourceName,
+                            try await api.count(path: resource.listPath(namespace: nil))
+                        )
+                    } catch {
+                        // **拒否・知らない種別・時間切れを分けない。** ここで
+                        // 分かれば嬉しいのは件数だけで、どれであっても
+                        // 「数えられなかった」に落ちる（種別ごとの拒否を出し
+                        // 分けるのは一覧を引く `httpList` の持ち場）。
+                        return (type.resourceName, nil)
+                    }
+                }
+            }
+            var counts: [String: Int] = [:]
+            for await (name, count) in group {
+                if let count { counts[name] = count }
+            }
+            return counts
+        }
+    }
+
     /// 任意の種別の一覧。組み込みでも CRD でも同じ経路で引く。
     ///
     /// **要求した種別を `assuming:` で補う。** 単一種別の `get -o json` は

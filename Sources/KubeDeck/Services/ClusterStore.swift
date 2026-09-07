@@ -341,6 +341,13 @@ final class ClusterStore {
     var prometheus: PrometheusEndpoint?
     /// クラスタに入っている CRD の種別。サイドバーに並べる。
     var customTypes: [CustomResourceType] = []
+    /// CRD で定義された種別の件数（全 Namespace）。鍵は `resourceName`。
+    ///
+    /// **入っていない種別は「まだ分からない」。** 0 では埋めない
+    /// （`Kubectl.customResourceCounts` は数えられなかったものを返さない）。
+    /// kubectl 経路では 1 つも入らない ―― あちらで数えると 58 秒かかるので
+    /// 数えないと決めてある。
+    var customCounts: [String: Int] = [:]
     /// 選択中のオブジェクトの履歴。
     var selectedHistory = MetricsHistory()
     /// クラスタ全体の履歴（概要用）。
@@ -397,6 +404,10 @@ final class ClusterStore {
     /// 逆に、コンテキストが変われば全部が別のクラスタの話になる。
     private var contextGeneration = 0
     private var clusterInfoTask: Task<Void, Never>?
+    /// CRD の件数を数えている最中の仕事。**`clusterInfoTask` に混ぜない** ――
+    /// あちらは `bootstrap` が完了を待つので、7.9〜19.5 秒かかるこれを
+    /// 入れると起動がそのぶん遅れる。
+    private var customCountTask: Task<Void, Never>?
 
     private let kubectl = Kubectl.shared
 
@@ -1061,6 +1072,23 @@ final class ClusterStore {
         contextGeneration += 1
         let token = contextGeneration
         clusterInfoTask?.cancel()
+        // **CRD の件数は、種別の一覧を持っている側が数える。**
+        // `includingFacts` のときは `loadClusterFacts` が引き直した直後に数える
+        // （切り替え前のクラスタの一覧を数えないため）。そうでないときは
+        // `bootstrap` がすでに引いているので、ここで数える。
+        //
+        // **`includingFacts` に紐づけて省かない。** `bootstrap` は
+        // `customTypes` を自分で引いて `loadClusterFacts` を通らないので、
+        // 紐づけると**起動時に一度も数えられない** —— 実測（画面を撮って
+        // 気付いた）で、サイドバーの CRD に件数が出ないまま、コンテキストを
+        // 切り替えるまで直らなかった。
+        //
+        // **`recoverClusterInfoIfNeeded` には入れない。** kubectl 経路では
+        // 数えないと決めてあるので永久に空で、「取れていないものがある」を
+        // 回復の条件にすると毎回走ることになる（人が更新を押せばここを通る）。
+        if !includingFacts {
+            countCustomResources(types: customTypes, token: token)
+        }
         let task = Task { [weak self] in
             guard let self else { return }
             // 直列にすると切り替えの体感が遅くなる。並べて投げ、
@@ -1272,12 +1300,41 @@ final class ClusterStore {
         let types = await kubectl.customResourceTypes(context: context)
         guard token == contextGeneration else { return }
         customTypes = types
+        // **前のクラスタの件数を持ち越さない。** これは「押しても空振りか」を
+        // 言う値で、0 件を隠す判断にも使う。持ち越すと、別のクラスタで実際に
+        // 使われている種別がサイドバーから消える。
+        customCounts = [:]
+        countCustomResources(types: types, token: token)
 
         let version = (try? await kubectl.serverVersion(context: context)) ?? ""
         guard token == contextGeneration else { return }
         serverVersion = version
 
         await refreshSidebarCounts(token: token)
+    }
+
+    /// CRD で定義された種別の件数を、背景で数える。
+    ///
+    /// **`loadClusterFacts` の中で await しない。** 実測で 7.9〜19.5 秒かかるので、
+    /// 待つと起動（`bootstrap` はこれを待つ）とコンテキスト切り替えがそのぶん
+    /// 遅れる。件数はサイドバーの添え物で、揃うまで無くても画面は成り立つ
+    /// （無いあいだは件数を出さないだけ ―― 0 とは書かない）。
+    ///
+    /// **自動更新には乗せない。** 188 往復を 10 秒ごとに掛ける理由が無い。
+    /// 数え直すのはコンテキストを開いたときと、人が更新を押したときだけ
+    /// （`refreshClusterInfo` と同じ扱い）。
+    private func countCustomResources(types: [CustomResourceType], token: Int) {
+        customCountTask?.cancel()
+        let context = currentContext
+        customCountTask = Task {
+            let counts = await kubectl.customResourceCounts(for: types, context: context)
+            // **世代を見てから書く。** 数えているあいだにコンテキストが
+            // 切り替わると、前のクラスタの件数で切り替え先のサイドバーを
+            // 畳むことになる（Prometheus の場所を別クラスタのものとして
+            // 覚えてしまったのと同じ形）。
+            guard token == contextGeneration else { return }
+            customCounts = counts
+        }
     }
 
     /// サイドバーに出す件数。
