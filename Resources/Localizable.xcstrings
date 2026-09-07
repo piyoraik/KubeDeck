@@ -12902,6 +12902,22 @@
         }
       }
     },
+    "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、0 件でも畳まれません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "While reads go through kubectl, CRD item counts are not measured (it would start one process per kind). CRDs show no count, and empty ones are not hidden."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、0 件でも畳まれません。"
+          }
+        }
+      }
+    },
     "読み取り専用": {
       "localizations": {
         "en": {
