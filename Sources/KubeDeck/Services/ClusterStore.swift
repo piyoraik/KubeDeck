@@ -102,6 +102,13 @@ final class ClusterStore {
             // 分からない（新しいほうが件数が少なければ、消えるまでは多く見える）。
             // 捨てておけば `isLoading` と合わさって読み込み中の表示になる。
             discardLoadedResources()
+            // **CRD の件数も別物になる。** 数えてあるのは絞る前の範囲の件数で、
+            // そのまま出すと**「36 件」と書いてあるのに押すと空**になる
+            // （実測: `addonconfigurations` はクラスタ全体で 36 件だが
+            // kube-system には 1 件も無い）。捨ててから数え直す ——
+            // 数え終わるまでは件数を出さない（まだ分からない）。
+            customCounts = [:]
+            countCustomResources(types: customTypes, token: contextGeneration)
             reload()
         }
     }
@@ -1326,8 +1333,12 @@ final class ClusterStore {
     private func countCustomResources(types: [CustomResourceType], token: Int) {
         customCountTask?.cancel()
         let context = currentContext
+        // **絞っている範囲で数える。** 数字の意味を組み込みの種別と揃える
+        // （揃えないと、同じ列に別の範囲の件数が並ぶ）。
+        let namespace = selectedNamespace
         customCountTask = Task {
-            let counts = await kubectl.customResourceCounts(for: types, context: context)
+            let counts = await kubectl.customResourceCounts(
+                for: types, context: context, namespace: namespace)
             // **世代を見てから書く。** 数えているあいだにコンテキストが
             // 切り替わると、前のクラスタの件数で切り替え先のサイドバーを
             // 畳むことになる（Prometheus の場所を別クラスタのものとして

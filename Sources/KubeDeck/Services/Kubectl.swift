@@ -1489,16 +1489,21 @@ actor Kubectl {
     /// 数えられなければ空を返し、呼び出し側は件数を出さない —— **58 秒かけて
     /// までは数えないが、数えていないことを 0 件とは言わない。**
     ///
-    /// **全 Namespace で数える。** ここで欲しいのは「この種別がこのクラスタで
-    /// 使われているか」で、Namespace を絞るたびに 188 往復を掛け直す価値は
-    /// ない。**そして「全 Namespace で 0 件」はどの Namespace でも 0 件**
-    /// なので、隠す判断はこの値のままで正しい（絞っているあいだ件数そのものを
-    /// 出さないのは呼び出し側の仕事）。
+    /// **絞っている範囲で数える。** 一度は常に全 Namespace で数えていた
+    /// （絞るたびに 145 往復を掛け直さないため）が、**クラスタ全体の件数を
+    /// 絞った範囲の件数として出すことになり、「36 件」と書いてあるのに押すと
+    /// 空という嘘になった** —— 実測で `addonconfigurations` はクラスタ全体
+    /// 36 件・kube-system 0 件、`apigeedeployments` は 13 件・0 件。
+    /// ツールチップで断ってはいたが、**hover しないと見えないので気付けない。**
+    ///
+    /// 数字の意味を組み込みの種別と揃える（揃えないと同じ列に別の範囲の件数が
+    /// 並ぶ）。`listPath` が scope を見るので、Cluster スコープの種別
+    /// （実測で 188 のうち 43）では `namespace` は無視される。
     ///
     /// **数えられなかった種別は入れない。** 呼び出し側が nil を「まだ分からない」
     /// として扱えるようにする（0 で埋めると「使われていない」ことになる）。
     func customResourceCounts(
-        for types: [CustomResourceType], context: String
+        for types: [CustomResourceType], context: String, namespace: String?
     ) async -> [String: Int] {
         guard !types.isEmpty, let api = await api(for: context) else { return [:] }
         return await withTaskGroup(of: (String, Int?).self) { group in
@@ -1509,7 +1514,7 @@ actor Kubectl {
                             for: type.resourceName, context: context, client: api)
                         return (
                             type.resourceName,
-                            try await api.count(path: resource.listPath(namespace: nil))
+                            try await api.count(path: resource.listPath(namespace: namespace))
                         )
                     } catch {
                         // **拒否・知らない種別・時間切れを分けない。** ここで

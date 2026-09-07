@@ -73,9 +73,10 @@ struct SidebarView: View {
     /// のに隠すと「まだ分からない」が「使われていない」になる —— kubectl 経路
     /// では 1 つも数えないので、そこでは全部そのまま出る。
     ///
-    /// **Namespace を絞っても隠す判断は変えない。** 数えてあるのは全 Namespace の
-    /// 件数だが、**全 Namespace で 0 件ならどの Namespace でも 0 件**なので、
-    /// この値のままで正しい。
+    /// **絞っているときは、絞った範囲で判断する。** 件数もその範囲で数え直して
+    /// あるので（`Kubectl.customResourceCounts`）、組み込みの種別とまったく
+    /// 同じ意味になる —— クラスタ全体にはあっても、いま見ている Namespace に
+    /// 無ければ畳む。
     private var customGroups: [(name: String, types: [CustomResourceType])] {
         Dictionary(grouping: store.customTypes.filter(isVisible), by: \.group)
             .map {
@@ -93,37 +94,22 @@ struct SidebarView: View {
         return count > 0 || store.currentTarget?.customType == type
     }
 
+    /// **組み込みの行と同じ意味の数字を出す。** 絞っているときは絞った範囲で
+    /// 数え直してある（`Kubectl.customResourceCounts`）ので、断り書きは要らない
+    /// —— 一度は「クラスタ全体の件数です」とツールチップで添えていたが、
+    /// **hover しないと見えないので、件数が出ているのに押すと空という嘘を
+    /// 隠せていなかった。**
     private func row(for type: CustomResourceType) -> some View {
         HStack {
             Label(type.displayName, systemImage: "puzzlepiece.extension")
             Spacer(minLength: 4)
             if Preferences.shared.showsSidebarCounts,
                let count = store.customCounts[type.resourceName], count > 0 {
-                countLabel(count)
+                Text("\(count)")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
-        }
-    }
-
-    /// CRD の件数。
-    ///
-    /// **Namespace を絞っていても出す。** 一度は伏せていた（数えてあるのは
-    /// 全 Namespace の件数なので、絞りに追従する組み込みの数字と意味が違う）が、
-    /// **絞って使う人には件数が 1 つも出ないことになり**、そのほうが害が
-    /// 大きかった（実測の画面で、kube-system を選んでいると CRD の列が
-    /// まるごと数字なしだった）。
-    ///
-    /// **そのかわり黙らない。** 絞っているときだけツールチップで断る
-    /// （絞っていなければ組み込みと同じ意味なので、断りは要らない）。
-    @ViewBuilder
-    private func countLabel(_ count: Int) -> some View {
-        let label = Text("\(count)")
-            .font(.caption)
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
-        if store.selectedNamespace == nil {
-            label
-        } else {
-            label.help("クラスタ全体の件数です（Namespace で絞っても変わりません）")
         }
     }
 
