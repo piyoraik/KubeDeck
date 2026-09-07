@@ -206,3 +206,35 @@ struct AppLanguageTests {
         #expect(AppLanguage.english.title == "English")
     }
 }
+
+/// **既定 off のトグルに、意味の違うものを相乗りさせない。**
+@Suite("サイドバーの畳み方")
+@MainActor
+struct SidebarFoldingTests {
+
+    /// CRD を畳むのを `hidesEmptyKinds` に相乗りさせていたので、**既定のままでは
+    /// 1 つも畳まれなかった** —— 実測（188 CRD）で 117 が空振りする状態がそのまま
+    /// 残り、しかも Namespace を絞っていると件数も伏せていたので、**見た目が
+    /// 変更前と完全に同じ**だった（画面を撮るまで気付けなかった）。
+    ///
+    /// 既定を分けたことと、「すべて既定値に戻す」の戻り先を固める。
+    /// **組み込みのほうは既定 off のまま** —— 0 件の Ingress を勝手に消さない。
+    @Test("使われていない CRD は既定で畳み、組み込みの種別は畳まない")
+    func customResourcesFoldByDefault() {
+        let preferences = Preferences.shared
+        let savedUnused = preferences.hidesUnusedCustomResources
+        let savedEmpty = preferences.hidesEmptyKinds
+        defer {
+            preferences.hidesUnusedCustomResources = savedUnused
+            preferences.hidesEmptyKinds = savedEmpty
+        }
+
+        // 逆に倒してから「すべて既定値に戻す」を通す。
+        preferences.hidesUnusedCustomResources = false
+        preferences.hidesEmptyKinds = true
+        preferences.resetAll()
+
+        #expect(preferences.hidesUnusedCustomResources)
+        #expect(!preferences.hidesEmptyKinds)
+    }
+}

@@ -33,6 +33,7 @@ final class Preferences {
         static let hiddenKinds = "hiddenKinds"
         static let showsCustomResources = "showsCustomResources"
         static let hidesEmptyKinds = "hidesEmptyKinds"
+        static let hidesUnusedCustomResources = "hidesUnusedCustomResources"
 
         static let placementTileSize = "placementTileSize"
         static let placementNodeOrder = "placementNodeOrder"
@@ -140,8 +141,31 @@ final class Preferences {
 
     /// 件数 0 の種別を隠すか。**件数が分かっているものだけを対象にする。**
     /// 未取得を 0 とみなして隠すと、種別そのものが消えたように見える。
+    ///
+    /// **CRD には効かない**（`hidesUnusedCustomResources` が持つ）。数え方が
+    /// 違うので、同じトグルにすると片方の都合でもう片方が動く。
     var hidesEmptyKinds: Bool {
         didSet { store.set(hidesEmptyKinds, forKey: Key.hidesEmptyKinds) }
+    }
+
+    /// 1 件も無い CRD を隠すか。**既定で隠す。**
+    ///
+    /// **`hidesEmptyKinds` と同じトグルにしない。** 一度は兼ねさせたが、
+    /// あちらは既定 off（組み込みの種別を勝手に消さないため）なので、
+    /// **既定のままでは CRD が 1 つも畳まれなかった** —— 実測で 188 種別の
+    /// うち 117（62%）が空振りする状態がそのまま残り、「押しても何も出ない
+    /// のに並んでいる」という当の問題が直っていなかった。しかも
+    /// `hidesEmptyKinds` を on にすると組み込みの種別（0 件の Ingress など）
+    /// まで消えるので、CRD だけ畳みたい人には代わりにならない。
+    ///
+    /// **既定を分けてよいのは、規模が違うから。** 組み込みは 30 種別で
+    /// 全部を数えており、0 件はそのまま「無い」という事実。CRD は数十〜数百に
+    /// なり、そのほとんどがそのクラスタでは使われていない（アドオンが
+    /// 登録しただけの種別）。既定で並べる意味がそもそも薄い。
+    var hidesUnusedCustomResources: Bool {
+        didSet {
+            store.set(hidesUnusedCustomResources, forKey: Key.hidesUnusedCustomResources)
+        }
     }
 
     // MARK: - 配置
@@ -426,6 +450,10 @@ final class Preferences {
         hiddenKinds = Set(store.stringArray(forKey: Key.hiddenKinds) ?? [])
         showsCustomResources = store.object(forKey: Key.showsCustomResources) as? Bool ?? true
         hidesEmptyKinds = store.object(forKey: Key.hidesEmptyKinds) as? Bool ?? false
+        // **既定で隠す。** そのクラスタで使われていない CRD は実測で
+        // 62%（188 種別のうち 117）あり、既定で並べる意味が薄い。
+        hidesUnusedCustomResources =
+            store.object(forKey: Key.hidesUnusedCustomResources) as? Bool ?? true
 
         placementTileSize =
             PlacementTileSize(rawValue: store.string(forKey: Key.placementTileSize) ?? "")
@@ -519,6 +547,7 @@ final class Preferences {
         hiddenKinds = []
         showsCustomResources = true
         hidesEmptyKinds = false
+        hidesUnusedCustomResources = true
         placementTileSize = .medium
         placementNodeOrder = .name
         placementHidesEmptyNodes = false

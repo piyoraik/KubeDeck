@@ -71,33 +71,51 @@ private struct GeneralSettings: View {
 
             Section {
                 Toggle("種別ごとの件数を出す", isOn: $preferences.showsSidebarCounts)
-                Toggle("カスタムリソース（CRD）を出す", isOn: $preferences.showsCustomResources)
                 Toggle("件数が 0 の種別を隠す", isOn: $preferences.hidesEmptyKinds)
+                Toggle("カスタムリソース（CRD）を出す", isOn: $preferences.showsCustomResources)
+                // **CRD は別のトグルで畳む。** 上の「件数が 0 の種別を隠す」に
+                // 相乗りさせていたが、あちらは既定 off なので**既定のままでは
+                // CRD が 1 つも畳まれなかった**（実測で 188 種別のうち 117 が
+                // 空振りする状態がそのまま残っていた）。規模が違うので既定も
+                // 分ける —— CRD はそのクラスタで使われていないものが大半。
+                Toggle("使われていない CRD を隠す", isOn: $preferences.hidesUnusedCustomResources)
             } header: {
                 Text("サイドバー")
             } footer: {
-                // **経路で見え方が変わることを黙らない。** CRD の件数は常駐
-                // proxy 経由でしか数えない（kubectl では種別ごとに 1 プロセス
-                // 起こすことになり、実測で 188 種別に 58 秒かかる）。断りが
-                // 無いと「0 件を隠すが CRD にだけ効かない」「組み込みには
-                // 件数が出るのに CRD には出ない」としか見えず、**原因を探す
-                // 先がこの画面のどこにも無い。**
-                //
-                // **proxy が立てられなかった場合はここで言わない** —— それは
-                // 「接続」タブの読み取りの経路が持っている。設定で切った人と、
-                // 切ったつもりが無いのに落ちている人では、見に行く先が違う。
-                if preferences.showsCustomResources, !preferences.usesAPIProxy {
-                    Label(
-                        """
-                        読み取りの経路が kubectl のあいだ、CRD の件数は数えません\
-                        （種別ごとに 1 プロセス起こすことになるため）。CRD には\
-                        件数が出ず、0 件でも畳まれません。
-                        """,
-                        systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    // **どちらがどちらに効くかを書く。** 書かないと、片方を
+                    // 入れたのに CRD が畳まれない（あるいは組み込みまで消えた）
+                    // 理由が読めない。
+                    if preferences.showsCustomResources {
+                        Text("""
+                            「件数が 0 の種別を隠す」は組み込みの種別に効きます。\
+                            CRD は「使われていない CRD を隠す」が持ちます。
+                            """)
+                            .foregroundStyle(.secondary)
+                    }
+                    // **経路で見え方が変わることを黙らない。** CRD の件数は常駐
+                    // proxy 経由でしか数えない（kubectl では種別ごとに 1 プロセス
+                    // 起こすことになり、実測で 188 種別に 58 秒かかる）。断りが
+                    // 無いと「隠す設定が CRD にだけ効かない」「組み込みには
+                    // 件数が出るのに CRD には出ない」としか見えず、**原因を探す
+                    // 先がこの画面のどこにも無い。**
+                    //
+                    // **proxy が立てられなかった場合はここで言わない** —— それは
+                    // 「接続」タブの読み取りの経路が持っている。設定で切った人と、
+                    // 切ったつもりが無いのに落ちている人では、見に行く先が違う。
+                    if preferences.showsCustomResources, !preferences.usesAPIProxy {
+                        Label(
+                            """
+                            読み取りの経路が kubectl のあいだ、CRD の件数は数えません\
+                            （種別ごとに 1 プロセス起こすことになるため）。CRD には\
+                            件数が出ず、使われていないものも畳まれません。
+                            """,
+                            systemImage: "info.circle")
+                            .foregroundStyle(Palette.textColor(for: .warning))
+                    }
                 }
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {

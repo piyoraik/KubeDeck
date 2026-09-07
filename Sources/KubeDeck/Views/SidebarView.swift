@@ -60,11 +60,14 @@ struct SidebarView: View {
 
     /// API グループごとにまとめた CRD。グループ名の昇順。
     ///
-    /// **押しても空振りする種別を、既定で並べ続けない。** 実測（Connect Gateway
+    /// **押しても空振りする種別を、既定で並べない。** 実測（Connect Gateway
     /// 越しの GKE）で、並んでいた 188 種別のうち中身があるのは **71 だけ**で、
-    /// 残り 117（62%）は押すと「ありません」しか出なかった。組み込みの種別は
-    /// `hidesEmptyKinds` で畳めるのに、ここは件数を見ていなかったので**設定が
-    /// 効いていなかった**（そもそも誰も CRD を数えていなかった）。
+    /// 残り 117（62%）は押すと「ありません」しか出なかった。
+    ///
+    /// **`hidesEmptyKinds` に相乗りさせない**（`hidesUnusedCustomResources`）。
+    /// 一度そうしたが、あちらは既定 off なので**既定のままでは 1 つも畳まれず、
+    /// 当の問題が直っていなかった**（画面を撮って気付いた。Namespace を絞って
+    /// いると件数も伏せるので、見た目が変更前と完全に同じだった）。
     ///
     /// **件数が分からないものは隠さない**（組み込みと同じ規則）。数えていない
     /// のに隠すと「まだ分からない」が「使われていない」になる —— kubectl 経路
@@ -72,7 +75,7 @@ struct SidebarView: View {
     ///
     /// **Namespace を絞っても隠す判断は変えない。** 数えてあるのは全 Namespace の
     /// 件数だが、**全 Namespace で 0 件ならどの Namespace でも 0 件**なので、
-    /// この値のままで正しい（件数の表示のほうは `row(for:)` で伏せる）。
+    /// この値のままで正しい。
     private var customGroups: [(name: String, types: [CustomResourceType])] {
         Dictionary(grouping: store.customTypes.filter(isVisible), by: \.group)
             .map {
@@ -84,7 +87,7 @@ struct SidebarView: View {
     }
 
     private func isVisible(_ type: CustomResourceType) -> Bool {
-        guard Preferences.shared.hidesEmptyKinds else { return true }
+        guard Preferences.shared.hidesUnusedCustomResources else { return true }
         guard let count = store.customCounts[type.resourceName] else { return true }
         // いま開いているものは、0 件でも消さない。
         return count > 0 || store.currentTarget?.customType == type
@@ -94,17 +97,33 @@ struct SidebarView: View {
         HStack {
             Label(type.displayName, systemImage: "puzzlepiece.extension")
             Spacer(minLength: 4)
-            // **Namespace を絞っているあいだは出さない。** 数えてあるのは
-            // 全 Namespace の件数で（絞るたびに 188 往復を掛け直さないため）、
-            // 隣に並ぶ組み込みの数字は絞りに追従する。混ぜると、同じ列に
-            // 意味の違う数字が並ぶ。
-            if Preferences.shared.showsSidebarCounts, store.selectedNamespace == nil,
+            if Preferences.shared.showsSidebarCounts,
                let count = store.customCounts[type.resourceName], count > 0 {
-                Text("\(count)")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                countLabel(count)
             }
+        }
+    }
+
+    /// CRD の件数。
+    ///
+    /// **Namespace を絞っていても出す。** 一度は伏せていた（数えてあるのは
+    /// 全 Namespace の件数なので、絞りに追従する組み込みの数字と意味が違う）が、
+    /// **絞って使う人には件数が 1 つも出ないことになり**、そのほうが害が
+    /// 大きかった（実測の画面で、kube-system を選んでいると CRD の列が
+    /// まるごと数字なしだった）。
+    ///
+    /// **そのかわり黙らない。** 絞っているときだけツールチップで断る
+    /// （絞っていなければ組み込みと同じ意味なので、断りは要らない）。
+    @ViewBuilder
+    private func countLabel(_ count: Int) -> some View {
+        let label = Text("\(count)")
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        if store.selectedNamespace == nil {
+            label
+        } else {
+            label.help("クラスタ全体の件数です（Namespace で絞っても変わりません）")
         }
     }
 

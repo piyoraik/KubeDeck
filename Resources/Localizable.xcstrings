@@ -3460,6 +3460,22 @@
         }
       }
     },
+    "「件数が 0 の種別を隠す」は組み込みの種別に効きます。CRD は「使われていない CRD を隠す」が持ちます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"Hide types with a count of 0\" applies to built-in kinds. CRDs are handled by \"Hide unused CRDs\"."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「件数が 0 の種別を隠す」は組み込みの種別に効きます。CRD は「使われていない CRD を隠す」が持ちます。"
+          }
+        }
+      }
+    },
     "いいえ": {
       "localizations": {
         "en": {
@@ -5246,6 +5262,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "クラスタの状態を取得できません"
+          }
+        }
+      }
+    },
+    "クラスタ全体の件数です（Namespace で絞っても変わりません）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Count across the whole cluster (it does not change when you filter by namespace)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クラスタ全体の件数です（Namespace で絞っても変わりません）"
           }
         }
       }
@@ -7410,6 +7442,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "使っている設定"
+          }
+        }
+      }
+    },
+    "使われていない CRD を隠す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide unused CRDs"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使われていない CRD を隠す"
           }
         }
       }
@@ -12902,18 +12950,18 @@
         }
       }
     },
-    "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、0 件でも畳まれません。": {
+    "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、使われていないものも畳まれません。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "While reads go through kubectl, CRD item counts are not measured (it would start one process per kind). CRDs show no count, and empty ones are not hidden."
+            "value": "While reads go through kubectl, CRD item counts are not measured (it would start one process per kind). CRDs show no count, and unused ones are not hidden."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、0 件でも畳まれません。"
+            "value": "読み取りの経路が kubectl のあいだ、CRD の件数は数えません（種別ごとに 1 プロセス起こすことになるため）。CRD には件数が出ず、使われていないものも畳まれません。"
           }
         }
       }
