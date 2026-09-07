@@ -28,6 +28,51 @@ open "$(xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
   -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR /{print $3}')/KubeDeck.app"
 ```
 
+
+### DerivedData は `.noindex` の中に置く（Spotlight に出る）
+
+**`-derivedDataPath` をリポジトリの中へ向けるなら、名前を `.noindex` で終わらせる**
+（`build/DerivedData.noindex`）。xcodebuild の既定
+（`~/Library/Developer/Xcode/DerivedData`）は `~/Library` ごと Spotlight の対象外だが、
+このリポジトリは `~/work/Development/` の下、つまり**索引される場所**に置いている。
+
+すると `Build/Products/{Debug,Release}/KubeDeck.app` が
+`kMDItemContentType = com.apple.application-bundle` として索引され、**Spotlight で
+「KubeDeck」を引くとアプリケーションが何個も出る**。実測で 8 件あった（`/Applications`
+の 0.7.0 が 1 つ、`build/` の中の 0.1.0 が 6 つ、アンマウント済み DMG の残骸が 1 つ）。
+`.gitignore` に `build/` があっても関係ない —— git の無視と Spotlight の索引は別の話。
+
+**表示だけの問題ではない。** LaunchServices にも登録されるので、そこから古い Debug
+ビルドを**起動できてしまう**。アプリは `com.piyoraik.KubeDeck` の `UserDefaults` を
+共有するので、うっかり起こすと古い版が設定を書き戻す（コンテキストの色や
+読み取り専用の札を含む）。
+
+**`.metadata_never_index` では防げない（実測）。** 対照群つきで確かめた ——
+`build/.metadata_never_index` を置いた配下と、置いていない場所の両方に同じ形の
+`.app` を作ると、**どちらも索引された**。あの目印が効くのはボリュームの直下で、
+任意のディレクトリには効かない。`.noindex` で終わるディレクトリは 52 秒経っても
+`mdfind` に出ない（Xcode 自身も `Intermediates.noindex` でこれを使っている）。
+**効かない目印を置いたままにしない** —— appcast に署名しているつもりで
+1 バイトも効いていなかったのと同じ、無い保護を有ると読ませる形になる。
+
+**すでに索引されたものは、目印を足しても消えない。** 索引は作り直されるときにしか
+効かないので、散らかったあとは実体を消し、LaunchServices からも外す。
+
+```bash
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSR" -dump | grep -oE '^\s*path:\s+.*KubeDeck\.app' | sed 's/^[[:space:]]*path:[[:space:]]*//' | sort -u
+"$LSR" -u <出てきたパス>          # 1 つずつ外す
+mdfind -name KubeDeck.app         # /Applications だけになること
+```
+
+**`lsregister -kill` は使えない**（macOS 26 で削除された。`The -kill option has been
+removed because it was dangerous and no longer useful.`）。データベースごと作り直す
+のではなく、`-u` で 1 つずつ外す。
+
+**使い捨ての DerivedData をリポジトリに散らかさない。** 切り分けのために
+`-derivedDataPath build/DD-hr` のような場所を手で作ると、そのぶんアプリが増えて
+1 つ 400MB 残る（実測で 4 つ・1.8GB）。確かめたら消すこと。
+
 ## 表示文言は String Catalog に集める
 
 ソース言語は **ja**、訳は **en**（`Resources/Localizable.xcstrings`）。

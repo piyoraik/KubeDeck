@@ -76,7 +76,7 @@ jobs:
           set +e
           xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
             -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData-test \
+            -derivedDataPath build/DerivedData-test.noindex \
             > build/xcodebuild-test.log 2>&1
           STATUS=$?
           set -e

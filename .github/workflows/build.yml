@@ -41,7 +41,7 @@ jobs:
           set +e
           xcodebuild test -project KubeDeck.xcodeproj -scheme KubeDeck \
             -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath build/DerivedData.noindex \
             > build/xcodebuild-test.log 2>&1
           STATUS=$?
           set -e
@@ -60,7 +60,7 @@ jobs:
       # `.stringsdata` は直前のテスト実行で吐かれている（`SWIFT_EMIT_LOC_STRINGS`）。
       - name: 表示文言の訳を確かめる
         run: |
-          OBJROOT=build/DerivedData/Build/Intermediates.noindex
+          OBJROOT=build/DerivedData.noindex/Build/Intermediates.noindex
           ARGS=()
           while IFS= read -r f; do
             ARGS+=("--stringsdata=$f")
@@ -111,7 +111,7 @@ jobs:
           set +e
           xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
             -configuration Release -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath build/DerivedData.noindex \
             build > build/xcodebuild.log 2>&1
           STATUS=$?
           set -e
@@ -124,7 +124,7 @@ jobs:
       - name: 署名が崩れていないこと
         # Sparkle は「署名付きだったものが署名無しになる」更新を拒む。
         # ad-hoc であっても、崩れていると次の版から更新できなくなる。
-        run: codesign --verify --deep --strict build/DerivedData/Build/Products/Release/KubeDeck.app
+        run: codesign --verify --deep --strict build/DerivedData.noindex/Build/Products/Release/KubeDeck.app
 
       - name: ビルドの記録を残す
         if: failure()
