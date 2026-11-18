@@ -126,6 +126,9 @@ struct OverviewSnapshot: Sendable {
     /// 落ちうる。ここに入れておかないと `counts` を 0 で埋める側がそれを
     /// 「1 件も無い」として数える。
     var failedKinds: [ResourceKind] = []
+    /// ついでに読めた Namespace の名前。**nil は「読めなかった」**（拒まれた・
+    /// 取れなかった）。空にすると絞り込みのメニューが中身ごと消える。
+    var namespaceNames: [String]?
 
     func count(_ kind: ResourceKind) -> Int { counts[kind] ?? 0 }
 

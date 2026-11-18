@@ -865,6 +865,15 @@ final class ClusterStore {
 
     // MARK: - 読み込み
 
+    /// 人が押した更新（⌘R・ツールバー）。表示中のものに加えて Namespace の
+    /// 一覧も引き直す。**`reload()` に混ぜない** —— あちらは種別や Namespace を
+    /// 切り替えるたびにも走るので、そのたびに kubectl が 1 本増える。
+    func refresh() {
+        reload()
+        let token = contextGeneration
+        Task { await loadNamespaces(token: token) }
+    }
+
     func reload(showsSpinner: Bool = true) {
         // 起こす先が無いなら読み込み中でもない。**黙って return しない** ——
         // `bootstrap()` が先に立てた印がそのまま残り、いつまでも
@@ -895,6 +904,7 @@ final class ClusterStore {
                     guard token == self.generation else { return }
                     self.overview = snapshot
                     self.serverVersion = snapshot.serverVersion
+                    if let names = snapshot.namespaceNames { self.adoptNamespaces(names) }
                 case .placement:
                     // Pod・ノード・所有者を 1 回の kubectl でまとめて取る。
                     // 別々に投げるとプロセスがそのぶん増え、片方だけ新しい
@@ -963,6 +973,9 @@ final class ClusterStore {
                     // 既定の並びに落としてから、見出しを押していればその列で並べ直す。
                     self.objects = self.sortedForDisplay(
                         Self.sorted(loaded, kind: target.builtIn))
+                    if target.builtIn == .namespace {
+                        self.adoptNamespaces(loaded.map(\.name))
+                    }
                 }
                 // 直前まで失敗していたか。取れるようになった瞬間を拾うため、
                 // 消す前に見ておく。
@@ -1054,6 +1067,7 @@ final class ClusterStore {
         snapshot.deniedKinds = listed.denied + (readNodes == nil ? [.node] : [])
         snapshot.unknownKinds = listed.unknown
         snapshot.failedKinds = listed.failed
+        snapshot.namespaceNames = Self.namespaceNames(in: all, uncounted: listed.uncounted)
 
         snapshot.pods = StatusTally.make(from: byKind[.pod] ?? [])
         snapshot.nodes = StatusTally.make(from: nodeObjects)
@@ -1382,6 +1396,9 @@ final class ClusterStore {
         overview.deniedKinds = listed.denied
         overview.unknownKinds = listed.unknown
         overview.failedKinds = listed.failed
+        if let names = Self.namespaceNames(in: listed.objects, uncounted: listed.uncounted) {
+            adoptNamespaces(names)
+        }
     }
 
     /// まとめて数える種別。Node も含めるので、概要の別取得とは別に持つ。
@@ -1397,10 +1414,28 @@ final class ClusterStore {
         let token = token ?? contextGeneration
 
         // Namespace の一覧権限が無いクラスタもある。絞り込みが使えないだけなので、
-        // 画面全体をエラーにはしない。
-        let listed = (try? await kubectl.namespaces(context: context)) ?? []
+        // 画面全体をエラーにはしない。**失敗で空に上書きしない** —— 引き直しが
+        // 一過性で落ちただけで、読めていた一覧ごとメニューが消える。
+        guard let listed = try? await kubectl.namespaces(context: context) else { return }
         guard token == contextGeneration else { return }
-        namespaces = listed
+        adoptNamespaces(listed)
+    }
+
+    /// 絞り込みのメニューに並べる名前を差し替える。同じなら触らない
+    /// （メニューを毎回作り直させない）。
+    private func adoptNamespaces(_ names: [String]) {
+        let sorted = names.sorted()
+        if sorted != namespaces { namespaces = sorted }
+    }
+
+    /// まとめ取りの結果から Namespace の名前を拾う。**読めなかったなら nil**
+    /// —— 拒まれた種別は items に現れないので、空配列と区別しないと
+    /// 「Namespace が 1 つも無い」に化ける。
+    nonisolated static func namespaceNames(
+        in objects: [K8sObject], uncounted: [ResourceKind]
+    ) -> [String]? {
+        guard !uncounted.contains(.namespace) else { return nil }
+        return objects.filter { $0.kind == .namespace }.map(\.name).sorted()
     }
 
     /// 一覧の既定の並び。問題のあるものを上に出す。

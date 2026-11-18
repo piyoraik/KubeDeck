@@ -44,7 +44,7 @@ struct KubeDeckApp: App {
                     .disabled(!updater.canCheckForUpdates)
             }
             CommandGroup(after: .toolbar) {
-                Button("再読み込み") { store.reload() }
+                Button("再読み込み") { store.refresh() }
                     .keyboardShortcut("r", modifiers: .command)
                 Toggle("自動更新", isOn: Binding(
                     get: { store.autoRefresh },

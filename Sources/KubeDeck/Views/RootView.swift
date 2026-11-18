@@ -508,7 +508,7 @@ struct RootView: View {
         } label: {
             Label("再読み込み", systemImage: "arrow.clockwise")
         } primaryAction: {
-            store.reload()
+            store.refresh()
         }
         .help("いま表示しているものを読み直す（⌘R）")
     }
