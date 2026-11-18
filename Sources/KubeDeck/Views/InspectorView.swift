@@ -644,8 +644,9 @@ private struct EventsPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // minHeight: 0 が無いと、折り返す文言の最小高さが窓まで伝わり、窓の中身ごと下へはみ出す。
             content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             // 失敗したときも出す。出さないと引き直す手段が無くなる。
             if events != nil || failure != nil {
                 Divider()
