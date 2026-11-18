@@ -1192,22 +1192,6 @@
         }
       }
     },
-    "%lld 文字": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld characters"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 文字"
-          }
-        }
-      }
-    },
     "%lld 時間": {
       "localizations": {
         "en": {
@@ -2752,6 +2736,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "YAML を編集…"
+          }
+        }
+      }
+    },
+    "base64 として読めないのでコピーできません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't copy: not valid base64"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "base64 として読めないのでコピーできません"
           }
         }
       }
@@ -6014,6 +6014,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "ノード別"
+          }
+        }
+      }
+    },
+    "バイナリなので文字列としてコピーできません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't copy as text: the value is binary"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "バイナリなので文字列としてコピーできません"
           }
         }
       }
@@ -9716,6 +9732,22 @@
         }
       }
     },
+    "復号した値をコピー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy decoded value"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "復号した値をコピー"
+          }
+        }
+      }
+    },
     "応答がありません。": {
       "localizations": {
         "en": {
@@ -11760,6 +11792,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "稼働中 · %@"
+          }
+        }
+      }
+    },
+    "空": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空"
           }
         }
       }

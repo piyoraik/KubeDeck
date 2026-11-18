@@ -14,6 +14,8 @@ struct SettingRow: Identifiable, Sendable {
     /// 値が未設定のときに立てる。表示側が薄く出す。
     var isUnset = false
     var level: StatusLevel?
+    /// Secret の `data` の原文（base64）。表示はせず、復号してコピーするためだけに持つ。
+    var secretData: String?
 
     /// **画面に出る決まった文言は 1 度だけ引く。** 設定タブは行数ぶん
     /// 作り直されるので、行ごとに引くと同じ探索を繰り返す。
@@ -98,6 +100,7 @@ enum SettingsDigest {
     private static let allNamespaces = String(localized: "すべての Namespace")
     private static let allPods = String(localized: "すべての Pod")
     private static let hasValue = String(localized: "設定あり")
+    private static let emptyValue = String(localized: "空")
     /// **1 つの文に 1 つの鍵。** `status` と補足を `+` で継ぎ足すと、訳す側は
     /// 語順を変えられない（`Spread (preferred)` になったのと同じ）。
     private static let scaleWithStatus =
@@ -691,12 +694,13 @@ enum SettingsDigest {
                 rows: data.isEmpty
                     ? [SettingRow("キー", nil)]
                     : data.keys.sorted().map { key in
-                        // Secret の中身は出さない。大きさだけ出す。
-                        let size = data[key]?.stringValue?.count ?? 0
-                        return SettingRow(
-                            name: key,
-                            object.kind == .secret
-                                ? String(localized: "\(size) 文字") : hasValue)
+                        // Secret の中身は出さない（コピーはできる）。空かどうかだけは言う —
+                        // 空の値はそれ自体が失敗の原因になる。
+                        let encoded = data[key]?.stringValue
+                        var row = SettingRow(
+                            name: key, encoded?.isEmpty == false ? hasValue : emptyValue)
+                        if object.kind == .secret { row.secretData = encoded }
+                        return row
                     }))
         return groups
     }
@@ -1049,5 +1053,23 @@ enum SettingsDigest {
             return name.map { String(localized: "\(text)（\($0)）") } ?? text
         }
         return nil
+    }
+}
+
+/// Secret の `data` の 1 値を復号した結果。
+///
+/// **バイナリを文字列にしてコピーしない。** keystore や証明書の DER は UTF-8 で
+/// 読めず、壊れた文字列を貼ると「値が違う」としか見えない。
+enum SecretPlaintext: Equatable, Sendable {
+    case text(String)
+    /// base64 としては読めたが UTF-8 ではない。
+    case binary
+    /// base64 として読めない。API サーバは改行も空白も入れないので、緩めて読まない。
+    case invalid
+
+    static func decode(_ base64: String) -> SecretPlaintext {
+        guard let data = Data(base64Encoded: base64) else { return .invalid }
+        guard let text = String(data: data, encoding: .utf8) else { return .binary }
+        return .text(text)
     }
 }

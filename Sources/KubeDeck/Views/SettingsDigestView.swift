@@ -104,6 +104,57 @@ private struct SettingRowView: View {
                 .foregroundStyle(row.isUnset ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
                 .textSelection(.enabled)
                 .lineLimit(4)
+            if let encoded = row.secretData {
+                SecretCopyButton(plaintext: SecretPlaintext.decode(encoded))
+            }
         }
+    }
+}
+
+/// Secret の値を復号してコピーする。**画面には平文を出さない**（共有されうる画面なので）。
+private struct SecretCopyButton: View {
+    let plaintext: SecretPlaintext
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            guard case .text(let text) = plaintext else { return }
+            Self.copy(text)
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10))
+                .frame(width: 12)
+        }
+        .buttonStyle(.borderless)
+        .disabled(!isText)
+        .help(help)
+    }
+
+    private var isText: Bool {
+        if case .text = plaintext { return true }
+        return false
+    }
+
+    private var help: String {
+        switch plaintext {
+        case .text: String(localized: "復号した値をコピー")
+        case .binary: String(localized: "バイナリなので文字列としてコピーできません")
+        case .invalid: String(localized: "base64 として読めないのでコピーできません")
+        }
+    }
+
+    /// クリップボード履歴のアプリに残させない目印（nspasteboard.org の慣習。1Password などと同じ）。
+    private static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
+    private static func copy(_ text: String) {
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(text, forType: .string)
+        board.setString("", forType: concealed)
     }
 }
