@@ -488,7 +488,8 @@ final class Preferences {
         usageWarningPercent = store.object(forKey: Key.usageWarningPercent) as? Int ?? 80
         usageCriticalPercent = store.object(forKey: Key.usageCriticalPercent) as? Int ?? 90
 
-        autoRefresh = store.object(forKey: Key.autoRefresh) as? Bool ?? true
+        // 既定は切る（CLAUDE.md「自動更新は既定で切ってある」）。
+        autoRefresh = store.object(forKey: Key.autoRefresh) as? Bool ?? false
         refreshInterval = store.object(forKey: Key.refreshInterval) as? TimeInterval ?? 10
         requestTimeoutSeconds = store.object(forKey: Key.requestTimeoutSeconds) as? Int ?? 20
         kubectlPathOverride = store.string(forKey: Key.kubectlPathOverride) ?? ""
@@ -566,7 +567,7 @@ final class Preferences {
         historyRefreshSeconds = 60
         usageWarningPercent = 80
         usageCriticalPercent = 90
-        autoRefresh = true
+        autoRefresh = false
         refreshInterval = 10
         requestTimeoutSeconds = 20
         kubectlPathOverride = ""

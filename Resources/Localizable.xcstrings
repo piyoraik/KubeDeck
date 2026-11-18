@@ -1176,6 +1176,22 @@
         }
       }
     },
+    "%lld 分前に取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated %lld min ago"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 分前に取得"
+          }
+        }
+      }
+    },
     "%lld 回": {
       "localizations": {
         "en": {
@@ -1204,6 +1220,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 時間"
+          }
+        }
+      }
+    },
+    "%lld 時間前に取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated %lld hr ago"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 時間前に取得"
           }
         }
       }
@@ -4468,6 +4500,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "その他"
+          }
+        }
+      }
+    },
+    "たったいま取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated just now"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "たったいま取得"
           }
         }
       }
@@ -8134,6 +8182,22 @@
         }
       }
     },
+    "切っていても、削除したものが消えるまでと、再起動などの入れ替わりが終わるまでは取り直します（最長 %lld 分）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Even when this is off, the list keeps refreshing until deleted items are gone and until restarts and other rollouts finish (up to %lld min)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切っていても、削除したものが消えるまでと、再起動などの入れ替わりが終わるまでは取り直します（最長 %lld 分）。"
+          }
+        }
+      }
+    },
     "初期化コンテナ": {
       "localizations": {
         "en": {
@@ -10720,22 +10784,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "最終実行"
-          }
-        }
-      }
-    },
-    "最終更新": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Last updated"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最終更新"
           }
         }
       }

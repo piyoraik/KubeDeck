@@ -238,3 +238,21 @@ struct SidebarFoldingTests {
         #expect(!preferences.hidesEmptyKinds)
     }
 }
+
+@Suite("自動更新")
+@MainActor
+struct AutoRefreshDefaultTests {
+
+    /// 操作のあとの取り直し（`FollowUp`）は、このトグルと関係なく効く。
+    @Test("自動更新は既定で切ってある")
+    func offByDefault() {
+        let preferences = Preferences.shared
+        let saved = preferences.autoRefresh
+        defer { preferences.autoRefresh = saved }
+
+        preferences.autoRefresh = true
+        preferences.resetAll()
+
+        #expect(!preferences.autoRefresh)
+    }
+}

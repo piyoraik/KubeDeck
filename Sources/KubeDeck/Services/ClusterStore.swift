@@ -66,6 +66,7 @@ final class ClusterStore {
             // ほう）で飛ぶので、同名のものがあれば**別のクラスタのものが消える**。
             // 「見えている選択と操作する対象を揃える」が、ここだけ破れていた。
             discardLoadedResources()
+            stopFollowing()
             // 取得元はクラスタごとに違う。持ち越すと別クラスタの値を出す。
             metrics = MetricsSnapshot()
             metricsServerAvailable = nil
@@ -401,8 +402,13 @@ final class ClusterStore {
     private var isBootstrapping = false
     private var loadTask: Task<Void, Never>?
     private var tickerTask: Task<Void, Never>?
+    /// 操作のあと、落ち着くまで取り直している対象。自動更新を切っていても効く。
+    private var followUp: FollowUp?
+    private var followTask: Task<Void, Never>?
     /// 遅れて返ってきた古い結果で新しい表示を上書きしないための世代番号。
     private var generation = 0
+    /// 最後に取り込めた一覧の世代。
+    private var loadedGeneration = 0
 
     /// コンテキストに紐づく調べもの（Namespace 一覧・CRD・メトリクスの取得元）の世代。
     ///
@@ -863,6 +869,42 @@ final class ClusterStore {
         }
     }
 
+    /// 操作のあと、落ち着くまで（最長 `FollowUp.limit`）取り直す。直前の `reload` の世代から判定する。
+    private func follow(_ targets: [FollowUp.Target]) {
+        guard !targets.isEmpty, !currentContext.isEmpty else { return }
+        let now = Date()
+        if var current = followUp, current.context == currentContext {
+            current.add(targets, generation: generation, now: now)
+            followUp = current
+        } else {
+            followUp = FollowUp(
+                context: currentContext, targets: targets, generation: generation, now: now)
+        }
+        guard followTask == nil else { return }
+        followTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: FollowUp.interval)
+                guard let self, !Task.isCancelled else { return }
+                guard var followUp = self.followUp, followUp.context == self.currentContext
+                else { break }
+                followUp.prune(loaded: self.objects, loadedGeneration: self.loadedGeneration)
+                self.followUp = followUp
+                if followUp.isFinished(now: Date()) { break }
+                guard self.isWindowVisible, !self.isFetching else { continue }
+                self.reload(showsSpinner: false)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.followUp = nil
+            self.followTask = nil
+        }
+    }
+
+    private func stopFollowing() {
+        followTask?.cancel()
+        followTask = nil
+        followUp = nil
+    }
+
     // MARK: - 読み込み
 
     /// 人が押した更新（⌘R・ツールバー）。表示中のものに加えて Namespace の
@@ -982,6 +1024,7 @@ final class ClusterStore {
                 let wasFailing = self.errorMessage != nil
                 self.errorMessage = nil
                 self.lastUpdated = Date()
+                self.loadedGeneration = token
                 await self.refreshMetrics()
                 if showsSpinner || wasFailing {
                     await self.recoverClusterInfoIfNeeded()
@@ -1645,7 +1688,10 @@ final class ClusterStore {
         guard let resource = currentResourceName else { return }
         // **「削除しました」と言わない。** `--wait=false` で投げているので、
         // 戻ってきた時点ではまだ消えていない。行もしばらく残る（Terminating）。
-        await perform("\(object.name) の削除を要求しました。消えるまで少しかかります") {
+        await perform(
+            "\(object.name) の削除を要求しました。消えるまで少しかかります",
+            following: [FollowUp.Target.gone(object)].compactMap { $0 }
+        ) {
             try await self.kubectl.delete(
                 resource: resource, object: object, context: self.currentContext)
         }
@@ -1670,7 +1716,10 @@ final class ClusterStore {
             await delete(objects[0])
             return
         }
-        await perform("\(objects.count) 件の削除を要求しました。消えるまで少しかかります") {
+        await perform(
+            "\(objects.count) 件の削除を要求しました。消えるまで少しかかります",
+            following: objects.compactMap(FollowUp.Target.gone)
+        ) {
             try await self.kubectl.delete(
                 resource: resource, objects: objects, context: self.currentContext)
         }
@@ -1690,14 +1739,20 @@ final class ClusterStore {
     }
 
     func scale(_ object: K8sObject, to replicas: Int) async {
-        await perform("\(object.name) のレプリカ数を \(replicas) にしました") {
+        await perform(
+            "\(object.name) のレプリカ数を \(replicas) にしました",
+            following: [FollowUp.Target.rolledOut(object)].compactMap { $0 }
+        ) {
             try await self.kubectl.scale(object, to: replicas, context: self.currentContext)
         }
     }
 
     func restart(_ object: K8sObject) async {
         // 入れ替わるのはこれから。「再起動しました」は言い過ぎ。
-        await perform("\(object.name) のローリング再起動を始めました") {
+        await perform(
+            "\(object.name) のローリング再起動を始めました",
+            following: [FollowUp.Target.rolledOut(object)].compactMap { $0 }
+        ) {
             try await self.kubectl.rolloutRestart(object, context: self.currentContext)
         }
     }
@@ -1740,6 +1795,7 @@ final class ClusterStore {
                 showNotice("\(object.name) の資源の割り当てを変えました")
                 try? await Task.sleep(for: .milliseconds(400))
                 reload(showsSpinner: false)
+                follow([FollowUp.Target.rolledOut(object)].compactMap { $0 })
             }
             return .success(message)
         } catch {
@@ -1774,6 +1830,7 @@ final class ClusterStore {
             showNotice("\(object.name) の YAML を書き戻しました")
             try? await Task.sleep(for: .milliseconds(400))
             reload(showsSpinner: false)
+            follow([FollowUp.Target.rolledOut(object)].compactMap { $0 })
             return .success(())
         } catch {
             return .failure(error)
@@ -1826,7 +1883,10 @@ final class ClusterStore {
         let target = revision.map { String(localized: "第 \($0) 世代") }
             ?? String(localized: "1 つ前の世代")
         // 入れ替わるのはこれから。「戻しました」は言い過ぎ。
-        await perform("\(object.name) を \(target) に戻す要求をしました") {
+        await perform(
+            "\(object.name) を \(target) に戻す要求をしました",
+            following: [FollowUp.Target.rolledOut(object)].compactMap { $0 }
+        ) {
             try await self.kubectl.rolloutUndo(
                 object, toRevision: revision, dryRun: false, context: self.currentContext)
         }
@@ -1836,7 +1896,7 @@ final class ClusterStore {
         let notice: LocalizedStringResource = paused
             ? "\(object.name) の更新を止めました"
             : "\(object.name) の更新を再開しました"
-        await perform(notice) {
+        await perform(notice, following: [FollowUp.Target.rolledOut(object)].compactMap { $0 }) {
             try await self.kubectl.rolloutPause(
                 object, paused: paused, context: self.currentContext)
         }
@@ -1890,7 +1950,9 @@ final class ClusterStore {
     /// 「`\(object.name)` の削除を要求しました」のような日本語をそのまま書き、
     /// 鍵はその原文になる（対象の名前は書式指定子に落ちる）。
     private func perform(
-        _ notice: LocalizedStringResource, _ action: @escaping () async throws -> Void,
+        _ notice: LocalizedStringResource,
+        following targets: [FollowUp.Target] = [],
+        _ action: @escaping () async throws -> Void,
         describedAs what: LocalizedStringResource = "この操作"
     ) async {
         guard !refuseIfReadOnly(what) else { return }
@@ -1902,6 +1964,7 @@ final class ClusterStore {
             // 変更前の状態が返ってきて、失敗したように見える。
             try? await Task.sleep(for: .milliseconds(400))
             reload(showsSpinner: false)
+            follow(targets)
         } catch {
             // 失敗したときに前の成功が残っていると、どちらの話か分からない。
             actionNotice = nil

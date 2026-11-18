@@ -11,6 +11,8 @@ struct RootView: View {
     @State private var dockInspectorWidth: CGFloat = 380
     /// エラーの元の文言を開いているか。既定は畳んでおく。
     @State private var showsErrorDetail = false
+    /// 副題に出す経過の基準時刻。
+    @State private var clock = Date()
     /// 確認待ちの操作と、開いているシート。**一覧・詳細パネル・メニューバーで 1 つ。**
     /// 持ち主はアプリ（`KubeDeckApp`）—— コマンドはウインドウの外側にいるので、
     /// ここで `@State` にするとメニューから手が届かない。
@@ -91,6 +93,13 @@ struct RootView: View {
                 for: NSApplication.didChangeOcclusionStateNotification)
         ) { _ in
             store.isWindowVisible = NSApp.occlusionState.contains(.visible)
+        }
+        // 副題の「N 分前に取得」を進める。
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                clock = Date()
+            }
         }
         .overlay(alignment: .bottom) { errorBar }
         // **「元の文言」の開閉を持ち越さない。** `@State` はエラーが変わっても
@@ -351,11 +360,14 @@ struct RootView: View {
             if store.errorMessage != nil, store.objects.isEmpty {
                 return String(localized: "取得できません")
             }
-            return String(localized: """
+            return withFreshness(String(localized: """
                 \(store.placementNodes.count) ノード · \(store.filteredObjects.count) Pod
-                """)
+                """))
         }
-        guard case .resource = store.selection else { return "" }
+        guard case .resource = store.selection else {
+            // 概要は件数を持たない。読めているときだけ経過を出す。
+            return store.hasOverviewData ? withFreshness(nil) : ""
+        }
         if store.errorMessage != nil, store.objects.isEmpty {
             return String(localized: "取得できません")
         }
@@ -368,9 +380,15 @@ struct RootView: View {
         // 2 か所に置かない）。1 件のときは書かない — ふつうがそちらなので、
         // 常に出すと件数が読みにくくなるだけ。
         let selected = store.selectedObjectIDs.count
-        return selected > 1
+        return withFreshness(selected > 1
             ? String(localized: "\(counts) · \(selected) 件選択中")
-            : counts
+            : counts)
+    }
+
+    /// 取ってからの経過を添える。自動更新を切っていると、画面は取ったときの姿のまま止まる。
+    private func withFreshness(_ base: String?) -> String {
+        let freshness = store.lastUpdated.map { Freshness.label(since: $0, now: clock) }
+        return [base, freshness].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// 絞り込み欄の文言。**画面ごとに相手が違う。** 配置の「たどる」で絞るのは

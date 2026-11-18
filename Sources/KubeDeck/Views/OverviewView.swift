@@ -69,7 +69,7 @@ struct OverviewView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 // 回転と色だけに意味を持たせない。状態は文字でも出す。
-                // バージョンと最終更新はここに書かない。右のパネルが持っている。
+                // バージョンは右のパネル、取ってからの経過は副題が持っている。ここに書かない。
                 Label(activityText, systemImage: store.clusterHealth.symbol)
                     .font(.caption)
                     .foregroundStyle(Palette.textColor(for: store.clusterHealth))

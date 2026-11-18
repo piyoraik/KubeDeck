@@ -928,7 +928,7 @@ private struct ClusterSummaryPane: View {
     }
 
     /// **本文と同じことを書かない。** コンテキスト名と状態は概要の見出しが、
-    /// 件数はサイドバーが、Namespace はツールバーが持っている。
+    /// 件数はサイドバーが、Namespace はツールバーが、取ってからの経過は副題が持っている。
     /// ここに残すのは、どこにも出ていないものだけ。
     private var clusterRows: [(LocalizedStringResource, String)] {
         var rows: [(LocalizedStringResource, String)] = []
@@ -938,9 +938,6 @@ private struct ClusterSummaryPane: View {
             store.autoRefresh
                 ? String(localized: "\(Int(store.refreshInterval)) 秒ごと")
                 : String(localized: "停止中")))
-        if let lastUpdated = store.lastUpdated {
-            rows.append(("最終更新", lastUpdated.formatted(date: .omitted, time: .standard)))
-        }
         return rows.filter { !$0.1.isEmpty }
     }
 

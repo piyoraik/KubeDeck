@@ -648,6 +648,13 @@ private struct ConnectionSettings: View {
                 .disabled(!store.autoRefresh)
             } header: {
                 Text("一覧の更新")
+            } footer: {
+                // 切っていても画面が止まりきらない理由を書く。書かないと、操作のあとの取り直しが自動更新に見える。
+                Text("""
+                    切っていても、削除したものが消えるまでと、再起動などの入れ替わりが\
+                    終わるまでは取り直します（最長 \(Int(FollowUp.limit / 60)) 分）。
+                    """)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
