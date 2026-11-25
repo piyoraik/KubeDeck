@@ -4738,6 +4738,22 @@
         }
       }
     },
+    "まとめてコピー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy All"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "まとめてコピー"
+          }
+        }
+      }
+    },
     "まとめてログを別ウインドウで見る": {
       "localizations": {
         "en": {
@@ -4862,6 +4878,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "アクセス制御"
+          }
+        }
+      }
+    },
+    "アップデート": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデート"
           }
         }
       }
@@ -5234,18 +5266,18 @@
         }
       }
     },
-    "クラスタに `%@` という種別が見つかりませんでした。認証や経路ではなく、kubectl がこの種別を解決できていません。\n考えられるのは 2 つで、対処が違います。\n・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。\n・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が応答しないと、そのグループが丸ごと一覧から落ちます。\nKubeDeck はこの文言を受けると、覚えている一覧を捨てて 1 度だけ引き直します（捨て直しは 1 分に 1 回まで）。それでも同じなので、覚えている一覧が古いだけ、という線は薄いです。\nターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` にAVAILABLE=False が無いかを確かめてください。KubeDeck の一覧はターミナルとは別に持っているので（設定の「接続」に置き場所を出しています）、片方だけで起きることもあります。": {
+    "クラスタに `%@` という種別が見つかりませんでした。認証や経路ではなく、kubectl がこの種別を解決できていません。\n考えられるのは 2 つで、対処が違います。\n・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。\n・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が応答しないと、そのグループが丸ごと一覧から落ちます。\nKubeDeck はこの文言を受けると、覚えている一覧を捨てて 1 度だけ引き直します（捨て直しは 1 分に 1 回まで）。それでも同じなので、覚えている一覧が古いだけ、という線は薄いです。\nターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` にAVAILABLE=False が無いかを確かめてください。KubeDeck の一覧はターミナルとは別に持っているので（設定の「診断」に置き場所を出しています）、片方だけで起きることもあります。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The cluster has no type called `%@`. This is not authentication or routing — kubectl cannot resolve the type.\nThere are two possibilities, and the fix differs.\n・It really does not exist (a CRD or add-on was removed, or this cluster does not have that API group).\n・The API list (discovery) is the incomplete one. When an aggregated API server (APIService) does not respond, its whole group drops out of the list.\nOn seeing this message KubeDeck discards the list it remembers and fetches once more (at most once a minute). Since the result is the same, a merely stale list is unlikely.\nCheck whether it appears in `kubectl api-resources` in a terminal, and whether `kubectl get apiservices` shows AVAILABLE=False. KubeDeck keeps its list apart from the terminal's (the location is shown in Settings › Connection), so this can happen on only one side."
+            "value": "The cluster has no type called `%@`. This is not authentication or routing — kubectl cannot resolve the type.\nThere are two possibilities, and the fix differs.\n・It really does not exist (a CRD or add-on was removed, or this cluster does not have that API group).\n・The API list (discovery) is the incomplete one. When an aggregated API server (APIService) does not respond, its whole group drops out of the list.\nOn seeing this message KubeDeck discards the list it remembers and fetches once more (at most once a minute). Since the result is the same, a merely stale list is unlikely.\nCheck whether it appears in `kubectl api-resources` in a terminal, and whether `kubectl get apiservices` shows AVAILABLE=False. KubeDeck keeps its list apart from the terminal's (the location is shown in Settings › Diagnostics), so this can happen on only one side."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "クラスタに `%@` という種別が見つかりませんでした。認証や経路ではなく、kubectl がこの種別を解決できていません。\n考えられるのは 2 つで、対処が違います。\n・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。\n・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が応答しないと、そのグループが丸ごと一覧から落ちます。\nKubeDeck はこの文言を受けると、覚えている一覧を捨てて 1 度だけ引き直します（捨て直しは 1 分に 1 回まで）。それでも同じなので、覚えている一覧が古いだけ、という線は薄いです。\nターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` にAVAILABLE=False が無いかを確かめてください。KubeDeck の一覧はターミナルとは別に持っているので（設定の「接続」に置き場所を出しています）、片方だけで起きることもあります。"
+            "value": "クラスタに `%@` という種別が見つかりませんでした。認証や経路ではなく、kubectl がこの種別を解決できていません。\n考えられるのは 2 つで、対処が違います。\n・本当に無い（CRD やアドオンを外した、その API グループを持たないクラスタ）。\n・API の一覧（discovery）のほうが欠けている。集約 API サーバ（APIService）が応答しないと、そのグループが丸ごと一覧から落ちます。\nKubeDeck はこの文言を受けると、覚えている一覧を捨てて 1 度だけ引き直します（捨て直しは 1 分に 1 回まで）。それでも同じなので、覚えている一覧が古いだけ、という線は薄いです。\nターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` にAVAILABLE=False が無いかを確かめてください。KubeDeck の一覧はターミナルとは別に持っているので（設定の「診断」に置き場所を出しています）、片方だけで起きることもあります。"
           }
         }
       }
@@ -7174,6 +7206,22 @@
         }
       }
     },
+    "下の内容を貼って共有できます。鍵やトークンに見える値は伏せてあります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can paste this to share it. Values that look like keys or tokens are hidden."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下の内容を貼って共有できます。鍵やトークンに見える値は伏せてあります。"
+          }
+        }
+      }
+    },
     "下の帯の高さを変える": {
       "localizations": {
         "en": {
@@ -7814,18 +7862,18 @@
         }
       }
     },
-    "入っているのにここで見つからないときは、KubeDeck から見える PATH に その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。": {
+    "入っているのにここで見つからないときは、KubeDeck から見える PATH に その場所がありません。設定の「診断」で、いま渡している PATH を確認できます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If it is installed but still not found here, its directory is not on the PATH KubeDeck sees. Settings › Connection shows the PATH being passed."
+            "value": "If it is installed but still not found here, its directory is not on the PATH KubeDeck sees. Settings › Diagnostics shows the PATH being passed."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "入っているのにここで見つからないときは、KubeDeck から見える PATH に その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。"
+            "value": "入っているのにここで見つからないときは、KubeDeck から見える PATH に その場所がありません。設定の「診断」で、いま渡している PATH を確認できます。"
           }
         }
       }
@@ -10484,22 +10532,6 @@
         }
       }
     },
-    "更新": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新"
-          }
-        }
-      }
-    },
     "更新を再開 (rollout resume)…": {
       "localizations": {
         "en": {
@@ -12232,22 +12264,6 @@
         }
       }
     },
-    "自動で確認する": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check automatically"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "自動で確認する"
-          }
-        }
-      }
-    },
     "自動で見つからないときに使います。API サーバのプロキシ経由で繋ぐので、ポートは Service のポート番号です（port-forward は不要）。": {
       "localizations": {
         "en": {
@@ -12477,7 +12493,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Appearance"
+            "value": "View"
           }
         },
         "ja": {
@@ -12862,6 +12878,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "許容する汚れ"
+          }
+        }
+      }
+    },
+    "診断": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "診断"
           }
         }
       }

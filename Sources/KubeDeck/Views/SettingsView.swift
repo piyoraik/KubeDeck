@@ -2,9 +2,14 @@ import SwiftUI
 
 struct SettingsView: View {
     var body: some View {
+        // 変えるものと「いまどうなっているか」を同じタブに積まない（診断で設定が埋もれる）。
         TabView {
             GeneralSettings()
                 .tabItem { Label("一般", systemImage: "gearshape") }
+            ViewSettings()
+                .tabItem { Label("表示", systemImage: "macwindow") }
+            PlacementSettings()
+                .tabItem { Label("配置", systemImage: "rectangle.3.group") }
             LogSettings()
                 .tabItem { Label("ログ", systemImage: "text.alignleft") }
             MetricsSettings()
@@ -13,8 +18,8 @@ struct SettingsView: View {
                 .tabItem { Label("コンテキスト", systemImage: "flag") }
             ConnectionSettings()
                 .tabItem { Label("接続", systemImage: "network") }
-            UpdateSettings()
-                .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+            DiagnosticsSettings()
+                .tabItem { Label("診断", systemImage: "stethoscope") }
         }
         // 高さを決めておかないと、下の項目が畳まれて見えない。
         .frame(width: 560, height: 640)
@@ -24,7 +29,6 @@ struct SettingsView: View {
 // MARK: - 一般
 
 private struct GeneralSettings: View {
-    @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
     @State private var confirmsReset = false
 
@@ -38,8 +42,6 @@ private struct GeneralSettings: View {
                         Text(language.title).tag(language)
                     }
                 }
-            } header: {
-                Text("表示")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("""
@@ -69,6 +71,47 @@ private struct GeneralSettings: View {
                 }
             }
 
+            ListRefreshSection()
+
+            UpdateSections()
+
+            Section {
+                Button("すべて既定値に戻す", role: .destructive) { confirmsReset = true }
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog(
+            "すべての設定を既定値に戻しますか？",
+            isPresented: $confirmsReset
+        ) {
+            Button("戻す", role: .destructive) { preferences.resetAll() }
+            Button("やめる", role: .cancel) {}
+        } message: {
+            // **残るものを正確に書く。** 以前は `contextProfiles` も消して
+            // いたのに「コンテキストは残ります」と書いており、読み取り専用の
+            // 指定が黙って外れていた。いまは消さないので、そう書ける。
+            // **戻るものも名指しする。** 言語は見た目の既定値なので戻すが、
+            // 反映は次の起動からなので、そう書かないと「戻したのに英語のまま」
+            // に見える。
+            Text("""
+                接続先のコンテキストや Namespace の選択は残ります。\
+                コンテキストごとの色・別名・読み取り専用の指定も残ります\
+                （消すときは「コンテキスト」タブから）。\
+                言語は「システムに従う」に戻り、次の起動から反映されます。
+                """)
+        }
+    }
+}
+
+// MARK: - 表示
+
+private struct ViewSettings: View {
+    @State private var preferences = Preferences.shared
+
+    var body: some View {
+        @Bindable var preferences = preferences
+
+        Form {
             Section {
                 Toggle("種別ごとの件数を出す", isOn: $preferences.showsSidebarCounts)
                 Toggle("件数が 0 の種別を隠す", isOn: $preferences.hidesEmptyKinds)
@@ -177,7 +220,20 @@ private struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
+}
 
+// MARK: - 配置
+
+private struct PlacementSettings: View {
+    @State private var preferences = Preferences.shared
+
+    var body: some View {
+        @Bindable var preferences = preferences
+
+        Form {
             Section {
                 Picker("タイルの大きさ", selection: $preferences.placementTileSize) {
                     ForEach(PlacementTileSize.allCases) { size in
@@ -205,32 +261,8 @@ private struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            Section {
-                Button("すべて既定値に戻す", role: .destructive) { confirmsReset = true }
-            }
         }
         .formStyle(.grouped)
-        .confirmationDialog(
-            "すべての設定を既定値に戻しますか？",
-            isPresented: $confirmsReset
-        ) {
-            Button("戻す", role: .destructive) { preferences.resetAll() }
-            Button("やめる", role: .cancel) {}
-        } message: {
-            // **残るものを正確に書く。** 以前は `contextProfiles` も消して
-            // いたのに「コンテキストは残ります」と書いており、読み取り専用の
-            // 指定が黙って外れていた。いまは消さないので、そう書ける。
-            // **戻るものも名指しする。** 言語は見た目の既定値なので戻すが、
-            // 反映は次の起動からなので、そう書かないと「戻したのに英語のまま」
-            // に見える。
-            Text("""
-                接続先のコンテキストや Namespace の選択は残ります。\
-                コンテキストごとの色・別名・読み取り専用の指定も残ります\
-                （消すときは「コンテキスト」タブから）。\
-                言語は「システムに従う」に戻り、次の起動から反映されます。
-                """)
-        }
     }
 }
 
@@ -598,10 +630,6 @@ private struct ConnectionSettings: View {
     @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
     @State private var resolvedPath: String?
-    @State private var searchPath: String?
-    @State private var variables: [String: String] = [:]
-    @State private var cacheDirectory: String?
-    @State private var lastDiscoveryReset: Date?
     @State private var transport: Kubectl.ReadTransport?
     @State private var proxyDiagnostics: ClusterProxy.Diagnostics?
 
@@ -634,29 +662,9 @@ private struct ConnectionSettings: View {
     }
 
     var body: some View {
-        @Bindable var store = store
         @Bindable var preferences = preferences
 
         Form {
-            Section {
-                Toggle("自動更新", isOn: $store.autoRefresh)
-                Picker("間隔", selection: $store.refreshInterval) {
-                    ForEach([5.0, 10.0, 30.0, 60.0], id: \.self) { seconds in
-                        Text("\(Int(seconds)) 秒").tag(seconds)
-                    }
-                }
-                .disabled(!store.autoRefresh)
-            } header: {
-                Text("一覧の更新")
-            } footer: {
-                // 切っていても画面が止まりきらない理由を書く。書かないと、操作のあとの取り直しが自動更新に見える。
-                Text("""
-                    切っていても、削除したものが消えるまでと、再起動などの入れ替わりが\
-                    終わるまでは取り直します（最長 \(Int(FollowUp.limit / 60)) 分）。
-                    """)
-                    .foregroundStyle(.secondary)
-            }
-
             Section {
                 Toggle("kubectl proxy を常駐させて HTTP で読む", isOn: $preferences.usesAPIProxy)
                 LabeledContent("いまの読み取り") {
@@ -740,6 +748,70 @@ private struct ConnectionSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+        .task(id: preferences.kubectlPathOverride) {
+            resolvedPath = await Kubectl.shared.resolvedExecutablePath()
+            ?? String(localized: "見つかりません")
+            await refreshTransport()
+        }
+        .task(id: preferences.usesAPIProxy) { await refreshTransport() }
+    }
+}
+
+/// 一覧の自動更新。取得の振る舞いなので「一般」に置く（「アップデート」と取り違えさせない）。
+private struct ListRefreshSection: View {
+    @Environment(ClusterStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+
+        Section {
+            Toggle("自動更新", isOn: $store.autoRefresh)
+            Picker("間隔", selection: $store.refreshInterval) {
+                ForEach([5.0, 10.0, 30.0, 60.0], id: \.self) { seconds in
+                    Text("\(Int(seconds)) 秒").tag(seconds)
+                }
+            }
+            .disabled(!store.autoRefresh)
+        } header: {
+            Text("一覧の更新")
+        } footer: {
+            // 切っていても画面が止まりきらない理由を書く。書かないと、操作のあとの取り直しが自動更新に見える。
+            Text("""
+                切っていても、削除したものが消えるまでと、再起動などの入れ替わりが\
+                終わるまでは取り直します（最長 \(Int(FollowUp.limit / 60)) 分）。
+                """)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - 診断
+
+private struct DiagnosticsSettings: View {
+    @State private var resolvedPath: String?
+    @State private var searchPath: String?
+    @State private var variables: [String: String] = [:]
+    @State private var cacheDirectory: String?
+    @State private var lastDiscoveryReset: Date?
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    Text("下の内容を貼って共有できます。鍵やトークンに見える値は伏せてあります。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("まとめてコピー") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(report, forType: .string)
+                    }
+                    .disabled(searchPath == nil)
+                }
+            }
 
             Section {
                 Text(cacheDirectory ?? String(localized: "確認中"))
@@ -806,31 +878,41 @@ private struct ConnectionSettings: View {
             }
         }
         .formStyle(.grouped)
-        .task(id: preferences.kubectlPathOverride) {
+        .task(id: Preferences.shared.kubectlPathOverride) {
             resolvedPath = await Kubectl.shared.resolvedExecutablePath()
-            ?? String(localized: "見つかりません")
             searchPath = await Kubectl.shared.resolvedSearchPath()
             ?? String(localized: "確認できません")
             variables = await Kubectl.shared.resolvedVariables()
             let cache = await Kubectl.shared.resolvedCacheDirectory()
             cacheDirectory = cache.path
             lastDiscoveryReset = cache.lastReset
-            await refreshTransport()
         }
-        .task(id: preferences.usesAPIProxy) { await refreshTransport() }
+    }
+
+    /// 貼る先は issue やチャットなので、見出しは訳さず `env` の形に揃える。値は画面と同じく伏せ字済み。
+    private var report: String {
+        var lines = [
+            "# KubeDeck \(UpdateController.shared.currentVersion)",
+            "# kubectl: \(resolvedPath ?? "-")",
+            "# discovery cache: \(cacheDirectory ?? "-")",
+            "PATH=\(searchPath ?? "")",
+        ]
+        lines += variables.keys.sorted().map { "\($0)=\(variables[$0] ?? "")" }
+        return lines.joined(separator: "\n")
     }
 }
 
-// MARK: - 更新
+// MARK: - アップデート
 
-private struct UpdateSettings: View {
+/// 「一般」の中に並べる。タブ名に「更新」を使うと、一覧の自動更新と取り違える。
+private struct UpdateSections: View {
     @State private var preferences = Preferences.shared
     @State private var updater = UpdateController.shared
 
     var body: some View {
         @Bindable var preferences = preferences
 
-        Form {
+        Group {
             Section {
                 LabeledContent("いまの版") {
                     Text(updater.currentVersion)
@@ -864,7 +946,7 @@ private struct UpdateSettings: View {
                 Button("いまアップデートを確認") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
             } header: {
-                Text("バージョン")
+                Text("アップデート")
             }
 
             Section {
@@ -877,8 +959,6 @@ private struct UpdateSettings: View {
                 Toggle("見つけたら先にダウンロードしておく",
                        isOn: $preferences.downloadsUpdatesAutomatically)
                     .disabled(!preferences.checksForUpdates)
-            } header: {
-                Text("自動で確認する")
             } footer: {
                 Text("確認では GitHub の Releases に置いた更新情報を読むだけで、クラスタの情報や利用状況は送りません。入れ替えるかどうかは必ず尋ねます。")
                     .font(.caption)
@@ -895,6 +975,5 @@ private struct UpdateSettings: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .formStyle(.grouped)
     }
 }

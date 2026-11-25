@@ -241,7 +241,7 @@ actor Kubectl {
             .path
     }()
 
-    /// 最後に discovery のキャッシュを捨てた時刻。設定の「接続」に出す。
+    /// 最後に discovery のキャッシュを捨てた時刻。設定の「診断」に出す。
     private(set) var lastDiscoveryReset: Date?
 
     /// 捨て直しの間隔。**毎回捨てない。**
@@ -637,7 +637,7 @@ actor Kubectl {
             という線は薄いです。
             ターミナルで `kubectl api-resources` に出るか、`kubectl get apiservices` に\
             AVAILABLE=False が無いかを確かめてください。KubeDeck の一覧は\
-            ターミナルとは別に持っているので（設定の「接続」に置き場所を出しています）、\
+            ターミナルとは別に持っているので（設定の「診断」に置き場所を出しています）、\
             片方だけで起きることもあります。
             """)
     }
@@ -677,7 +677,7 @@ actor Kubectl {
             }
             lines.append(String(localized: """
                 入っているのにここで見つからないときは、KubeDeck から見える PATH に \
-                その場所がありません。設定の「接続」で、いま渡している PATH を確認できます。
+                その場所がありません。設定の「診断」で、いま渡している PATH を確認できます。
                 """))
             return lines.joined(separator: "\n")
         }
