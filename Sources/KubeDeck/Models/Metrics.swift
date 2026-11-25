@@ -78,6 +78,11 @@ struct WorkloadUsage: Sendable, Hashable {
             default: return String(localized: "上限・要求")
             }
         }
+
+        /// 分母がすべて上限か。要求の混ざった割合は、超えても異常ではないので色を付けない。
+        var isAgainstLimit: Bool {
+            limitPods > 0 && requestPods == 0 && podsWithoutBase == 0
+        }
     }
 
     var cpu = Axis()

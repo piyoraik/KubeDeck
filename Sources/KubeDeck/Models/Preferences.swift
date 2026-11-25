@@ -41,6 +41,7 @@ final class Preferences {
         static let placementGrouping = "placementGrouping"
         static let placementMetric = "placementMetric"
         static let placementGroupsByWorkload = "placementGroupsByWorkload"
+        static let showsMeshRoutes = "showsMeshRoutes"
 
         static let logTailLines = "logTailLines"
         static let logBufferLines = "logBufferLines"
@@ -203,6 +204,11 @@ final class Preferences {
     /// Pod が少ないクラスタでは、まとめるほうが縦に伸びるので切れるようにする。
     var placementGroupsByWorkload = true {
         didSet { store.set(placementGroupsByWorkload, forKey: Key.placementGroupsByWorkload) }
+    }
+
+    /// メッシュの経路（Gateway API の HTTPRoute）をたどるに出すか。既定は切る（使わないクラスタに取得を足さない）。
+    var showsMeshRoutes = false {
+        didSet { store.set(showsMeshRoutes, forKey: Key.showsMeshRoutes) }
     }
 
     func isVisible(_ kind: ResourceKind) -> Bool { !hiddenKinds.contains(kind.rawValue) }
@@ -470,6 +476,7 @@ final class Preferences {
             PlacementMetric(rawValue: store.string(forKey: Key.placementMetric) ?? "") ?? .both
         placementGroupsByWorkload =
             store.object(forKey: Key.placementGroupsByWorkload) as? Bool ?? true
+        showsMeshRoutes = store.object(forKey: Key.showsMeshRoutes) as? Bool ?? false
 
         logTailLines = store.object(forKey: Key.logTailLines) as? Int ?? 500
         logBufferLines = store.object(forKey: Key.logBufferLines) as? Int ?? 5_000
@@ -555,6 +562,7 @@ final class Preferences {
         placementGrouping = .node
         placementMetric = .both
         placementGroupsByWorkload = true
+        showsMeshRoutes = false
         logTailLines = 500
         logBufferLines = 5_000
         logFollowsByDefault = true
@@ -706,7 +714,11 @@ enum InspectorPlacement: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 配置画面のタイルの大きさ。
+/// 配置画面の Pod のチップの大きさ。名前をどこまで出すかで決まる。
+///
+/// **小は名前を出さない。** 数百の Pod を名前つきで並べると、縦に伸びて
+/// 「どこに寄っているか」という肝心の絵が見えなくなる。中は名前のうち区別に要る
+/// 末尾だけ、大は名前をすべて出す（`PodChipNaming`）。
 enum PlacementTileSize: String, CaseIterable, Identifiable, Sendable {
     case small
     case medium
@@ -721,27 +733,6 @@ enum PlacementTileSize: String, CaseIterable, Identifiable, Sendable {
         case .large: return String(localized: "大")
         }
     }
-
-    /// 折り返しの下限幅。小さいほど 1 行に多く並ぶ。
-    var minimumWidth: Double {
-        switch self {
-        case .small: return 22
-        case .medium: return 150
-        case .large: return 240
-        }
-    }
-
-    var maximumWidth: Double {
-        switch self {
-        case .small: return 22
-        case .medium: return 260
-        case .large: return 380
-        }
-    }
-
-    /// 名前を出すか。**小は出さない。** 数百の Pod を名前つきで並べると、
-    /// 縦に伸びて「どこに寄っているか」という肝心の絵が見えなくなる。
-    var showsName: Bool { self != .small }
 }
 
 /// 配置画面のノードの並び。

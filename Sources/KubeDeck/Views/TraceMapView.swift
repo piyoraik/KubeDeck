@@ -16,15 +16,30 @@ import SwiftUI
 /// 1 つ前に帰れる。
 struct TraceMapView: View {
     @Environment(ClusterStore.self) private var store
-    @State private var anchorKind: TraceAnchorKind = .workload
+    @State private var anchorKind: TraceAnchorKind = TraceLaunch.kind ?? .workload
     @State private var focus: TraceAnchor?
     /// 押して辿った跡。**戻れないと押せない。** 押した先が外れだったとき、
     /// 一覧から選び直すことになる。
     @State private var history: [TraceAnchor] = []
 
+    /// 起点の一覧の幅。図に `figureWidth` を残せないときは、一覧のほうを先に詰める。
+    private static let pickerWidths: ClosedRange<CGFloat> = 196...264
+    private static let figureWidth: CGFloat = 600
+
     var body: some View {
+        // `HStack` に任せると、一覧はいつも上限まで取り、狭い窓では図のほうが切れる。
+        GeometryReader { proxy in
+            let room = proxy.size.width - Self.figureWidth
+            content(
+                pickerWidth: min(
+                    Self.pickerWidths.upperBound, max(Self.pickerWidths.lowerBound, room)))
+        }
+    }
+
+    private func content(pickerWidth: CGFloat) -> some View {
         HStack(spacing: 0) {
             picker
+                .frame(width: pickerWidth)
             // **横並びの中に `Divider` を置かない。** 高さが定まらず、
             // `NavigationSplitView` と `.inspector` ですでに `NSSplitView` が
             // 入れ子になっているこの窓では、レイアウト中の例外の芽になる。
@@ -84,26 +99,26 @@ struct TraceMapView: View {
                 Text(anchors.isEmpty
                         ? anchorKind.emptyMessage
                         : String(localized: "一致するものがありません。"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 1) {
                         ForEach(visible) { anchor in
                             row(anchor)
-                            Divider().opacity(0.4)
                         }
                     }
+                    .padding(6)
                 }
             }
         }
-        // **縮められる幅にする。** 決め打ちだと、この欄のぶんがそのまま
+        // **幅はここで決めない。** 決め打ちだと、この欄のぶんがそのまま
         // 図に使える幅を削る。狭い窓では先にこちらを詰めさせる（名前は
-        // 真ん中を落として出る。図のほうが答えそのもの）。
-        .frame(minWidth: 176, idealWidth: 236, maxWidth: 236)
+        // 真ん中を落として出る。図のほうが答えそのもの）。`body` が窓の幅から決める。
+        .frame(maxWidth: .infinity)
         .background(Palette.insetFill.opacity(0.5))
         // **`onAppear` だけで初期化しない。** 読み込みが終わる前に開くと
         // 一覧が空で、選ばれないまま右が空で固まる（実際そうなった）。
@@ -111,7 +126,7 @@ struct TraceMapView: View {
         // 全体で見る** — 打ち込んだ文字で起点が勝手に変わると図が飛ぶ。
         .onChange(of: anchors.map(\.id), initial: true) { _, ids in
             if let focus, ids.contains(focus.id) { return }
-            focus = anchors.first
+            focus = anchors.first { $0.id == TraceLaunch.anchorID } ?? anchors.first
             // 起点が入れ替わったら跡も捨てる。無い場所へ戻れても仕方がない。
             history = []
         }
@@ -120,17 +135,21 @@ struct TraceMapView: View {
     private var kindSelector: some View {
         VStack(alignment: .leading, spacing: 3) {
             Picker("起点", selection: $anchorKind) {
-                ForEach(TraceAnchorKind.allCases) { kind in
+                ForEach(TraceAnchorKind.offered(routes: store.routeAvailability)) { kind in
                     Label(kind.title, systemImage: kind.symbol).tag(kind)
                 }
             }
             .labelsHidden()
+            // 経路を引かなくなったら選んだままにしない（選択肢に無い値が残る）。
+            .onChange(of: store.routeAvailability) { _, availability in
+                if anchorKind == .route, availability != .loaded { anchorKind = .workload }
+            }
             // **セグメントにしない。** 7 つを 236pt に詰めると記号だけになり、
             // どれが何なのか読めなくなる。
             .pickerStyle(.menu)
             Text(anchorKind.help)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 10)
@@ -146,7 +165,7 @@ struct TraceMapView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(anchor.displayName)
-                        .font(.caption)
+                        .font(.callout)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     // 同じ名前が別の Namespace に居ることがある。添えないと
@@ -154,22 +173,24 @@ struct TraceMapView: View {
                     // StatefulSet が並ぶ）。
                     if let subtitle = subtitle(anchor) {
                         Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                 }
                 Spacer(minLength: 6)
                 Text("\(anchor.podCount)")
-                    .font(.caption)
+                    .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(anchor.podCount == 0 ? .tertiary : .secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.20) : .clear)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.24) : .clear,
+                in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -200,7 +221,8 @@ struct TraceMapView: View {
                 Rectangle().fill(Palette.hairline).frame(height: 1)
                 ScrollView {
                     TraceGraphView(graph: graph, select: select(_:))
-                        .padding(16)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 18)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -240,7 +262,7 @@ struct TraceMapView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(headerSubtitle(graph))
-                    .font(.caption2)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -267,7 +289,11 @@ struct TraceMapView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// 起点を移し、詳細も出す（枝が 1 つの図では起点が移っても絵がほぼ変わらない）。
     private func select(_ anchor: TraceAnchor) {
+        if let object = PlacementTrace.object(for: anchor, in: inventory) {
+            store.inspect(object)
+        }
         guard anchor.id != focus?.id else { return }
         if let focus {
             history.append(focus)
@@ -302,27 +328,39 @@ private struct TraceGraphView: View {
     /// 引き直したロールの中身。**自動更新に載せない** — 起点が変わった
     /// ときだけ引く（イベントタブと同じ考え方）。
     @State private var rules = AccessRules()
+    /// 通信の段。Namespace のラベルを引いてから解くので、描画の外で 1 度だけ組む。
+    @State private var network: TraceNetwork?
+    /// 起点が複数のワークロードにまたがるときの、ワークロードごとの通信。
+    @State private var branchNetworks: [BranchNetwork] = []
+    /// 解いた結果がどの起点のものか。前の起点の図を、押せる形で出したままにしない。
+    @State private var networkAnchorID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             notes
+            if let split = graph.routeSplit {
+                TraceRouteSplitView(
+                    split: split, showsBranchHeading: !graph.branches.isEmpty, select: select)
+            }
             // **枝ごとに囲む。** 起点が Service やノードのときは複数の
             // ワークロードにまたがるので、1 つの囲みに詰めると誰の Pod なのか
             // 分からなくなる。
             ForEach(graph.branches) { branch in
-                TraceBranchView(branch: branch, anchor: graph.anchor, select: select)
+                WidthCap {
+                    TraceBranchView(branch: branch, anchor: graph.anchor, select: select)
+                }
             }
             storage
             configs
-            policies
+            networkBand
             access
             // **断りを二重に出さない。** PVC / PV の起点は、なぜ辿れないのかを
             // `anchorNotes` がすでに書いている（そちらのほうが具体的）。
             if graph.isEmpty && graph.danglingServices.isEmpty
                 && graph.missingServiceNames.isEmpty && graph.anchorNotes.isEmpty {
                 Text("この起点から辿れる Pod はありません。")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -350,6 +388,41 @@ private struct TraceGraphView: View {
             }
             rules = await store.roleRules(for: all)
         }
+        .task(id: networkKey) {
+            guard !graph.pods.isEmpty, !policiesUnreadable else {
+                network = nil
+                branchNetworks = []
+                return
+            }
+            let labels = await store.namespaceLabels()
+            // 複数のワークロードにまたがる起点は、まとめて判定せずワークロードごとに解く。
+            if graph.branches.count > 1 {
+                branchNetworks = PlacementTrace.branchNetworks(
+                    for: graph, inventory: store.placementInventory,
+                    controllers: store.controllerIndex, scope: store.selectedNamespace,
+                    namespaceLabels: labels)
+                network = nil
+            } else {
+                network = PlacementTrace.network(
+                    for: graph.pods, inventory: store.placementInventory,
+                    controllers: store.controllerIndex, scope: store.selectedNamespace,
+                    namespaceLabels: labels)
+                branchNetworks = []
+            }
+            networkAnchorID = graph.anchor.id
+        }
+    }
+
+    /// 起点か取得が変わったときだけ解き直す。
+    private var networkKey: String {
+        let loaded = store.lastUpdated?.timeIntervalSince1970 ?? 0
+        return "\(graph.anchor.id)|\(graph.podCount)|\(loaded)|\(policiesUnreadable)"
+    }
+
+    /// NetworkPolicy を読めていないのに「制限なし」と描かない。
+    private var policiesUnreadable: Bool {
+        store.deniedKinds.contains(.networkPolicy) || store.failedKinds.contains(.networkPolicy)
+            || store.unknownKinds.contains(.networkPolicy)
     }
 
     /// **辿れなかったことを黙らない。** Ingress が指しているのに Service が
@@ -378,7 +451,7 @@ private struct TraceGraphView: View {
 
     private func note(_ text: String, level: StatusLevel) -> some View {
         Label(text, systemImage: level.symbol)
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(Palette.textColor(for: level))
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -396,11 +469,11 @@ private struct TraceGraphView: View {
         if !graph.storage.isEmpty {
             // 起点が PVC / PV のときは「使っている」ではない（起点そのもの）。
             band(isStorageAnchor ? "ストレージ" : "使っているストレージ") {
-                tiles(minimumWidth: 200, maximumWidth: 420) {
+                tiles(minimumWidth: 236, maximumWidth: 496) {
                     ForEach(graph.storage) { link in
                         HStack(spacing: 8) {
                             claim(link)
-                            DiagramArrow(length: 16)
+                            DiagramArrow(length: 18)
                             volume(link)
                         }
                     }
@@ -425,7 +498,7 @@ private struct TraceGraphView: View {
         return TraceNodeLabel(
             name: link.claim.name, kindLabel: link.claimDetail,
             symbol: ResourceKind.persistentVolumeClaim.symbol,
-            tint: .secondary, maxWidth: 160,
+            tint: .secondary, maxWidth: 190,
             isAnchor: target.id == graph.anchor.id, select: { select(target) })
     }
 
@@ -443,36 +516,49 @@ private struct TraceGraphView: View {
                 // 実物が引けていれば状態・容量・StorageClass まで。
                 kindLabel: link.volumeDetail ?? String(localized: "PV · 中身を引けていません"),
                 symbol: ResourceKind.persistentVolume.symbol, tint: .secondary,
-                minWidth: 90, maxWidth: 200,
+                minWidth: 106, maxWidth: 236,
                 isAnchor: target.id == graph.anchor.id,
                 // 実物が無いものを起点にすると、押した先で何も出せない。
                 select: link.volume == nil ? nil : { select(target) })
         } else {
             Text("まだバインドされていません")
-                .font(.caption2)
+                .font(.subheadline)
                 .foregroundStyle(Palette.textColor(for: .warning))
-                .frame(minWidth: 90, maxWidth: 200, alignment: .leading)
+                .frame(minWidth: 106, maxWidth: 236, alignment: .leading)
         }
     }
 
-    /// 効いている NetworkPolicy。
+    /// 通信。入ってこられる相手 → 起点 → 出ていける先。
     ///
-    /// **無いことを「制限なし」と断らない。** 1 つも無ければ通信は素通りだが、
-    /// それは**この画面が引けている範囲での話**で、CNI が入っていなければ
-    /// NetworkPolicy 自体が効かない（policy はあるのに効いていない、も起きる）。
-    /// ここでは効いている policy を並べるだけにする。
+    /// **宣言上の許可であって、実際の通信ではない。** CNI が強制していなければ
+    /// 効かず、CNI 独自の policy も見ていない。毎回そう断る。
     @ViewBuilder
-    private var policies: some View {
-        if !graph.policies.isEmpty {
-            band("効いている通信制限") {
-                tiles(minimumWidth: 170, maximumWidth: 300) {
-                    ForEach(graph.policies) { policy in
-                        TraceNodeLabel(
-                            name: policy.name,
-                            kindLabel: ResourceTable.policyDirections(policy),
-                            symbol: ResourceKind.networkPolicy.symbol, tint: .secondary,
-                            maxWidth: 240)
+    private var networkBand: some View {
+        if !graph.pods.isEmpty {
+            band("通信") {
+                VStack(alignment: .leading, spacing: 10) {
+                    if policiesUnreadable {
+                        failureNote("""
+                            NetworkPolicy を読めないため、通信を判定できません\
+                            （制限が無いという意味ではありません）。
+                            """)
+                    } else if networkAnchorID == graph.anchor.id, !branchNetworks.isEmpty {
+                        TraceNetworkIndex(branches: branchNetworks, select: select)
+                    } else if networkAnchorID == graph.anchor.id, let network {
+                        TraceNetworkDiagram(network: network, anchor: graph.anchor, select: select)
+                    } else {
+                        Text("NetworkPolicy を解いています…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
+                    Text("""
+                        NetworkPolicy の宣言から解いた許可です。実際の通信ではありません。\
+                        CNI が NetworkPolicy を強制していない環境では効かず、\
+                        CNI 独自の policy（Cilium・Calico など）は見ていません。
+                        """)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -489,16 +575,32 @@ private struct TraceGraphView: View {
     private var configs: some View {
         if !graph.configs.isEmpty {
             band("使っている設定") {
-                tiles(maximumWidth: 240) {
+                tiles(maximumWidth: 284) {
                     ForEach(graph.configs) { reference in
                         TraceNodeLabel(
                             name: reference.name, kindLabel: reference.detail,
                             symbol: reference.source.kind.symbol, tint: .secondary,
-                            maxWidth: 190)
+                            maxWidth: 224,
+                            select: configNamespace.map { namespace in
+                                {
+                                    Task {
+                                        await store.inspect(
+                                            reference.source.kind, name: reference.name,
+                                            namespace: namespace)
+                                    }
+                                }
+                            },
+                            help: String(localized: "押すと右のパネルに詳細"))
                     }
                 }
             }
         }
+    }
+
+    /// 参照は名前しか持たないので、引く先の Namespace が 1 つに決まるときだけ押せる。
+    private var configNamespace: String? {
+        let namespaces = Set(graph.pods.compactMap(\.namespace))
+        return namespaces.count == 1 ? namespaces.first : nil
     }
 
     /// 動いている権限。ServiceAccount → Binding → ロールの中身。
@@ -512,9 +614,8 @@ private struct TraceGraphView: View {
         if !graph.access.isEmpty {
             band("動いている権限") {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(graph.access.accounts) { account in
-                        accountRow(account)
-                    }
+                    TraceAccessChain(
+                        accounts: graph.access.accounts, bindings: bindings, rules: rules)
                     // **「権限が無い」と書かない。** 読めなかっただけ。
                     // Binding が読めなかったのと、Binding は読めたが指している
                     // ロールが読めなかったのは**見る場所が違う**ので分けて出す。
@@ -541,108 +642,37 @@ private struct TraceGraphView: View {
 
     private func failureNote(_ text: String) -> some View {
         Label(text, systemImage: StatusLevel.warning.symbol)
-            .font(.caption2)
+            .font(.subheadline)
             .foregroundStyle(Palette.textColor(for: .warning))
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func accountRow(_ account: AccessAccount) -> some View {
-        let bound = bindings.bindings(for: account)
-
-        return HStack(alignment: .center, spacing: 8) {
-            TraceNodeLabel(
-                name: account.name, kindLabel: ResourceKind.serviceAccount.displayName,
-                symbol: ResourceKind.serviceAccount.symbol, tint: .secondary,
-                minWidth: 110, maxWidth: 170)
-            if !bindings.isLoaded {
-                // **引く前の空を「無い」と書かない。** Binding は起点が変わった
-                // ときに引き直すので、ここに来るあいだが実際にある
-                // （遅いクラスタでは数秒）。
-                Text("付いている Binding を調べています…")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else if bound.isEmpty {
-                // **「権限がありません」と断定しない。** グループ経由の付与
-                // （`system:serviceaccounts:*`）は見ていない。
-                Text("直接付いている Binding はありません（グループ経由の付与は見ていません）")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                DiagramArrow(length: 16)
-                tiles(minimumWidth: 200, maximumWidth: 340) {
-                    ForEach(bound) { binding in
-                        bindingTile(binding)
-                    }
-                }
-            }
-        }
-    }
-
-    private func bindingTile(_ binding: AccessBinding) -> some View {
-        let role = rules.roles[binding.roleID]
-        let summary = role.map { ResourceTable.ruleSummary($0) }
-
-        return HStack(spacing: 7) {
-            ResourceGlyph(
-                symbol: (binding.isClusterWide ? ResourceKind.clusterRoleBinding
-                    : ResourceKind.roleBinding).symbol,
-                size: 26, tint: .secondary)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(binding.name)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(binding.roleLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let summary, !summary.text.isEmpty {
-                    // **`*` はいちばん見つけたいもの。** ここだけ色を付ける
-                    // （一覧の「できること」列と同じ扱い）。
-                    Text(summary.text)
-                        .font(.caption2)
-                        .foregroundStyle(
-                            summary.isWildcard
-                                ? Palette.textColor(for: .warning) : .secondary)
-                        .lineLimit(2)
-                } else if rules.isLoaded && role == nil {
-                    // 引けたのに実物が無い＝Binding が指す先が消えている。
-                    Text("指しているロールがありません")
-                        .font(.caption2)
-                        .foregroundStyle(Palette.textColor(for: .serious))
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .help(
-            "\(binding.binding.kind?.displayName ?? "") \(binding.name) → \(binding.roleLabel)")
-    }
-
-    /// 付属物の帯。見出しの幅を揃えるのは、帯が何本も並ぶため
-    /// （ばらばらだと段に見えない）。
+    /// 付属物の帯。見出しは中身の上に置き、どの帯も図と同じ左端から始める。
     private func band<Content: View>(
         _ title: LocalizedStringResource, @ViewBuilder content: () -> Content
     ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .frame(minWidth: 104, alignment: .leading)
-                .padding(.top, 8)
-            content()
-            // **`Spacer` で押さない。** タイルの側も伸び縮みするので、
-            // どちらが余りを取るかが決まらず 1 列に潰れることがある。
-            // 左寄せは外側の frame で決める。
+        WidthCap {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Rectangle()
+                        .fill(Palette.hairline)
+                        .frame(height: 1)
+                }
+                content()
+            }
+            .frame(maxWidth: 920, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 6)
     }
 
     /// **横に並べきれないときは折り返す。** `HStack` のままだと数が増えた
     /// ときに 1 つずつ潰れ、どれも名前が読めなくなる。
     private func tiles<Content: View>(
-        minimumWidth: CGFloat = 140, maximumWidth: CGFloat = 240,
+        minimumWidth: CGFloat = 166, maximumWidth: CGFloat = 284,
         @ViewBuilder content: () -> Content
     ) -> some View {
         WrappingTiles(
@@ -664,30 +694,42 @@ private struct TraceBranchView: View {
         DiagramBox(
             title: branch.namespace ?? String(localized: "クラスタ"),
                 symbol: ResourceKind.namespace.symbol,
-            tint: .secondary
+            tint: .secondary, stroke: Palette.diagramFrame
         ) {
-            HStack(alignment: .center, spacing: 0) {
+            FigureRow(spacing: 8) {
                 // 入口から順に。**無いものは出さない。** Service を持たない
                 // ワークロードはふつうにあり、空の器を置くと「あるはずの
                 // ものが欠けている」ように見える。
-                if !branch.ingresses.isEmpty {
-                    column(branch.ingresses, kind: .ingress)
-                    DiagramArrow(length: 22)
+                if !branch.ingresses.isEmpty || !branch.routes.isEmpty {
+                    // Ingress と経路はどちらも入口なので、同じ列に並べる。
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !branch.ingresses.isEmpty {
+                            column(branch.ingresses, kind: .ingress)
+                        }
+                        if !branch.routes.isEmpty {
+                            TraceRouteColumn(
+                                entries: branch.routes, anchor: anchor, select: select)
+                        }
+                    }
+                    .layoutValue(key: FigureRow.MinimumWidth.self, value: 26 + 8 + 108)
+                    DiagramArrow(length: 20)
                 }
                 if !branch.services.isEmpty {
                     column(branch.services, kind: .service)
-                    DiagramArrow(length: 22)
+                    DiagramArrow(length: 20)
                 }
                 workload
-                DiagramArrow(length: 22)
+                    .layoutValue(key: FigureRow.MinimumWidth.self, value: 38 + 10 + 64)
+                DiagramArrow(length: 20)
                 // **矢印の先を空にしない。** レプリカ 0 や、作られた直後で
                 // まだ ReplicaSet が無いワークロードでは世代が 1 つも無い。
                 // 何も置かないと、取れていないのか無いのかが分からない。
                 if branch.generations.isEmpty {
                     Text("この時点で Pod はありません。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(minWidth: 140, alignment: .leading)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 166, alignment: .leading)
+                        .layoutValue(key: FigureRow.IsBody.self, value: true)
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(branch.generations) { generation in
@@ -695,12 +737,11 @@ private struct TraceBranchView: View {
                                 generation: generation, anchor: anchor, select: select)
                         }
                     }
-                    // **ここに `layoutPriority(1)` を戻さない。** かつては
-                    // 「幅が足りないと Pod 名から先に潰れる」ので先に幅を
-                    // 取らせていた。いまは Pod がタイルになり、`WrappingTiles`
-                    // が名前ぶんの幅（下限 150pt）を最小として申告するので、
-                    // 潰れようがない。優先度を戻すと、こんどはタイルが
+                    // **余りを取るのはこの列だけ**（`FigureRow`）。入口とワークロードは
+                    // 名前の幅で止まり、Pod の並びが下限（タイル 1 列）でも入らないとき
+                    // だけ縮む。`layoutPriority(1)` で先に幅を取らせると、タイルが
                     // 「1 行に全部」を要求して**左の入口の列を押しのける**。
+                    .layoutValue(key: FigureRow.IsBody.self, value: true)
                 }
             }
         }
@@ -713,33 +754,41 @@ private struct TraceBranchView: View {
                     anchorKind: kind == .ingress ? .ingress : .service,
                     resourceKind: kind, kindLabel: kind.apiKind,
                     namespace: object.namespace, name: object.name)
-                TraceNodeLabel(
-                    name: object.name, kindLabel: kind.displayName, symbol: kind.symbol,
-                    // **入口の列にも下限を残す。** 右の Pod の列は幅を
-                    // いくらでも使える（1 行に全部並べるのが最大）ので、
-                    // 下限が無いとこちらが先に潰れて名前が消える。
-                    minWidth: 92,
-                    isAnchor: target.id == anchor.id, select: { select(target) })
+                let tags = kind == .service ? branch.tags(on: object) : []
+                VStack(alignment: .leading, spacing: 3) {
+                    TraceNodeLabel(
+                        name: object.name, kindLabel: kind.displayName, symbol: kind.symbol,
+                        isAnchor: target.id == anchor.id, select: { select(target) })
+                    if !tags.isEmpty {
+                        TraceRouteTags(tags: tags, anchor: anchor, select: select)
+                    }
+                }
             }
         }
+        // **入口の列にも下限を残す。** 右の Pod の列は幅をいくらでも使える
+        // （1 行に全部並べるのが最大）ので、下限が無いとこちらが先に潰れて名前が消える。
+        .layoutValue(key: FigureRow.MinimumWidth.self, value: 26 + 8 + 108)
     }
 
     private var workload: some View {
         let target = branch.workload
         let isAnchor = target.id == anchor.id
 
-        return VStack(spacing: 6) {
-            ResourceGlyph(symbol: target.symbol, size: 40)
-                .overlay(anchorRing(isAnchor, size: 40))
-            Text(target.displayName)
-                .font(.caption.weight(.medium))
-                .multilineTextAlignment(.center)
-                .frame(minWidth: 88, maxWidth: 120)
-                .lineLimit(2)
-            Text(target.isStandalone
-                    ? String(localized: "所有者なし") : target.kindLabel)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        // 図のほかの器と同じ「器と 2 行」。主役であることは、大きさと太字で示す。
+        return HStack(spacing: 10) {
+            ResourceGlyph(symbol: target.symbol, size: 38)
+                .overlay(anchorRing(isAnchor, size: 38))
+            VStack(alignment: .leading, spacing: 0) {
+                Text(target.displayName)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(target.isStandalone
+                        ? String(localized: "所有者なし") : target.kindLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minWidth: 64, maxWidth: 200, alignment: .leading)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -747,7 +796,9 @@ private struct TraceBranchView: View {
             guard !target.isStandalone else { return }
             select(target)
         }
-        .help(target.isStandalone ? "所有者のない Pod" : "\(target.kindLabel) を起点にする")
+        .help(
+            target.isStandalone
+                ? "所有者のない Pod" : "\(target.kindLabel) \(target.displayName) を起点にする")
     }
 }
 
@@ -773,8 +824,8 @@ private struct TraceGenerationView: View {
             ) {
                 if generation.pods.isEmpty {
                     Text("Pod はありません（古い世代）")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .frame(height: 34)
                 } else {
                     pods
@@ -814,15 +865,19 @@ private struct TraceNodeGroupRow: View {
     let select: (TraceAnchor) -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        FigureRow(spacing: 8) {
             WrappingTiles(spacing: 8, lineSpacing: 6) {
                 ForEach(group.pods) { pod in
                     TracePodTile(pod: pod, node: group.node)
                 }
             }
+            .layoutValue(key: FigureRow.IsBody.self, value: true)
 
-            DiagramArrow(length: 20)
+            DiagramArrow(length: 24)
             node
+                // **行き先の欄は幅の下限を残す。** 無いと、いちばん後ろの
+                // この文字から先に潰れ、名前が消える。
+                .layoutValue(key: FigureRow.MinimumWidth.self, value: 24 + 8 + 84)
         }
     }
 
@@ -837,16 +892,14 @@ private struct TraceNodeGroupRow: View {
                 kindLabel: ResourceKind.node.apiKind, namespace: nil, name: name)
             TraceNodeLabel(
                 name: name, kindLabel: "\(ResourceKind.node.displayName) · \(count)",
-                symbol: ResourceKind.node.symbol, tint: .secondary, size: 26,
-                // **行き先の欄は幅の下限を残す。** 無いと、伸び縮みする列の
-                // 中でいちばん後ろのこの文字から先に潰れ、名前が消える。
-                minWidth: 70, maxWidth: 170,
+                symbol: ResourceKind.node.symbol, tint: .secondary, size: 24,
+                minWidth: 84, maxWidth: 200,
                 isAnchor: target.id == anchor.id, select: { select(target) })
         } else {
             TraceNodeLabel(
                 name: String(localized: "未スケジュール"), kindLabel: count,
-                symbol: "questionmark.square.dashed", tint: .secondary, size: 26,
-                minWidth: 70, maxWidth: 170)
+                symbol: "questionmark.square.dashed", tint: .secondary, size: 24,
+                minWidth: 84, maxWidth: 200)
         }
     }
 }
@@ -873,15 +926,18 @@ private struct TracePodTile: View {
             store.selectOnly(pod)
         } label: {
             HStack(spacing: 8) {
-                ResourceGlyph(symbol: ResourceKind.pod.symbol, size: 30, badge: status.level)
-                VStack(alignment: .leading, spacing: 1) {
+                ResourceGlyph(symbol: ResourceKind.pod.symbol, size: 26, badge: status.level)
+                VStack(alignment: .leading, spacing: 0) {
                     Text(pod.name)
-                        .font(.caption)
+                        .font(.callout)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    // 正常な Pod の状態には色を付けない。色としるしは、正常でないときだけ。
                     Text(status.text)
-                        .font(.caption2)
-                        .foregroundStyle(Palette.textColor(for: status.level))
+                        .font(.subheadline)
+                        .foregroundStyle(
+                            status.level == .good
+                                ? Color.secondary : Palette.textColor(for: status.level))
                 }
                 // **幅を決め打ちしない。** 210pt に固定していたので、短い
                 // 名前でも枠を取り、長い名前は余っているのに中央を落として
@@ -889,7 +945,7 @@ private struct TracePodTile: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear))
@@ -922,14 +978,13 @@ private struct WrappingTiles: Layout {
     var lineSpacing: CGFloat = 6
     var idealColumns = 3
     /// 名前が短くてもこれ以下にはしない（器と状態で埋まる）。
-    var minimumWidth: CGFloat = 150
+    var minimumWidth: CGFloat = 168
     /// 名前が長くてもこれ以上は広げない。あとは中央を落として読ませる。
-    var maximumWidth: CGFloat = 280
+    var maximumWidth: CGFloat = 330
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard !subviews.isEmpty else { return .zero }
-        let item = itemSize(subviews)
-        let columns = columnCount(for: proposal.width, item: item, count: subviews.count)
+        let (item, columns) = arrangement(for: proposal.width, subviews: subviews)
         let rows = (subviews.count + columns - 1) / columns
         let used = min(subviews.count, columns)
         return CGSize(
@@ -941,8 +996,7 @@ private struct WrappingTiles: Layout {
         in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
     ) {
         guard !subviews.isEmpty else { return }
-        let item = itemSize(subviews)
-        let columns = columnCount(for: bounds.width, item: item, count: subviews.count)
+        let (item, columns) = arrangement(for: bounds.width, subviews: subviews)
         for (index, subview) in subviews.enumerated() {
             let row = index / columns
             let column = index % columns
@@ -952,6 +1006,19 @@ private struct WrappingTiles: Layout {
                     y: bounds.minY + CGFloat(row) * (item.height + lineSpacing)),
                 proposal: ProposedViewSize(item))
         }
+    }
+
+    /// 1 列でも入らない幅なら、下限まではタイルを狭める（名前は中央を落として出る）。
+    /// そうしないと、いちばん長い名前がこの並びの最小幅になり、図ごと欄からはみ出す。
+    private func arrangement(
+        for width: CGFloat?, subviews: Subviews
+    ) -> (item: CGSize, columns: Int) {
+        var item = itemSize(subviews)
+        let columns = columnCount(for: width, item: item, count: subviews.count)
+        if columns == 1, let width, width.isFinite {
+            item.width = max(minimumWidth, min(item.width, width))
+        }
+        return (item, columns)
     }
 
     /// **段の中で幅を揃える。** ばらばらの幅で流すと、行ごとに切れ目の
@@ -983,6 +1050,99 @@ private struct WrappingTiles: Layout {
     }
 }
 
+/// 図の 1 行。余りを取る子（Pod の並びなど）を 1 つだけ置き、ほかは中身の幅で止める。
+///
+/// **`HStack` に任せない。** あちらは伸び縮みの小さい子から順に幅を配るので、
+/// 余っていれば名前の欄を上限まで広げ、足りなくなると最後の子をはみ出させる
+/// （実測: Ingress と Service を持つ枝で、入口の列が空白を抱えたままノード名が切れた）。
+private struct FigureRow: Layout {
+    var spacing: CGFloat = 0
+
+    /// 余りを取る子。1 行に 1 つ。
+    struct IsBody: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    /// ここまでは縮めてよい幅。付けない子は縮めない。
+    struct MinimumWidth: LayoutValueKey {
+        static let defaultValue: CGFloat? = nil
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let widths = widths(for: proposal.width, subviews: subviews)
+        var height: CGFloat = 0
+        for (subview, width) in zip(subviews, widths) {
+            height = max(
+                height, subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+        }
+        return CGSize(width: widths.reduce(0, +) + gaps(subviews), height: height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        var x = bounds.minX
+        for (subview, width) in zip(subviews, widths(for: bounds.width, subviews: subviews)) {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.midY), anchor: .leading,
+                proposal: ProposedViewSize(width: width, height: nil))
+            x += width + spacing
+        }
+    }
+
+    private func gaps(_ subviews: Subviews) -> CGFloat {
+        spacing * CGFloat(max(0, subviews.count - 1))
+    }
+
+    private func widths(for width: CGFloat?, subviews: Subviews) -> [CGFloat] {
+        var widths = subviews.map { $0.sizeThatFits(.unspecified).width }
+        guard let width, width.isFinite,
+              let body = subviews.firstIndex(where: { $0[IsBody.self] })
+        else { return widths }
+
+        let minimum = subviews[body].sizeThatFits(ProposedViewSize(width: 0, height: nil)).width
+        func room() -> CGFloat {
+            width - gaps(subviews) - widths.indices.reduce(0) { $0 + ($1 == body ? 0 : widths[$1]) }
+        }
+        // 余りを取る子が下限でも入らないときだけ、ほかを同じ割合で下限へ寄せる。
+        let slack = subviews.indices.map { index -> CGFloat in
+            guard index != body, let floor = subviews[index][MinimumWidth.self] else { return 0 }
+            return max(0, widths[index] - floor)
+        }
+        let total = slack.reduce(0, +)
+        if room() < minimum, total > 0 {
+            let cut = min(1, (minimum - room()) / total)
+            for index in subviews.indices { widths[index] -= slack[index] * cut }
+        }
+        let offered = max(minimum, room())
+        widths[body] = subviews[body]
+            .sizeThatFits(ProposedViewSize(width: offered, height: nil)).width
+        return widths
+    }
+}
+
+/// 提案より広い大きさを、親へ伝えない枠。
+///
+/// 入りきらない枝が 1 つあると、`VStack` はその幅を自分の幅にして、ほかの枝にも同じ幅を
+/// 提案する。すると**入るはずの枝まで縮まずに欄からはみ出す**（実測: Ingress と Service を
+/// 持つ枝が 1 つあるだけで、ノードを起点にした図のすべての行でノード名が切れた）。
+private struct WidthCap: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        var size = subview.sizeThatFits(proposal)
+        if let width = proposal.width, width.isFinite {
+            size.width = min(size.width, width)
+        }
+        return size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: proposal)
+    }
+}
+
 // MARK: - 図の中の 1 つ
 
 /// 器と名前の組。押せるものは押すと起点になる。
@@ -991,29 +1151,37 @@ private struct TraceNodeLabel: View {
     let kindLabel: String
     let symbol: String
     var tint: Color = Palette.diagram
-    var size: CGFloat = 28
+    var size: CGFloat = 26
     var minWidth: CGFloat?
-    var maxWidth: CGFloat = 150
+    var maxWidth: CGFloat = 176
     var isAnchor: Bool = false
     var select: (() -> Void)?
+    /// 起点にならない器（詳細だけを出す）の説明。
+    var help: String?
 
     var body: some View {
-        let content = HStack(spacing: 7) {
+        let content = HStack(spacing: 8) {
             ResourceGlyph(symbol: symbol, size: size, tint: tint)
                 .overlay(anchorRing(isAnchor, size: size))
             VStack(alignment: .leading, spacing: 0) {
                 Text(name)
-                    .font(.caption)
+                    .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(kindLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .frame(minWidth: minWidth, maxWidth: maxWidth, alignment: .leading)
         }
 
-        if let select {
+        if let select, let help {
+            Button(action: select) { content }
+                .buttonStyle(.plain)
+                .help(help)
+        } else if let select {
             Button(action: select) { content }
                 .buttonStyle(.plain)
                 .help("\(kindLabel) \(name) を起点にする")
@@ -1028,10 +1196,19 @@ private struct TraceNodeLabel: View {
 /// **状態の 4 色を使わない。** これは選択であって状態ではないので、
 /// 一覧やタイルの選択と同じくアクセントに合わせる（OS の作法に従う場所）。
 @ViewBuilder
-private func anchorRing(_ isAnchor: Bool, size: CGFloat) -> some View {
+func anchorRing(_ isAnchor: Bool, size: CGFloat) -> some View {
     if isAnchor {
         Heptagon()
             .stroke(Color.accentColor, lineWidth: 2)
             .frame(width: size + 6, height: size + 6)
+    }
+}
+
+/// 撮影用。`-traceAnchor <起点の id>` で起こすと、その起点で開く（保存はしない）。
+private enum TraceLaunch {
+    static let anchorID = UserDefaults.standard.string(forKey: "traceAnchor")
+
+    static var kind: TraceAnchorKind? {
+        anchorID.flatMap { TraceAnchorKind(rawValue: String($0.prefix { $0 != "|" })) }
     }
 }

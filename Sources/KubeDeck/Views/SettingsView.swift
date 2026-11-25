@@ -228,6 +228,7 @@ private struct ViewSettings: View {
 // MARK: - 配置
 
 private struct PlacementSettings: View {
+    @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
 
     var body: some View {
@@ -257,7 +258,20 @@ private struct PlacementSettings: View {
             } header: {
                 Text("配置")
             } footer: {
-                Text("見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod のタイルは 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 行にまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます。「小」は名前を出さず、しるしだけを並べます（名前と状態と使用量は、タイルを指すと出ます）。")
+                Text("見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。タイルの大きさは、Pod の名前をどこまで出すかで決まります。「小」は名前を出さず、正常でない Pod にだけしるしを付けます。「中」は名前のうち区別に要る末尾だけ、「大」は名前をすべて出します（どれも、指すと名前と状態と使用量が出ます）。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod には 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 つの見出しにまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます（見出しが無くなるので、名前はすべて出します）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("経路（HTTPRoute）をたどるに出す", isOn: $preferences.showsMeshRoutes)
+                    .onChange(of: preferences.showsMeshRoutes) {
+                        if store.selection == .placement { store.reload(showsSpinner: false) }
+                    }
+            } header: {
+                Text("Istio / Gateway API")
+            } footer: {
+                Text("Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

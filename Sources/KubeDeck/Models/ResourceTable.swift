@@ -1174,17 +1174,9 @@ enum ResourceTable {
     /// いう既定があり（省略時は必ず Ingress を含む）、空欄だと「何も
     /// 制限していない」と読める。
     static func policyDirections(_ policy: K8sObject) -> String {
-        let declared = (policy.spec?["policyTypes"]?.arrayValue ?? [])
-            .compactMap { $0.stringValue }
-        let types = declared.isEmpty ? impliedPolicyTypes(policy) : declared
-        return types.map { $0 == "Egress" ? egressDirection : ingressDirection }
+        NetworkPolicySpec.policyTypes(of: policy.spec)
+            .map { $0 == "Egress" ? egressDirection : ingressDirection }
             .joined(separator: " · ")
-    }
-
-    private static func impliedPolicyTypes(_ policy: K8sObject) -> [String] {
-        var types = ["Ingress"]
-        if policy.spec?["egress"] != nil { types.append("Egress") }
-        return types
     }
 
     /// 入と出の規則の数。

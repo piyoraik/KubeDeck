@@ -1771,6 +1771,20 @@ actor Kubectl {
         return try K8sObject.list(from: result.stdout, assuming: kind)
     }
 
+    /// 名前で 1 つ引く。無ければ nil（消えたあとに押されることがある）。
+    func object(
+        _ kind: ResourceKind, name: String, namespace: String?, context: String
+    ) async throws -> K8sObject? {
+        var arguments = ["get", kind.resourceName, try Self.checkedName(name), "-o", "json",
+                         "--request-timeout=\(requestTimeout)", "--ignore-not-found=true"]
+        if kind.isNamespaced, let namespace, !namespace.isEmpty {
+            arguments += ["-n", namespace]
+        }
+        let result = try await run(arguments, context: context)
+        guard !result.stdout.isEmpty else { return nil }
+        return try K8sObject.list(from: result.stdout, assuming: kind).first
+    }
+
     /// resource は呼び出し側が持っている種別名を渡す。オブジェクトから
     /// 引くと、CRD のように組み込みの enum に無い種別が扱えない。
     func yaml(

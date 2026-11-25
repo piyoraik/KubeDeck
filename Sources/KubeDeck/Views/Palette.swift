@@ -123,6 +123,16 @@ enum Palette {
     /// しるしが持つ（`ResourceGlyph`）。
     static let diagram = Color.adaptive(light: 0x32_6C_E5, dark: 0x4B_86_EA)
 
+    /// 範囲を表す囲み（Namespace など）の枠。中身と線より弱く出す。
+    static let diagramFrame = Color.primary.opacity(0.16)
+    /// 図の矢印。関係そのものなので、枠より強く出す。
+    static let diagramLine = Color.secondary.opacity(0.85)
+
+    /// 配置のチップの地。正常な Pod はこの無彩色のまま出す。
+    static let chipFill = Color.primary.opacity(0.07)
+    /// しきい値を超えていない使用量の棒。状態の色（緑）は使わない。
+    static let meterNeutral = Color.primary.opacity(0.42)
+
     /// カードの面。ウインドウ背景から一段持ち上げる。
     static let cardBackground = Color(nsColor: .controlBackgroundColor)
     static let hairline = Color(nsColor: .separatorColor)

@@ -14,6 +14,14 @@ struct PlacementInventory: Sendable {
     var workloads: [K8sObject] = []
     /// Service / Ingress / PVC。
     var related: [K8sObject] = []
+    /// メッシュの経路（HTTPRoute）。設定で有効にしたときだけ入る。
+    var routes: [TrafficRoute] = []
+    /// 経路を読めなかった理由。nil なら読めているか、引いていない。
+    var routeProblem: String?
+    /// 絞り込んでいる Namespace。nil なら全 Namespace を取得している。
+    var scope: String?
+    /// Service を読めているか。読めていなければ、宛先を「無い」とは言えない。
+    var servicesReadable = true
 }
 
 /// たどるの起点にできる種別。
@@ -26,6 +34,8 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
     case generation
     case service
     case ingress
+    /// メッシュの経路（HTTPRoute）。Ingress と同じく入口の側から掴む。
+    case route
     case node
     /// PVC。**付属物ではあるが、起点としては逆引きの入口。**
     /// 「この PVC を消してよいか」「なぜ Pending なのか」は、掴んでいる Pod を
@@ -45,6 +55,7 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .generation: return String(localized: "ReplicaSet / Job")
         case .service: return String(localized: "Service")
         case .ingress: return String(localized: "Ingress")
+        case .route: return String(localized: "HTTPRoute")
         case .node: return String(localized: "ノード")
         // **略記で出す。** `PersistentVolumeClaim` は 236pt の欄に入らず、
         // 真ん中を落とすと PV と見分けが付かなくなる。
@@ -59,6 +70,7 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .generation: return ResourceKind.replicaSet.symbol
         case .service: return ResourceKind.service.symbol
         case .ingress: return ResourceKind.ingress.symbol
+        case .route: return "arrow.triangle.branch"
         case .node: return ResourceKind.node.symbol
         case .claim: return ResourceKind.persistentVolumeClaim.symbol
         case .volume: return ResourceKind.persistentVolume.symbol
@@ -72,6 +84,7 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .generation: return String(localized: "この世代の Pod がどこに居るか")
         case .service: return String(localized: "この Service が掴んでいるのは何か")
         case .ingress: return String(localized: "この入口の先に何があるか")
+        case .route: return String(localized: "この経路の先に何があるか")
         case .node:
             return String(localized: "このノードに載っているものは何に繋がっているか")
         case .claim: return String(localized: "この PVC を使っているのは何か")
@@ -87,6 +100,7 @@ enum TraceAnchorKind: String, CaseIterable, Identifiable, Sendable {
         case .generation: return String(localized: "ReplicaSet も Job もありません。")
         case .service: return String(localized: "Service がありません。")
         case .ingress: return String(localized: "Ingress がありません。")
+        case .route: return String(localized: "HTTPRoute がありません。")
         case .node: return String(localized: "ノードがありません。")
         case .claim: return String(localized: "PersistentVolumeClaim がありません。")
         case .volume: return String(localized: "PersistentVolume がありません。")
@@ -167,6 +181,10 @@ struct TraceBranch: Identifiable, Sendable {
     let ingresses: [K8sObject]
     let services: [K8sObject]
     let generations: [TraceGeneration]
+    /// 入口の列に出す経路（Gateway が親）。設定で有効にしたときだけ入る。
+    var routes: [TraceRouteEntry] = []
+    /// Service の器に付ける経路の札（Service が親）。
+    var routeTags: [TraceRouteTag] = []
 
     var id: String { workload.id }
     var namespace: String? { workload.namespace }
@@ -207,6 +225,8 @@ struct TraceGraph: Sendable {
     let policies: [K8sObject]
     /// 動いている ServiceAccount と、そこに付いている Binding。
     let access: AccessSummary
+    /// 経路を起点にしたときの、振り分けの図。
+    var routeSplit: TraceRouteSplit?
 
     var pods: [K8sObject] { branches.flatMap(\.pods) }
     var podCount: Int { branches.reduce(0) { $0 + $1.podCount } }
@@ -233,6 +253,7 @@ enum PlacementTrace {
         case .generation: return generationAnchors(inventory: inventory)
         case .service: return serviceAnchors(inventory: inventory)
         case .ingress: return ingressAnchors(inventory: inventory)
+        case .route: return routeAnchors(inventory: inventory)
         case .node: return nodeAnchors(inventory: inventory)
         case .claim: return claimAnchors(inventory: inventory)
         case .volume: return volumeAnchors(inventory: inventory)
@@ -428,6 +449,7 @@ enum PlacementTrace {
             lhs.podCount == rhs.podCount
                 ? lhs.workload.id < rhs.workload.id : lhs.podCount > rhs.podCount
         }
+        branches = focused(branches, onRoute: anchor, inventory: inventory)
 
         var dangling: [K8sObject] = []
         var missing: [String] = []
@@ -444,6 +466,8 @@ enum PlacementTrace {
             if pods.isEmpty, let service = object(for: anchor, in: inventory) {
                 dangling = [service]
             }
+        case .route:
+            dangling = danglingServices(ofRoute: anchor, inventory: inventory)
         default:
             break
         }
@@ -458,7 +482,8 @@ enum PlacementTrace {
         }
         return TraceGraph(
             anchor: anchor, branches: branches,
-            anchorNotes: storageNotes(for: anchor, pods: pods, inventory: inventory),
+            anchorNotes: storageNotes(for: anchor, pods: pods, inventory: inventory)
+                + routeNotes(for: anchor, branches: branches, inventory: inventory),
             danglingServices: dangling,
             missingServiceNames: missing,
             claims: claims,
@@ -469,7 +494,8 @@ enum PlacementTrace {
             policies: WorkloadRelations.policies(for: pods, among: inventory.related),
             // 口座の一覧は Pod の spec だけで作れる（kubectl は増えない）。
             // 付いている Binding は画面が引き直して足す。
-            access: WorkloadRelations.accessSummary(for: pods))
+            access: WorkloadRelations.accessSummary(for: pods),
+            routeSplit: routeSplit(for: anchor, inventory: inventory))
     }
 
     /// 起点そのものの PVC。PV を起点にしたときは、束ねている PVC。
@@ -613,6 +639,8 @@ enum PlacementTrace {
                 }
             }
             return result
+        case .route:
+            return pods(ofRoute: anchor, inventory: inventory)
         case .node:
             return inventory.pods.filter { nodeName(of: $0) == anchor.name }
         case .claim:
@@ -756,7 +784,9 @@ enum PlacementTrace {
 
         return TraceBranch(
             workload: workload, ingresses: ingresses, services: services,
-            generations: generations)
+            generations: generations,
+            routes: routeEntries(for: services, inventory: inventory),
+            routeTags: routeTags(for: services, inventory: inventory))
     }
 
     // MARK: - 所有者とノード
@@ -859,6 +889,7 @@ enum PlacementTrace {
         case .generation: pool = inventory.generations
         case .service, .ingress, .claim, .volume: pool = inventory.related
         case .workload: pool = inventory.workloads
+        case .route: pool = []
         }
         return pool.first {
             $0.namespace == anchor.namespace && $0.name == anchor.name

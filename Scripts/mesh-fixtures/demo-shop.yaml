@@ -1,0 +1,154 @@
+# KubeDeck の経路表示を、現実的な最小の構成で見るための例。確かめたら Namespace ごと消す。
+#   kubectl --context <コンテキスト> apply -f Scripts/mesh-fixtures/demo-shop.yaml
+#   kubectl --context <コンテキスト> delete namespace -l kubedeck.dev/purpose=route-verification
+#
+# 外から: Gateway shop → HTTPRoute frontend → Service frontend
+# 中で:   frontend が Service reviews を呼ぶ → HTTPRoute reviews が v1 に 90、v2 に 10 を振り分ける
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubedeck-shop
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/use-waypoint: waypoint
+    kubedeck.dev/purpose: route-verification
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: frontend, namespace: kubedeck-shop}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+        - name: frontend
+          image: registry.k8s.io/e2e-test-images/agnhost:2.47
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata: {name: frontend, namespace: kubedeck-shop}
+spec:
+  selector: {app: frontend}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: reviews-v1, namespace: kubedeck-shop}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: reviews, version: v1}
+  template:
+    metadata:
+      labels: {app: reviews, version: v1}
+    spec:
+      containers:
+        - name: reviews
+          image: registry.k8s.io/e2e-test-images/agnhost:2.47
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - containerPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: reviews-v2, namespace: kubedeck-shop}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reviews, version: v2}
+  template:
+    metadata:
+      labels: {app: reviews, version: v2}
+    spec:
+      containers:
+        - name: reviews
+          image: registry.k8s.io/e2e-test-images/agnhost:2.47
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - containerPort: 8080
+---
+# 呼ぶ側が指定する名前。全部の版を掴む
+apiVersion: v1
+kind: Service
+metadata: {name: reviews, namespace: kubedeck-shop}
+spec:
+  selector: {app: reviews}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: reviews-v1, namespace: kubedeck-shop}
+spec:
+  selector: {app: reviews, version: v1}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: reviews-v2, namespace: kubedeck-shop}
+spec:
+  selector: {app: reviews, version: v2}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+# 入口。LoadBalancer の実装が無いクラスタなので ClusterIP にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shop
+  namespace: kubedeck-shop
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "shop.example.com"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: frontend, namespace: kubedeck-shop}
+spec:
+  parentRefs:
+    - {name: shop}
+  hostnames: ["shop.example.com"]
+  rules:
+    - backendRefs:
+        - {name: frontend, port: 8080}
+---
+# ambient では、Service を親にした経路は waypoint が無いと効かない（実測）
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: kubedeck-shop
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: reviews, namespace: kubedeck-shop}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: reviews, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: reviews-v1, port: 8080, weight: 90}
+        - {name: reviews-v2, port: 8080, weight: 10}

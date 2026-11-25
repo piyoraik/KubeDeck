@@ -12,13 +12,17 @@ struct UsageBar: View {
     /// 取れるクラスタでは折れ線（CPU は青、メモリは橙）、取れないクラスタでは
     /// この棒になる。棒だけ状態の色にしていたので、環境によって同じカードが
     /// 別物に見えた。しきい値超えは割合の文字の色が持つ。
-    /// nil なら状態の色（Pod や Node の使用率など、しきい値が主役のところ）。
+    /// nil なら、しきい値を超えたときだけ状態の色（Pod や Node の使用率）。
+    /// **超えるまでは無彩色** —— 正常な棒を緑で塗ると、健全なほど画面が緑で埋まる。
     var tint: Color?
+    /// 目盛りを置くなら 8pt 要る（6pt では 2pt の印が潰れて見えなかった）。
+    var height: CGFloat
 
-    init(ratio: Double, marker: Double? = nil, tint: Color? = nil) {
+    init(ratio: Double, marker: Double? = nil, tint: Color? = nil, height: CGFloat = 8) {
         self.ratio = ratio
         self.marker = marker
         self.tint = tint
+        self.height = height
     }
 
     var body: some View {
@@ -26,7 +30,9 @@ struct UsageBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.subtleFill)
                 Capsule()
-                    .fill(tint ?? Palette.color(for: ResourceTable.usageLevel(ratio) ?? .good))
+                    .fill(
+                        tint ?? ResourceTable.usageLevel(ratio).map { Palette.color(for: $0) }
+                            ?? Palette.meterNeutral)
                     // 1% でも使っていれば見える太さを残す。
                     .frame(width: max(3, proxy.size.width * min(1, max(0, ratio))))
                 if let marker, marker > 0, marker < 1 {
@@ -37,8 +43,7 @@ struct UsageBar: View {
                 }
             }
         }
-        // 目盛りが読める太さが要る。6pt では 2pt の印が潰れて見えなかった。
-        .frame(height: 8)
+        .frame(height: height)
     }
 }
 
@@ -62,10 +67,14 @@ struct UsageMeter: View {
     var noteLevel: StatusLevel?
     /// 棒に置く目盛りの位置（0...1）。
     var marker: Double?
+    /// しきい値を超えたら色を付けるか。**分母が要求のときは付けない** —— 要求は
+    /// 置き場所を決めるための申告で、超えること自体は異常ではない。
+    var colorsByThreshold: Bool
 
     init(
         title: LocalizedStringResource, used: String, total: String, ratio: Double?,
-        note: String? = nil, noteLevel: StatusLevel? = nil, marker: Double? = nil
+        note: String? = nil, noteLevel: StatusLevel? = nil, marker: Double? = nil,
+        colorsByThreshold: Bool = true
     ) {
         self.title = title
         self.used = used
@@ -74,11 +83,13 @@ struct UsageMeter: View {
         self.note = note
         self.noteLevel = noteLevel
         self.marker = marker
+        self.colorsByThreshold = colorsByThreshold
     }
 
-    private var level: StatusLevel {
-        guard let ratio else { return .neutral }
-        return ResourceTable.usageLevel(ratio) ?? .good
+    /// しきい値を超えたときの重み。超えていなければ nil（色を付けない）。
+    private var level: StatusLevel? {
+        guard colorsByThreshold, let ratio else { return nil }
+        return ResourceTable.usageLevel(ratio)
     }
 
     var body: some View {
@@ -101,7 +112,7 @@ struct UsageMeter: View {
                     Text(Quantity.formatPercent(ratio))
                         .font(.caption)
                         .monospacedDigit()
-                        .foregroundStyle(Palette.textColor(for: level))
+                        .foregroundStyle(level.map { Palette.textColor(for: $0) } ?? Color.secondary)
                         .frame(minWidth: 42, alignment: .trailing)
                 }
             }
@@ -111,7 +122,9 @@ struct UsageMeter: View {
             // なかった。中を詰めて、計器どうしのあいだを空ける。
             VStack(alignment: .leading, spacing: 3) {
                 if let ratio {
-                    UsageBar(ratio: ratio, marker: marker)
+                    UsageBar(
+                        ratio: ratio, marker: marker,
+                        tint: level.map { Palette.color(for: $0) } ?? Palette.meterNeutral)
                 }
                 if let note {
                     Text(note)
