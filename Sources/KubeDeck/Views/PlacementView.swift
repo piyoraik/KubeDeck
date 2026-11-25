@@ -37,24 +37,12 @@ struct PlacementView: View {
                 if preferences.placementGrouping == .map {
                     TraceMapView()
                 } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            // Service が読めていないだけなのに「入口が無い」と
-                            // 読めてしまう。欠けは図ではなく文字で断る。
-                            if let notice = store.partialDataNotice {
-                                PartialDataNotice(text: notice)
-                            }
-                            if preferences.placementGrouping.isNodeFirst {
-                                ForEach(nodeGroups, id: \.id) { group in
-                                    NodeCard(group: group)
-                                }
-                            } else {
-                                ForEach(spreads, id: \.id) { spread in
-                                    WorkloadCard(spread: spread)
-                                }
-                            }
+                    // 表の組み方を欄の幅で決めるので、スクロールの外側で測る。
+                    GeometryReader { proxy in
+                        ScrollView {
+                            board(width: proxy.size.width)
+                                .padding(16)
                         }
-                        .padding(16)
                     }
                 }
             }
@@ -62,6 +50,50 @@ struct PlacementView: View {
             // 出し入れすると、レイアウト中の `NSToolbar` の書き換えで落ちる。
             // `RootView` が 1 つだけ持ち、文言だけを切り替える（たどるでは
             // 絞る相手が図ではなく左の起点の一覧なので、そこも向こうで書き分け）。
+        }
+    }
+
+    /// 表が 3 列（名前・ノード・使用量）で入る幅。下回ったら使用量をノードの下へ回す。
+    private static let wideTableWidth: CGFloat = 1010
+
+    private func board(width: CGFloat) -> some View {
+        let naming = chipNaming
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // Service が読めていないだけなのに「入口が無い」と
+            // 読めてしまう。欠けは図ではなく文字で断る。
+            if let notice = store.partialDataNotice {
+                PartialDataNotice(text: notice)
+            }
+            if preferences.placementGrouping.isNodeFirst {
+                // 名前をすべて出すチップは長いので、そのぶん列を広く取る。
+                CardGrid(minimumColumnWidth: naming.showsFullName ? 400 : 300) {
+                    ForEach(nodeGroups, id: \.id) { group in
+                        NodeCard(group: group, naming: naming)
+                    }
+                }
+            } else {
+                WorkloadTable(
+                    spreads: spreads, naming: naming,
+                    nodePrefix: PlacementTrace.sharedNodePrefix(store.placementNodes.map(\.name)),
+                    isCompact: width < Self.wideTableWidth)
+            }
+        }
+    }
+
+    /// チップに出す名前。**見出しにワークロード名が出ているときだけ切る** ——
+    /// まとめていない並べ方で末尾だけにすると、何の Pod か分からなくなる。
+    private var chipNaming: PodChipNaming {
+        switch preferences.placementTileSize {
+        case .small: return .hidden
+        case .large: return .full
+        case .medium:
+            if preferences.placementGrouping.isNodeFirst, !preferences.placementGroupsByWorkload {
+                return .full
+            }
+            // 絞り込みで世代が欠けても呼び名が変わらないよう、絞る前の Pod で決める。
+            return .suffix(
+                PlacementTrace.podSuffixes(for: store.objects, controllers: store.controllerIndex))
         }
     }
 
@@ -199,13 +231,19 @@ struct PlacementView: View {
         /// ノードをまたいだ全部。使用量の合計を出すときに使う。
         var pods: [K8sObject] { byNode.flatMap(\.pods) }
 
+        /// 散らす先があり、どの Pod もノードに載っているか。
+        let canSpread: Bool
+
         /// 2 つ以上あるのに 1 つのノードに固まっている状態。
         /// **これを見るための画面なので、文字で言う。**
-        var isConcentrated: Bool { podCount > 1 && nodeCount == 1 }
+        /// **散らしようが無いものは数えない**（`PlacementTrace.canSpread`）—— 直しようの
+        /// 無い警告が先頭に並ぶと、本当に固まっているものが埋もれる。
+        var isConcentrated: Bool { canSpread && podCount > 1 && nodeCount == 1 }
     }
 
     private var spreads: [Spread] {
         let index = store.controllerIndex
+        let clusterNodeCount = store.placementNodes.count
         var byOwner: [String: [K8sObject]] = [:]
         // **鍵から名前を切り出さない。** 種別を鍵に足すと、切り出しの規則も
         // 一緒に複雑になる。表示に要るものは別に覚える。
@@ -242,9 +280,14 @@ struct PlacementView: View {
                 left.pods.count == right.pods.count
                     ? left.node < right.node : left.pods.count > right.pods.count
             }
+            // 未スケジュールの Pod は、まとめて 1 つの欄に入るだけで、ノードに載ってはいない。
+            let isPlaced = pods.allSatisfy { Self.nodeName(of: $0) != nil }
             result.append(
                 Spread(
-                    name: name, namespace: namespace, kind: owner?.kind, byNode: ordered))
+                    name: name, namespace: namespace, kind: owner?.kind, byNode: ordered,
+                    canSpread: isPlaced
+                        && PlacementTrace.canSpread(
+                            ownerKind: owner?.kind, clusterNodeCount: clusterNodeCount)))
         }
         // 固まっているものを先に。次に数の多い順。見たいものが上に来る。
         result.sort { lhs, rhs in
@@ -284,50 +327,13 @@ struct PlacementView: View {
     }
 }
 
-// MARK: - 箱の共通の見た目
-
-private struct PlacementCard<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            content
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Palette.cardStroke, lineWidth: 1))
-        // 影は 1 段だけ。段を重ねると画面がぼやける。
-        .shadow(color: Palette.cardShadow, radius: 6, y: 2)
-    }
-}
-
-/// 見出しの右に置く小さな札。件数のような添え物を、本文と同じ字面で
-/// 並べないための入れ物。
-private struct CountPill: View {
-    let text: String
-    var tint: Color?
-
-    var body: some View {
-        Text(text)
-            .font(.caption.weight(.medium))
-            .monospacedDigit()
-            .foregroundStyle(tint ?? .secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                Capsule().fill(tint?.opacity(0.14) ?? Palette.insetFill))
-    }
-}
-
 // MARK: - ノード 1 枚
 
 private struct NodeCard: View {
     @Environment(ClusterStore.self) private var store
     @State private var preferences = Preferences.shared
     let group: PlacementView.Group
+    let naming: PodChipNaming
 
     var body: some View {
         PlacementCard {
@@ -335,51 +341,56 @@ private struct NodeCard: View {
             // **使用量を右のパネルに追い出さない。** 「このノードは混んでいるか」
             // は配置を見る目的そのもので、行を選ばないと分からないのでは遅い。
             if let node = group.node {
-                NodeUsageBars(node: node)
+                // ノードが少ないとカードが欄いっぱいに広がる。棒まで引き伸ばさない。
+                NodeMeters(node: node)
+                    .frame(maxWidth: 440, alignment: .leading)
             }
-            Divider().opacity(0.5)
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
             if group.pods.isEmpty {
                 Text("このノードに Pod はありません。")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             } else if preferences.placementGroupsByWorkload {
-                VStack(alignment: .leading, spacing: 8) {
+                // カードが広いとき（ノードが 1〜2 個のクラスタ）は、ワークロードも列に割る。
+                // 1 列のままだと、名前と Namespace が端どうしに離れ、縦にだけ伸びる。
+                CardGrid(minimumColumnWidth: 280, spacing: 24, lineSpacing: 10) {
                     ForEach(workloads) { workload in
-                        LabeledTiles(
-                            label: workload.name, namespace: workload.namespace,
-                            kind: workload.kind, count: workload.pods.count
-                        ) {
-                            PodTileGrid(pods: workload.pods)
+                        // **チップを 1 つにまとめない。** まとめると個々の Pod を選べなくなり、
+                        // 「1 つだけ落ちている」という、この画面でいちばん見たい状態が消える。
+                        // まとめるのは見出しだけ。
+                        VStack(alignment: .leading, spacing: 4) {
+                            WorkloadHeading(workload: workload)
+                            PodChips(pods: workload.pods, naming: naming)
                         }
                     }
                 }
             } else {
-                PodTileGrid(pods: group.pods)
+                PodChips(pods: group.pods, naming: naming)
             }
         }
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            // 種別のしるしは面に載せる。文字の列に混ぜると、名前の頭が
-            // 揃わずカードごとにずれて見える。
-            Image(systemName: group.node == nil ? "questionmark.square.dashed" : "server.rack")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .background(Palette.insetFill, in: RoundedRectangle(cornerRadius: 7))
-
-            Text(group.name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            if let node = group.node {
-                StatusBadge(status: StatusResolver.status(for: node))
+        HStack(alignment: .top, spacing: 8) {
+            if group.node == nil {
+                Image(systemName: "questionmark.square.dashed")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
-
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group.name)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(group.name)
+                if let node = group.node {
+                    NodeStatusText(status: StatusResolver.status(for: node))
+                }
+            }
             Spacer(minLength: 8)
-            // 件数は必ず文字で出す。タイルの数を目で数えさせない。
+            // 件数は必ず文字で出す。チップの数を目で数えさせない。
             CountPill(text: "\(group.pods.count) Pod")
         }
     }
@@ -416,224 +427,384 @@ private struct NodeCard: View {
     }
 }
 
+/// ノードの状態。正常なら語だけ。そうでないときだけ色としるしを付ける。
+private struct NodeStatusText: View {
+    let status: ResourceStatus
+
+    var body: some View {
+        if status.level == .good {
+            Text(status.text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            Label(status.text, systemImage: status.level.symbol)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Palette.textColor(for: status.level))
+        }
+    }
+}
+
 /// ノードの CPU とメモリ。取れないときは棒を出さず、その旨を書く。
-private struct NodeUsageBars: View {
+private struct NodeMeters: View {
     @Environment(ClusterStore.self) private var store
     let node: K8sObject
 
     var body: some View {
         if let usage = store.metrics.nodes[node.name] {
-            let allocatable = node.nodeAllocatable
-            let metric = Preferences.shared.placementMetric
-            HStack(alignment: .top, spacing: 20) {
-                if metric.showsCPU {
-                    PlacementUsageBar(
-                        title: "CPU", used: usage.cpuCores, base: allocatable.cpuCores,
-                        ratio: Quantity.ratio(usage.cpuCores, of: allocatable.cpuCores),
-                        format: { Quantity.formatCPU(cores: $0) })
-                }
-                if metric.showsMemory {
-                    PlacementUsageBar(
-                        title: "メモリ", used: usage.memoryBytes, base: allocatable.memoryBytes,
-                        ratio: Quantity.ratio(usage.memoryBytes, of: allocatable.memoryBytes),
-                        format: { Quantity.formatMemory(bytes: $0) })
-                }
-            }
+            PlacementMeters(rows: rows(usage))
         } else if store.metricsPhase.isPending {
             // **「まだ引いていない」を「取得できません」と書かない。**
             // 箱ごとに出るので輪は回さない（文字だけで足りる）。
-            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .caption2)
+            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .subheadline)
         } else {
             // 0% と描かない。「使っていない」と「測れていない」は別。
             Text("使用量を取得できません。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func rows(_ usage: ResourceUsage) -> [PlacementMeterRow] {
+        let allocatable = node.nodeAllocatable
+        let metric = Preferences.shared.placementMetric
+        var rows: [PlacementMeterRow] = []
+        if metric.showsCPU {
+            rows.append(
+                row(
+                    id: "cpu", title: "CPU", used: usage.cpuCores, base: allocatable.cpuCores,
+                    format: { Quantity.formatCPU(cores: $0) }))
+        }
+        if metric.showsMemory {
+            rows.append(
+                row(
+                    id: "memory", title: "メモリ", used: usage.memoryBytes,
+                    base: allocatable.memoryBytes,
+                    format: { Quantity.formatMemory(bytes: $0) }))
+        }
+        return rows
+    }
+
+    private func row(
+        id: String, title: LocalizedStringResource, used: Double, base: Double,
+        format: (Double) -> String
+    ) -> PlacementMeterRow {
+        let ratio = Quantity.ratio(used, of: base)
+        return PlacementMeterRow(
+            id: id, title: title, used: format(used), base: base > 0 ? format(base) : "",
+            ratio: ratio, level: ratio.flatMap(ResourceTable.usageLevel))
+    }
+}
+
+/// ノードの箱の中の、ワークロード 1 つぶんの見出し。
+private struct WorkloadHeading: View {
+    let workload: Workload
+
+    var body: some View {
+        // **同じ名前が並ぶことがある。** どの Namespace の、どの種別の
+        // ものかを添えないと、見分けが付かない。
+        let place = [workload.namespace, workload.kind].compactMap { $0 }.joined(separator: " · ")
+        let tip = "\(place) · \(workload.name)"
+
+        // 1 行に入らなければ、名前を切らずに Namespace と種別を下の行へ回す。
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                name
+                Spacer(minLength: 6)
+                Text(place)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                name
+                Text(place)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .help(tip)
+    }
+
+    private var name: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(workload.name)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if workload.pods.count > 1 {
+                Text(verbatim: "×\(workload.pods.count)")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
 
-/// ワークロードの合計。**ノードと同じ形で出す** — 同じ画面の同じ問い
-/// （どれだけ食っているか）なので、箱が変わるたびに作りが変わって見えない
-/// ようにする。
+// MARK: - ワークロードの表（ノードへの散らばり）
+
+/// ワークロードを 1 行ずつ。名前・載っているノード・使用量。
+///
+/// **1 件 1 カードにしない。** 枠と余白が中身（チップ数個）より大きくなり、16 件で
+/// 3.6 画面ぶんの高さになっていた（実測）。
+private struct WorkloadTable: View {
+    let spreads: [PlacementView.Spread]
+    let naming: PodChipNaming
+    /// ノード名から省く頭。行ごとに繰り返す名前なので、全部に共通する部分は見出しで断って落とす。
+    let nodePrefix: String
+    /// 欄が狭いときは、使用量を載っているノードの下へ回す。
+    let isCompact: Bool
+
+    static let usageWidth: CGFloat = 360
+
+    private var nameWidth: CGFloat { isCompact ? 190 : 232 }
+
+    var body: some View {
+        PlacementCard(
+            padding: EdgeInsets(top: 2, leading: 16, bottom: 4, trailing: 16), spacing: 0
+        ) {
+            header
+            if spreads.isEmpty {
+                Rectangle().fill(Palette.hairline).frame(height: 1)
+                Text("表示するものがありません。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+            }
+            ForEach(spreads) { spread in
+                Rectangle().fill(Palette.hairline).frame(height: 1)
+                WorkloadRow(
+                    spread: spread, naming: naming, nodePrefix: nodePrefix,
+                    isCompact: isCompact, nameWidth: nameWidth)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 22) {
+            Text("ワークロード")
+                .frame(width: nameWidth, alignment: .leading)
+            HStack(spacing: 0) {
+                Text("載っているノード")
+                if !nodePrefix.isEmpty {
+                    Text("（名前は「\(nodePrefix)」を省いて表示）")
+                        .fontWeight(.regular)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if !isCompact {
+                Text("使用量（Pod の合計）")
+                    .frame(width: Self.usageWidth, alignment: .leading)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct WorkloadRow: View {
+    let spread: PlacementView.Spread
+    let naming: PodChipNaming
+    let nodePrefix: String
+    let isCompact: Bool
+    let nameWidth: CGFloat
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 22) {
+            name
+                .frame(width: nameWidth, alignment: .leading)
+            if isCompact {
+                VStack(alignment: .leading, spacing: 8) {
+                    placement
+                    WorkloadMeters(pods: spread.pods)
+                        .frame(maxWidth: WorkloadTable.usageWidth, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                placement
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                WorkloadMeters(pods: spread.pods)
+                    .frame(width: WorkloadTable.usageWidth, alignment: .leading)
+                    .padding(.top, 5)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var name: some View {
+        // **種別を出す。** 同じ Namespace の Deployment `web` と StatefulSet `web` は
+        // 別の行になるので、出さないと同名の行が 2 つ並ぶだけになる。
+        let place = [spread.namespace, spread.kind].compactMap { $0 }.joined(separator: " · ")
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(spread.name)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(spread.name)
+            Text(place)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            // **固まっていることを色だけで言わない。** 冗長性が無い状態は
+            // この画面でいちばん見たいものなので、文字で書く。
+            if spread.isConcentrated {
+                Label(
+                    "\(spread.podCount) 個すべてが 1 ノードに載っています",
+                    systemImage: StatusLevel.warning.symbol)
+                    .font(.subheadline)
+                    .foregroundStyle(Palette.textColor(for: .warning))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 3)
+                    .help(
+                        "\(spread.podCount) 個すべてが 1 つのノードに載っています。このノードが落ちると全部止まります。")
+            }
+        }
+    }
+
+    /// 載っているノード。まとまりの数が、そのまま散らばりの数になる。
+    private var placement: some View {
+        HStack(alignment: .top, spacing: 10) {
+            count
+                .frame(width: 104, height: PodChip.height + 4, alignment: .leading)
+            ChipFlow(spacing: 8, lineSpacing: 6) {
+                ForEach(spread.byNode, id: \.node) { entry in
+                    NodeChipGroup(
+                        node: entry.node, prefix: nodePrefix, pods: entry.pods, naming: naming)
+                }
+            }
+        }
+    }
+
+    /// 件数は文字でも出す。散っている数は、固まっているときだけ色を付ける。
+    private var count: some View {
+        let nodes = Text("\(spread.nodeCount) ノード")
+            .foregroundStyle(
+                spread.isConcentrated ? Palette.textColor(for: .warning) : Color.secondary)
+
+        return (Text(verbatim: "\(spread.podCount) Pod · ") + nodes)
+            .font(.subheadline)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+}
+
+/// ノード 1 つぶんのまとまり。ノード名と、そこに載っている Pod。
+private struct NodeChipGroup: View {
+    let node: String
+    let prefix: String
+    let pods: [K8sObject]
+    let naming: PodChipNaming
+
+    var body: some View {
+        let short = !prefix.isEmpty && node.hasPrefix(prefix)
+            ? String(node.dropFirst(prefix.count)) : node
+
+        ChipFlow(spacing: naming.showsName ? 5 : 4, lineSpacing: 4) {
+            Text(short)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 136, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(height: PodChip.height)
+                .padding(.trailing, 2)
+                .help(node)
+            ForEach(PodChips.sorted(pods)) { pod in
+                PodChip(pod: pod, label: naming.label(for: pod))
+            }
+        }
+        .padding(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 2))
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// ワークロードの合計。
 ///
 /// **右のパネルに追い出さない。** ノードの使用量と同じ理由で、「このワークロードが
 /// どれだけ食っているか」は配置を見る目的そのもの。行を選ばないと分からないのでは遅い。
-private struct WorkloadUsageBars: View {
+private struct WorkloadMeters: View {
     @Environment(ClusterStore.self) private var store
     let pods: [K8sObject]
 
     var body: some View {
         let usage = store.metrics.workloadUsage(of: pods)
-        let metric = Preferences.shared.placementMetric
 
         if usage.isMeasured {
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .top, spacing: 20) {
-                    if metric.showsCPU {
-                        PlacementUsageBar(
-                            title: "CPU", used: usage.cpu.used, base: usage.cpu.base,
-                            basePrefix: usage.cpu.baseLabel, ratio: usage.cpu.ratio,
-                            format: { Quantity.formatCPU(cores: $0) })
-                    }
-                    if metric.showsMemory {
-                        PlacementUsageBar(
-                            title: "メモリ", used: usage.memory.used, base: usage.memory.base,
-                            basePrefix: usage.memory.baseLabel, ratio: usage.memory.ratio,
-                            format: { Quantity.formatMemory(bytes: $0) })
-                    }
-                }
+                PlacementMeters(rows: rows(usage), trackWidth: 56)
                 // **何個ぶんの合計なのかを黙らない。** 引けていない Pod があると
                 // 合計は小さく出るので、断りが無いと「そういう値」に読める。
-                ForEach(notes(usage, metric: metric), id: \.self) { note in
-                    Text(note)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                if usage.isPartial {
+                    Text(
+                        String(localized: """
+                            \(usage.podCount) 個中 \(usage.measuredPods) 個ぶんの合計です\
+                            （残りは使用量を引けていません）。
+                            """))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else if store.metricsPhase.isPending {
-            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .caption2)
+            MetricsPendingLabel(phase: store.metricsPhase, spins: false, font: .subheadline)
         } else {
             Text("使用量を取得できません。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
     }
 
-    /// 断りは、当てはまるものだけ。**出していない軸のことは書かない**
-    /// （メモリを出していないのに「メモリの分母が…」と書いても確かめようがない）。
-    private func notes(_ usage: WorkloadUsage, metric: PlacementMetric) -> [String] {
-        var notes: [String] = []
-        if usage.isPartial {
-            notes.append(
-                String(localized: """
-                    \(usage.podCount) 個中 \(usage.measuredPods) 個ぶんの合計です\
-                    （残りは使用量を引けていません）。
-                    """))
+    /// **出していない軸のことは書かない**（メモリを出していないのに「メモリの分母が…」と
+    /// 書いても確かめようがない）。
+    private func rows(_ usage: WorkloadUsage) -> [PlacementMeterRow] {
+        let metric = Preferences.shared.placementMetric
+        var rows: [PlacementMeterRow] = []
+        if metric.showsCPU {
+            rows.append(
+                row(id: "cpu", title: "CPU", axis: usage.cpu) { Quantity.formatCPU(cores: $0) })
         }
-        let missing =
-            (metric.showsCPU ? usage.cpu.podsWithoutBase : 0)
-            + (metric.showsMemory ? usage.memory.podsWithoutBase : 0)
-        if missing > 0 {
-            notes.append(
-                String(localized: "上限も要求も書かれていない Pod があるので、割合は出しません。"))
+        if metric.showsMemory {
+            rows.append(
+                row(id: "memory", title: "メモリ", axis: usage.memory) {
+                    Quantity.formatMemory(bytes: $0)
+                })
         }
-        return notes
+        return rows
     }
-}
 
-/// 使用量の棒 1 本。ノードもワークロードもこれで描く。
-///
-/// **状態の色のまま。** ここは「分母にどれだけ近いか」が主役で、系列という
-/// 考え方が無い（概要の折れ線とは持ち場が違う）。
-private struct PlacementUsageBar: View {
-    let title: LocalizedStringResource
-    let used: Double
-    let base: Double
-    /// 分母の呼び名（`上限` など）。ノードは分母が 1 つしか無いので付けない。
-    var basePrefix: String?
-    /// **`used / base` から導かない。** 分母を持たない Pod が混ざっているときは
-    /// 分母が足りないので、割合を出さないという判断が呼び出し側にある。
-    let ratio: Double?
-    let format: (Double) -> String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 6)
-                Text(format(used))
-                    .font(.caption)
-                    .monospacedDigit()
-                if base > 0 {
-                    Text("/ \(basePrefix.map { $0 + " " } ?? "")\(format(base))")
-                        .font(.caption2)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                if let ratio {
-                    Text(Quantity.formatPercent(ratio))
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(
-                            Palette.textColor(for: ResourceTable.usageLevel(ratio) ?? .good))
-                        .frame(minWidth: 40, alignment: .trailing)
-                }
-            }
-            if let ratio {
-                UsageBar(ratio: ratio)
-            }
+    /// 分母は Pod ごとの上限（無ければ要求）の合計で、ノードの割り当て可能量とは別物なので
+    /// 呼び名を添える。割合を出せない理由も、同じ場所に書く。
+    private func row(
+        id: String, title: LocalizedStringResource, axis: WorkloadUsage.Axis,
+        format: (Double) -> String
+    ) -> PlacementMeterRow {
+        var base = String(localized: "上限・要求なし")
+        var help: String?
+        if axis.base > 0 {
+            let amount = [axis.baseLabel, format(axis.base)].compactMap { $0 }
+                .joined(separator: " ")
+            base = axis.podsWithoutBase > 0 ? String(localized: "\(amount)（一部なし）") : amount
         }
-        .frame(maxWidth: .infinity)
+        if axis.podsWithoutBase > 0 {
+            help = String(localized: "上限も要求も書かれていない Pod があるので、割合は出しません。")
+        }
+        return PlacementMeterRow(
+            id: id, title: title, used: format(axis.used), base: base, ratio: axis.ratio,
+            // 要求の混ざった割合は、超えても異常ではないので色を付けない。
+            level: axis.isAgainstLimit ? axis.ratio.flatMap(ResourceTable.usageLevel) : nil,
+            help: help)
     }
 }
 
-// MARK: - ワークロード 1 枚（ノードへの散らばり）
-
-private struct WorkloadCard: View {
-    let spread: PlacementView.Spread
-
-    var body: some View {
-        PlacementCard {
-            HStack(spacing: 10) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(Palette.insetFill, in: RoundedRectangle(cornerRadius: 7))
-                Text(spread.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                // **種別を出す。** 同じ Namespace の Deployment `web` と
-                // StatefulSet `web` は別の箱になるので、出さないと同名の
-                // カードが 2 枚並ぶだけになる。
-                if let kind = spread.kind {
-                    Text(kind)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                CountPill(text: "\(spread.podCount) Pod")
-                // 散っている数は、固まっているときだけ色を付ける。
-                CountPill(
-                    text: String(localized: "\(spread.nodeCount) ノード"),
-                    tint: spread.isConcentrated ? Palette.color(for: .warning) : nil)
-            }
-
-            // **固まっていることを色だけで言わない。** 冗長性が無い状態は
-            // この画面でいちばん見たいものなので、文字で書く。
-            if spread.isConcentrated {
-                Label(
-                    "\(spread.podCount) 個すべてが 1 つのノードに載っています。このノードが落ちると全部止まります。",
-                    systemImage: StatusLevel.warning.symbol)
-                    .font(.caption)
-                    .foregroundStyle(Palette.textColor(for: .warning))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // ノードの箱と同じ位置に、同じ形で出す。ここでの分母は Pod ごとの
-            // 上限（無ければ要求）の合計で、ノードの割り当て可能量とは別物なので
-            // 呼び名を添える。
-            WorkloadUsageBars(pods: spread.pods)
-
-            Divider().opacity(0.5)
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(spread.byNode, id: \.node) { entry in
-                    LabeledTiles(label: entry.node, count: entry.pods.count) {
-                        PodTileGrid(pods: entry.pods)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - 見出しつきのタイルの並び
-
+/// ノードの箱の中の、ワークロード 1 つぶん。
 struct Workload: Identifiable {
     let name: String
     /// 名前だけで束ねない。1 つのノードには複数の Namespace の Pod が載る。
@@ -643,196 +814,4 @@ struct Workload: Identifiable {
     let pods: [K8sObject]
 
     var id: String { "\(namespace ?? "-")/\(kind ?? "-")/\(name)" }
-}
-
-/// 左に名前と件数、右にタイル。
-///
-/// **タイルを 1 つにまとめない。** まとめると個々の Pod を選べなくなり、
-/// 「1 つだけ落ちている」という、この画面でいちばん見たい状態が消える。
-/// まとめるのは見出しだけ。
-private struct LabeledTiles<Content: View>: View {
-    let label: String
-    var namespace: String?
-    /// 所有者の種別。**同じ名前で種別だけ違うものは別の箱になる**ので、
-    /// 出さないと同名の見出しが 2 つ並ぶだけになる。
-    var kind: String?
-    let count: Int
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
-                    Text(label)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("×\(count)")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                // **同じ名前が並ぶことがある。** どの Namespace の、どの種別の
-                // ものかを添えないと、見分けが付かない。
-                if namespace != nil || kind != nil {
-                    Text([namespace, kind].compactMap { $0 }.joined(separator: " / "))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(width: 200, alignment: .leading)
-
-            content
-        }
-    }
-}
-
-// MARK: - Pod のタイル
-
-private struct PodTileGrid: View {
-    let pods: [K8sObject]
-    @State private var preferences = Preferences.shared
-
-    var body: some View {
-        let size = preferences.placementTileSize
-        // 幅に合わせて折り返す。Pod は 200 を超えることがあるので、
-        // 1 行に固定すると横スクロールになる。
-        LazyVGrid(
-            columns: [
-                GridItem(
-                    .adaptive(minimum: size.minimumWidth, maximum: size.maximumWidth),
-                    spacing: size.showsName ? 6 : 4)
-            ],
-            alignment: .leading, spacing: size.showsName ? 6 : 4
-        ) {
-            ForEach(sorted) { pod in
-                PodTile(pod: pod, size: size)
-            }
-        }
-    }
-
-    /// 困っているものを先に出す。並びが毎回変わらないよう、同じ重みなら名前順。
-    private var sorted: [K8sObject] {
-        pods.sorted { lhs, rhs in
-            let left = StatusResolver.health(for: lhs).level
-            let right = StatusResolver.health(for: rhs).level
-            if left.severityOrder != right.severityOrder {
-                return left.severityOrder < right.severityOrder
-            }
-            return lhs.name < rhs.name
-        }
-    }
-}
-
-private struct PodTile: View {
-    @Environment(ClusterStore.self) private var store
-    let pod: K8sObject
-    let size: PlacementTileSize
-
-    private var isSelected: Bool { store.selectedObjectID == pod.id }
-
-    var body: some View {
-        let status = StatusResolver.health(for: pod)
-
-        Button {
-            // **`selectedObjectID` を直に書かない。** それだけだと
-            // `selectedObjectIDs`（操作の対象になる集合）が空のままで、
-            // 見えている選択と内部の選択がずれる。一覧の行と同じ入口を通す。
-            store.selectOnly(pod)
-        } label: {
-            tileBody(status)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Palette.color(for: status.level).opacity(isSelected ? 0.30 : 0.12)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(
-                        Palette.color(for: status.level).opacity(isSelected ? 0.9 : 0),
-                        lineWidth: 1.5))
-        }
-        .buttonStyle(.plain)
-        .help(helpText(status))
-        // タイルは自前の図形なので、読み上げる中身も自分で持たせる。
-        // 「小」では名前が画面に出ないので、なおさらここにしか無い。
-        .accessibilityLabel(Text(helpText(status)))
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// **小のときも色だけにしない。** 名前が入らないぶん、指したときに
-    /// 名前と状態と使用量が出るようにしてある。
-    @ViewBuilder
-    private func tileBody(_ status: ResourceStatus) -> some View {
-        if size.showsName {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    // 色だけに意味を持たせない。同じ色のしるしを添える。
-                    Image(systemName: status.level.symbol)
-                        .font(.system(size: 8))
-                        .foregroundStyle(Palette.color(for: status.level))
-                    Text(pod.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
-                }
-                // Pod ごとの使用量も、行を選ばずに見えるようにする。
-                // 分母が取れないものは棒を出さない（0% と描かない）。
-                if let ratio = usageRatio {
-                    UsageBar(ratio: ratio)
-                        .frame(height: 4)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-        } else {
-            // **ここが `Color.clear` だった。** 名前が入らないぶん、状態を
-            // 表しているのは背景の 12% の色だけで、つまり**色だけに意味を
-            // 持たせている**状態だった（真上のコメントが「小のときも色だけに
-            // しない」と書いているのに、である）。`.help` は指したときにしか
-            // 出ないうえ、アクセシビリティ上はラベルではなくヒントなので、
-            // 色覚特性のある人にも VoiceOver にも届かない。
-            // 大きさは 22×22 のまま、しるしだけを入れる。
-            Image(systemName: status.level.symbol)
-                .font(.system(size: 10))
-                .foregroundStyle(Palette.color(for: status.level))
-                .frame(width: 22, height: 22)
-        }
-    }
-
-    /// 上限に対する割合。上限が無ければ要求に落とす（一覧や詳細と同じ順序）。
-    ///
-    /// **タイルの棒は 1 本だけ。** 2 本並べると、この大きさでは読めない。
-    /// 何を出すかは設定で選ぶ。「CPU とメモリ」のときは詰まっているほう。
-    private var usageRatio: Double? {
-        guard let usage = store.metrics.usage(for: pod) else { return nil }
-        let limits = pod.containerResourceTotal("limits")
-        let requests = pod.containerResourceTotal("requests")
-        let metric = Preferences.shared.placementMetric
-
-        var ratios: [Double] = []
-        if metric.showsCPU,
-           let cpu = Quantity.ratio(usage.cpuCores, of: limits.cpuCores)
-            ?? Quantity.ratio(usage.cpuCores, of: requests.cpuCores) {
-            ratios.append(cpu)
-        }
-        if metric.showsMemory,
-           let memory = Quantity.ratio(usage.memoryBytes, of: limits.memoryBytes)
-            ?? Quantity.ratio(usage.memoryBytes, of: requests.memoryBytes) {
-            ratios.append(memory)
-        }
-        return ratios.max()
-    }
-
-    private func helpText(_ status: ResourceStatus) -> String {
-        var text = "\(pod.namespace ?? "-")/\(pod.name) · \(status.text)"
-        if let usage = store.metrics.usage(for: pod) {
-            text += """
-                 · CPU \(Quantity.formatCPU(cores: usage.cpuCores))\
-                 · メモリ \(Quantity.formatMemory(bytes: usage.memoryBytes))
-                """
-        }
-        return text
-    }
 }

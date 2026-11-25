@@ -260,6 +260,21 @@ struct WorkloadRelationsTests {
         #expect(found.map(\.name) == ["web-policy"])
     }
 
+    /// 式だけのセレクタも評価する。以前は評価せず「多めに出す」側に倒していた。
+    @Test("matchExpressions の NetworkPolicy も、当たるものだけを拾う")
+    func policiesMatchExpressions() {
+        let pod = Fixture.pod(name: "web-0", labels: ["app": "web"])
+        let hit = Fixture.networkPolicy(name: "in", spec: """
+            {"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["web"]}]}}
+            """)
+        let miss = Fixture.networkPolicy(name: "not-in", spec: """
+            {"podSelector":{"matchExpressions":[{"key":"app","operator":"NotIn","values":["web"]}]}}
+            """)
+
+        let found = WorkloadRelations.policies(for: [pod], among: [hit, miss])
+        #expect(found.map(\.name) == ["in"])
+    }
+
     // MARK: - Pod → ServiceAccount → Binding
 
     /// **省略時は `default`。** 空欄にすると権限が無いように読める。

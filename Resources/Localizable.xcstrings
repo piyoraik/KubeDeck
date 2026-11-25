@@ -4,6 +4,9 @@
     "": {
       "shouldTranslate": false
     },
+    " · %@": {
+      "shouldTranslate": false
+    },
     " の ": {
       "localizations": {
         "en": {
@@ -80,6 +83,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ %2$@ の更新を止めます。設定を変えても Pod は入れ替わらなくなり、止めているあいだは前の状態にも戻せません。一覧の Ready の数は揃ったままなので、止めたことは表に出ません。"
+          }
+        }
+      }
+    },
+    "%@ %@ は見つかりませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ %2$@ was not found."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ %2$@ は見つかりませんでした。"
           }
         }
       }
@@ -164,6 +183,22 @@
         }
       }
     },
+    "%@ から %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ from %1$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ から %2$@"
+          }
+        }
+      }
+    },
     "%@ からの退避を要求しました": {
       "localizations": {
         "en": {
@@ -240,6 +275,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ が出ています"
+          }
+        }
+      }
+    },
+    "%@ が振り分け": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Split by %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ が振り分け"
           }
         }
       }
@@ -368,6 +419,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ に新しい Pod が置かれるようになります。"
+          }
+        }
+      }
+    },
+    "%@ の %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ in %1$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ の %2$@"
+          }
+        }
+      }
+    },
+    "%@ の %@ は、まだ決まっていません: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The %2$@ condition of %1$@ is not settled yet: %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ の %2$@ は、まだ決まっていません: %3$@"
           }
         }
       }
@@ -516,6 +599,22 @@
         }
       }
     },
+    "%@ は %@ に付いていません（%@）: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ is not attached to %2$@ (%3$@): %4$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ は %2$@ に付いていません（%3$@）: %4$@"
+          }
+        }
+      }
+    },
     "%@ は、このクラスタの API 一覧に見つかりませんでした。\n`kubectl api-resources` に出るか確認してください。\n出るのに見つからない場合は、集約 API サーバ（`kubectl get apiservices` の\nAVAILABLE=False）を確認してください。": {
       "localizations": {
         "en": {
@@ -538,6 +637,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ はクラスタに見つかりませんでした（`kubectl` がこの種別を解決できていません）。読めたぶんだけ出しています。`kubectl api-resources` に出るかを確かめてください。"
+          }
+        }
+      }
+    },
+    "%@ はラベルを読めないため、当たるかどうか決まりません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Labels of %@ could not be read, so whether they match is undetermined."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ はラベルを読めないため、当たるかどうか決まりません。"
+          }
+        }
+      }
+    },
+    "%@ は宛先を解決できていません（%@）: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ could not resolve its destinations (%2$@): %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ は宛先を解決できていません（%2$@）: %3$@"
           }
         }
       }
@@ -622,6 +753,22 @@
         }
       }
     },
+    "%@ を %@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ません）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no record of %2$@ accepting %1$@ (the parent does not exist, or no controller handles it)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ を %2$@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ません）。"
+          }
+        }
+      }
+    },
     "%@ を %@ に戻す要求をしました": {
       "localizations": {
         "en": {
@@ -696,22 +843,6 @@
         }
       }
     },
-    "%@ を起点にする": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Start from %@"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ を起点にする"
-          }
-        }
-      }
-    },
     "%@ コア": {
       "localizations": {
         "en": {
@@ -776,6 +907,54 @@
         }
       }
     },
+    "%@。Service ではないので、辿っていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@. Not a Service, so it is not followed."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@。Service ではないので、辿っていません"
+          }
+        }
+      }
+    },
+    "%@〜%@%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@–%2$@%%"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@〜%2$@%%"
+          }
+        }
+      }
+    },
+    "%@（%@ を除く）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (except %2$@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（%2$@ を除く）"
+          }
+        }
+      }
+    },
     "%@（%@）": {
       "localizations": {
         "en": {
@@ -788,6 +967,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@（%2$@）"
+          }
+        }
+      }
+    },
+    "%@（%@）: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$@): %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（%2$@）: %3$@"
+          }
+        }
+      }
+    },
+    "%@（一部なし）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (partial)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（一部なし）"
           }
         }
       }
@@ -932,6 +1143,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$lld / %2$lld 行"
+          }
+        }
+      }
+    },
+    "%lld つ未確定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld undetermined"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld つ未確定"
+          }
+        }
+      }
+    },
+    "%lld つ止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld blocked"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld つ止まる"
           }
         }
       }
@@ -1128,6 +1371,22 @@
         }
       }
     },
+    "%lld 個すべてが 1 ノードに載っています": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All %lld are on one node"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 個すべてが 1 ノードに載っています"
+          }
+        }
+      }
+    },
     "%lld 個の Pod": {
       "localizations": {
         "en": {
@@ -1140,6 +1399,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 個の Pod"
+          }
+        }
+      }
+    },
+    "%lld 個の Pod は制限なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Pods are unrestricted"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 個の Pod は制限なし"
           }
         }
       }
@@ -1208,6 +1483,22 @@
         }
       }
     },
+    "%lld 宛先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld destinations"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 宛先"
+          }
+        }
+      }
+    },
     "%lld 時間": {
       "localizations": {
         "en": {
@@ -1236,6 +1527,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 時間前に取得"
+          }
+        }
+      }
+    },
+    "%lld 相手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld peers"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 相手"
           }
         }
       }
@@ -1358,22 +1665,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "/ %@"
-          }
-        }
-      }
-    },
-    "/ %@%@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "/ %1$@%2$@"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "/ %1$@%2$@"
           }
         }
       }
@@ -1850,6 +2141,70 @@
         }
       }
     },
+    "HTTPRoute": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute"
+          }
+        }
+      }
+    },
+    "HTTPRoute がありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no HTTPRoute."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute がありません。"
+          }
+        }
+      }
+    },
+    "HTTPRoute を読めないので、経路は描いていません: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoutes could not be read, so routes are not drawn: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute を読めないので、経路は描いていません: %@"
+          }
+        }
+      }
+    },
+    "HTTPRoute を読めないので、経路は描いていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoutes could not be read, so routes are not drawn."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute を読めないので、経路は描いていません。"
+          }
+        }
+      }
+    },
     "Homebrew・krew・gcloud SDK の場所は自動で探します。指定した場所が実行できないときは、自動探索に戻ります。": {
       "localizations": {
         "en": {
@@ -1862,6 +2217,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Homebrew・krew・gcloud SDK の場所は自動で探します。指定した場所が実行できないときは、自動探索に戻ります。"
+          }
+        }
+      }
+    },
+    "IP の範囲": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IP range"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IP の範囲"
           }
         }
       }
@@ -1946,6 +2317,38 @@
         }
       }
     },
+    "Istio / Gateway API": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Istio / Gateway API"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Istio / Gateway API"
+          }
+        }
+      }
+    },
+    "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reads Gateway API HTTPRoutes (implemented by Istio and others) and shows them with their shares at the entry points in Trace. The shares are the declared weights, not actual traffic. When on, opening Placement fetches one more resource type."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。"
+          }
+        }
+      }
+    },
     "NFS": {
       "localizations": {
         "en": {
@@ -1994,6 +2397,22 @@
         }
       }
     },
+    "Namespace %@ の %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ in namespace %1$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Namespace %1$@ の %2$@"
+          }
+        }
+      }
+    },
     "Namespace 「%@」には %@ がありません。": {
       "localizations": {
         "en": {
@@ -2006,6 +2425,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Namespace 「%1$@」には %2$@ がありません。"
+          }
+        }
+      }
+    },
+    "Namespace の一覧を読めないため、namespaceSelector に当たる Namespace を挙げきれていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The namespace list could not be read, so the namespaces matched by namespaceSelector may be incomplete."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Namespace の一覧を読めないため、namespaceSelector に当たる Namespace を挙げきれていません。"
           }
         }
       }
@@ -2038,6 +2473,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "Namespace 別"
+          }
+        }
+      }
+    },
+    "NetworkPolicy の宣言から解いた許可です。実際の通信ではありません。CNI が NetworkPolicy を強制していない環境では効かず、CNI 独自の policy（Cilium・Calico など）は見ていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permissions derived from declared NetworkPolicies, not observed traffic. They have no effect where the CNI does not enforce NetworkPolicy, and CNI-specific policies (Cilium, Calico, etc.) are not considered."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NetworkPolicy の宣言から解いた許可です。実際の通信ではありません。CNI が NetworkPolicy を強制していない環境では効かず、CNI 独自の policy（Cilium・Calico など）は見ていません。"
+          }
+        }
+      }
+    },
+    "NetworkPolicy を解いています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolving NetworkPolicies…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NetworkPolicy を解いています…"
           }
         }
       }
@@ -2218,6 +2685,22 @@
         }
       }
     },
+    "Pod %lld 個のうち、NetworkPolicy が効いているのは %lld 個です。押すと、そのワークロードの図を開きます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A NetworkPolicy applies to %2$lld of %1$lld Pods. Click a workload to open its diagram."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pod %1$lld 個のうち、NetworkPolicy が効いているのは %2$lld 個です。押すと、そのワークロードの図を開きます。"
+          }
+        }
+      }
+    },
     "Pod IP": {
       "localizations": {
         "en": {
@@ -2278,6 +2761,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pod が残っていません"
+          }
+        }
+      }
+    },
+    "Pod によって通るものと止まるものがあります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allowed for some Pods, blocked for others"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pod によって通るものと止まるものがあります"
+          }
+        }
+      }
+    },
+    "Pod によって違う": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Differs by Pod"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pod によって違う"
           }
         }
       }
@@ -2614,6 +3129,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Service がありません。"
+          }
+        }
+      }
+    },
+    "Service がありません。この %@ は 500 を返します": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no Service. This %@ returns 500"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Service がありません。この %@ は 500 を返します"
           }
         }
       }
@@ -3540,6 +4071,22 @@
         }
       }
     },
+    "いまの取得範囲の外です": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outside the range currently loaded"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "いまの取得範囲の外です"
+          }
+        }
+      }
+    },
     "いまの版": {
       "localizations": {
         "en": {
@@ -3690,6 +4237,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "ここで変えても、次の調整で HPA が戻します。"
+          }
+        }
+      }
+    },
+    "ここに来た呼び出しの行き先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Where calls that arrive here go"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここに来た呼び出しの行き先"
+          }
+        }
+      }
+    },
+    "ここ宛ての呼び出しの行き先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Where calls addressed here go"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここ宛ての呼び出しの行き先"
           }
         }
       }
@@ -3946,6 +4525,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "この Service が掴んでいるのは何か"
+          }
+        }
+      }
+    },
+    "この Service 宛ての呼び出しを、この経路が振り分けます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This route splits the calls addressed to this Service."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この Service 宛ての呼び出しを、この経路が振り分けます。"
           }
         }
       }
@@ -4264,6 +4859,22 @@
         }
       }
     },
+    "この経路の先に何があるか": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What lies beyond this route"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この経路の先に何があるか"
+          }
+        }
+      }
+    },
     "この行には時刻が付いていません（kubectl 自身の文言など）": {
       "localizations": {
         "en": {
@@ -4308,6 +4919,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "この起点から辿れる Pod はありません。"
+          }
+        }
+      }
+    },
+    "この起点の NetworkPolicy で止まります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked by this target's NetworkPolicy"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この起点の NetworkPolicy で止まります"
           }
         }
       }
@@ -4392,6 +5019,22 @@
         }
       }
     },
+    "すべてのポート": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All ports"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのポート"
+          }
+        }
+      }
+    },
     "すべての設定を既定値に戻しますか？": {
       "localizations": {
         "en": {
@@ -4420,6 +5063,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "すべて出す"
+          }
+        }
+      }
+    },
+    "すべて拒否": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deny all"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべて拒否"
+          }
+        }
+      }
+    },
+    "すべて拒否（入ってこられる相手なし）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All denied (no allowed sources)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべて拒否（入ってこられる相手なし）"
+          }
+        }
+      }
+    },
+    "すべて拒否（出ていける先なし）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All denied (no allowed destinations)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべて拒否（出ていける先なし）"
           }
         }
       }
@@ -4632,6 +5323,38 @@
         }
       }
     },
+    "どこへでも": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anywhere"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "どこへでも"
+          }
+        }
+      }
+    },
+    "どのワークロードにも NetworkPolicy は効いていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No NetworkPolicy applies to any of these workloads."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "どのワークロードにも NetworkPolicy は効いていません。"
+          }
+        }
+      }
+    },
     "なし": {
       "localizations": {
         "en": {
@@ -4664,12 +5387,44 @@
         }
       }
     },
+    "ほか %lld 件を出す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show %lld more"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほか %lld 件を出す"
+          }
+        }
+      }
+    },
     "ほかで変更されています。読み直してください。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "It was changed elsewhere. Reload it."
+          }
+        }
+      }
+    },
+    "ほかの Namespace に置かれた経路は、いまの取得範囲の外です。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Routes placed in other namespaces are outside the range currently loaded."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほかの Namespace に置かれた経路は、いまの取得範囲の外です。"
           }
         }
       }
@@ -5314,6 +6069,38 @@
         }
       }
     },
+    "クラスタの外として扱う": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Treated as outside the cluster"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クラスタの外として扱う"
+          }
+        }
+      }
+    },
+    "クラスタの外の宛先として扱います": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Treated as a destination outside the cluster"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クラスタの外の宛先として扱います"
+          }
+        }
+      }
+    },
     "クラスタの状態": {
       "localizations": {
         "en": {
@@ -5342,6 +6129,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "クラスタの状態を取得できません"
+          }
+        }
+      }
+    },
+    "クラスタ全体": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cluster-wide"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クラスタ全体"
           }
         }
       }
@@ -6268,6 +7071,22 @@
         }
       }
     },
+    "ポートが重ならない": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ports don't overlap"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ポートが重ならない"
+          }
+        }
+      }
+    },
     "ポート番号が数値ではありません。": {
       "localizations": {
         "en": {
@@ -6328,6 +7147,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "メモリ"
+          }
+        }
+      }
+    },
+    "メモリ %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memory %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "メモリ %@"
           }
         }
       }
@@ -6456,6 +7291,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "ラベル"
+          }
+        }
+      }
+    },
+    "ラベルを読めないため、通るか決まりません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Labels unreadable; cannot tell if allowed"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ラベルを読めないため、通るか決まりません"
           }
         }
       }
@@ -7190,6 +8041,22 @@
         }
       }
     },
+    "上限・要求なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No limit or requests"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上限・要求なし"
+          }
+        }
+      }
+    },
     "下": {
       "localizations": {
         "en": {
@@ -7318,6 +8185,54 @@
         }
       }
     },
+    "両側で止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked on both sides"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "両側で止まる"
+          }
+        }
+      }
+    },
+    "両側とも許していますが、ポートが重なりません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Both sides allow it, but the ports do not overlap"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "両側とも許していますが、ポートが重なりません"
+          }
+        }
+      }
+    },
+    "両側の NetworkPolicy で止まります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked by NetworkPolicies on both sides"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "両側の NetworkPolicy で止まります"
+          }
+        }
+      }
+    },
     "中": {
       "localizations": {
         "en": {
@@ -7330,6 +8245,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "中"
+          }
+        }
+      }
+    },
+    "中の Pod は未取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pods not loaded"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中の Pod は未取得"
+          }
+        }
+      }
+    },
+    "中の Pod を取得していないので、相手の入口は見ていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pods there are not loaded; their ingress is not checked"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中の Pod を取得していないので、相手の入口は見ていません"
+          }
+        }
+      }
+    },
+    "中の Pod を取得していないので、相手の出口は見ていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pods there are not loaded; their egress is not checked"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中の Pod を取得していないので、相手の出口は見ていません"
           }
         }
       }
@@ -7702,6 +8665,22 @@
         }
       }
     },
+    "使用量（Pod の合計）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usage (sum of Pods)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量（Pod の合計）"
+          }
+        }
+      }
+    },
     "保存先": {
       "localizations": {
         "en": {
@@ -7874,6 +8853,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "入っているのにここで見つからないときは、KubeDeck から見える PATH に その場所がありません。設定の「診断」で、いま渡している PATH を確認できます。"
+          }
+        }
+      }
+    },
+    "入ってこられる相手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allowed sources"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入ってこられる相手"
           }
         }
       }
@@ -8166,6 +9161,22 @@
         }
       }
     },
+    "出ていける先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allowed destinations"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "出ていける先"
+          }
+        }
+      }
+    },
     "出てよい先": {
       "localizations": {
         "en": {
@@ -8374,6 +9385,22 @@
         }
       }
     },
+    "制限する NetworkPolicy なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No restricting NetworkPolicy"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制限する NetworkPolicy なし"
+          }
+        }
+      }
+    },
     "制限する向き": {
       "localizations": {
         "en": {
@@ -8386,6 +9413,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "制限する向き"
+          }
+        }
+      }
+    },
+    "制限なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unrestricted"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制限なし"
+          }
+        }
+      }
+    },
+    "制限なし（%lld Pod）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unrestricted (%lld Pods)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制限なし（%lld Pod）"
           }
         }
       }
@@ -8550,18 +9609,34 @@
         }
       }
     },
-    "効いている通信制限": {
+    "割合は宣言です。実際の流量ではありません。match の条件と、経路どうしの優先順は評価していません。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Network policies in effect"
+            "value": "Shares are declared, not actual traffic. Match conditions and the precedence between routes are not evaluated."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "効いている通信制限"
+            "value": "割合は宣言です。実際の流量ではありません。match の条件と、経路どうしの優先順は評価していません。"
+          }
+        }
+      }
+    },
+    "効いている NetworkPolicy: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NetworkPolicies in effect: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "効いている NetworkPolicy: %@"
           }
         }
       }
@@ -8668,6 +9743,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "取り直す間隔"
+          }
+        }
+      }
+    },
+    "取得した一覧にありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not in the loaded list"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得した一覧にありません"
           }
         }
       }
@@ -9408,6 +10499,70 @@
         }
       }
     },
+    "宛先: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Destinations: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宛先: %@"
+          }
+        }
+      }
+    },
+    "宛先なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No destination"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宛先なし"
+          }
+        }
+      }
+    },
+    "宛先なし（リダイレクトなど）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No destination (redirect, etc.)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宛先なし（リダイレクトなど）"
+          }
+        }
+      }
+    },
+    "宛先の先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beyond the destinations"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宛先の先"
+          }
+        }
+      }
+    },
     "宛先は `%@` です。プライベートなアドレスであれば、VPN や社内ネットワークからでないと届きません。": {
       "localizations": {
         "en": {
@@ -9436,6 +10591,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "実体"
+          }
+        }
+      }
+    },
+    "実線は通る通信、破線は止まる通信です。✕ は止めている側に置いています。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solid lines are allowed; dashed lines are blocked. The ✕ marks the side that blocks."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "実線は通る通信、破線は止まる通信です。✕ は止めている側に置いています。"
           }
         }
       }
@@ -10020,6 +11191,22 @@
         }
       }
     },
+    "手元の Pod には 1 つも当たりません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Matches none of the loaded Pods"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手元の Pod には 1 つも当たりません"
+          }
+        }
+      }
+    },
     "打ち切りまでの秒数": {
       "localizations": {
         "en": {
@@ -10048,6 +11235,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "折り返し"
+          }
+        }
+      }
+    },
+    "押すと、この経路を起点にします。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click to make this route the anchor."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "押すと、この経路を起点にします。"
+          }
+        }
+      }
+    },
+    "押すと右のパネルに詳細": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click to show details in the inspector"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "押すと右のパネルに詳細"
           }
         }
       }
@@ -11236,6 +12455,22 @@
         }
       }
     },
+    "決まらない": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undetermined"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "決まらない"
+          }
+        }
+      }
+    },
     "注意": {
       "localizations": {
         "en": {
@@ -11648,6 +12883,102 @@
           "stringUnit": {
             "state": "translated",
             "value": "直近 %lld 件"
+          }
+        }
+      }
+    },
+    "相手の入口で止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at peer's ingress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手の入口で止まる"
+          }
+        }
+      }
+    },
+    "相手の入口（Ingress）で止まります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at the peer's ingress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手の入口（Ingress）で止まります"
+          }
+        }
+      }
+    },
+    "相手の出口で止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at peer's egress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手の出口で止まる"
+          }
+        }
+      }
+    },
+    "相手の出口（Egress）で止まります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at the peer's egress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手の出口（Egress）で止まります"
+          }
+        }
+      }
+    },
+    "相手を問わない規則": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule with no peer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手を問わない規則"
+          }
+        }
+      }
+    },
+    "相手側は未確認": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Peer side not checked"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相手側は未確認"
           }
         }
       }
@@ -12100,6 +13431,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "終了時に消すもの"
+          }
+        }
+      }
+    },
+    "経路（HTTPRoute）をたどるに出す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show routes (HTTPRoute) in Trace"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "経路（HTTPRoute）をたどるに出す"
           }
         }
       }
@@ -12722,18 +14069,18 @@
         }
       }
     },
-    "見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod のタイルは 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 行にまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます。「小」は名前を出さず、しるしだけを並べます（名前と状態と使用量は、タイルを指すと出ます）。": {
+    "見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。タイルの大きさは、Pod の名前をどこまで出すかで決まります。「小」は名前を出さず、正常でない Pod にだけしるしを付けます。「中」は名前のうち区別に要る末尾だけ、「大」は名前をすべて出します（どれも、指すと名前と状態と使用量が出ます）。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod には 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 つの見出しにまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます（見出しが無くなるので、名前はすべて出します）。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The view (by node / by workload / trace) is switched on the Placement screen itself. What lives here is only the kind of thing you decide once. What the bars show is a choice because some clusters run out of CPU and others out of memory (a Pod tile can only show one bar, so “CPU and memory” shows whichever is tighter). Grouping by workload puts the replicas of one Deployment on a single row. In clusters with few Pods, not grouping is shorter. “Small” omits names and lines up only the markers (name, status and usage appear when you point at a tile)."
+            "value": "The view (by node / by workload / trace) is switched on the Placement screen itself. What lives here is only the kind of thing you decide once. Tile size decides how much of a Pod’s name is shown. “Small” omits names and marks only the Pods that are not healthy. “Medium” shows just the trailing part that tells Pods apart, and “Large” shows the whole name (in every size, name, status and usage appear when you point at a Pod). What the bars show is a choice because some clusters run out of CPU and others out of memory (a Pod can only show one bar, so “CPU and memory” shows whichever is tighter). Grouping by workload puts the replicas of one Deployment under a single heading. In clusters with few Pods, not grouping is shorter (with no heading, names are shown in full)."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod のタイルは 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 行にまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます。「小」は名前を出さず、しるしだけを並べます（名前と状態と使用量は、タイルを指すと出ます）。"
+            "value": "見方（ノード別／ワークロード別／たどる）は配置の画面で切り替えます。ここにあるのは、いちど決めたら変えない類のものだけです。タイルの大きさは、Pod の名前をどこまで出すかで決まります。「小」は名前を出さず、正常でない Pod にだけしるしを付けます。「中」は名前のうち区別に要る末尾だけ、「大」は名前をすべて出します（どれも、指すと名前と状態と使用量が出ます）。棒が表すものは、CPU で詰まる環境とメモリで詰まる環境があるので選べます（Pod には 1 本しか出せないため、「CPU とメモリ」のときは詰まっているほうを出します）。ワークロードでまとめると、同じ Deployment のレプリカが 1 つの見出しにまとまります。Pod が少ないクラスタでは、まとめないほうが縦に縮みます（見出しが無くなるので、名前はすべて出します）。"
           }
         }
       }
@@ -12766,6 +14113,134 @@
           "stringUnit": {
             "state": "translated",
             "value": "規則 %lld"
+          }
+        }
+      }
+    },
+    "規則 %lld: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %1$lld: %2$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %1$lld: %2$@"
+          }
+        }
+      }
+    },
+    "規則 %lld: %@%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %1$lld: %2$@%%"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %1$lld: %2$@%%"
+          }
+        }
+      }
+    },
+    "規則 %lld（%@）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %1$lld (%2$@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %1$lld（%2$@）"
+          }
+        }
+      }
+    },
+    "規則 %lld（%@）: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %1$lld (%2$@): %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %1$lld（%2$@）: %3$@"
+          }
+        }
+      }
+    },
+    "規則 %lld（%@）: %@%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %1$lld (%2$@): %3$@%%"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %1$lld（%2$@）: %3$@%%"
+          }
+        }
+      }
+    },
+    "規則 %lld（条件なし）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule %lld (no conditions)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "規則 %lld（条件なし）"
+          }
+        }
+      }
+    },
+    "親: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parents: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "親: %@"
+          }
+        }
+      }
+    },
+    "親の指定がありません。どこにも付いていない経路です。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No parent is specified. This route is not attached anywhere."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "親の指定がありません。どこにも付いていない経路です。"
           }
         }
       }
@@ -13392,6 +14867,54 @@
         }
       }
     },
+    "起点の入口で止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at this ingress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点の入口で止まる"
+          }
+        }
+      }
+    },
+    "起点の出口で止まる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blocked at this egress"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点の出口で止まる"
+          }
+        }
+      }
+    },
+    "載っているノード": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nodes"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "載っているノード"
+          }
+        }
+      }
+    },
     "追いかける": {
       "localizations": {
         "en": {
@@ -13500,6 +15023,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "退避できる数"
+          }
+        }
+      }
+    },
+    "通信": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Traffic"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通信"
           }
         }
       }
@@ -13910,6 +15449,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "（伏せています）"
+          }
+        }
+      }
+    },
+    "（名前は「%@」を省いて表示）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " (names shown without “%@”)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（名前は「%@」を省いて表示）"
           }
         }
       }

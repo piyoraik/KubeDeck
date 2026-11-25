@@ -130,7 +130,7 @@ private struct ObjectCommands: View {
         } else {
             ForEach(
                 ResourceActionSet.actions(
-                    for: objects, target: store.actionTarget,
+                    for: objects, target: objects.first.flatMap(store.actionTarget(for:)),
                     isReadOnly: store.isReadOnly,
                     // メニューバーからは別ウインドウを開かない（対象が決まらない
                     // 場面で開くことになるので、画面側の入口に任せる）。

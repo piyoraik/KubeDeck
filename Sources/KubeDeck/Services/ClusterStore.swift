@@ -124,6 +124,7 @@ final class ClusterStore {
         placementControllers = []
         placementWorkloads = []
         placementRelated = []
+        placementRoutes = []
         // **概要の集計も捨てる。** 残っていると `hasOverviewData` が真のままで、
         // 概要は前の Namespace の数字を出したまま読み直すことになる
         // （「古い」ではなく「別物」）。
@@ -167,6 +168,7 @@ final class ClusterStore {
             placementControllers = []
             placementWorkloads = []
             placementRelated = []
+            placementRoutes = []
             // 列は種別ごとに違うので、見出しを持ち越しても指す先が無い。
             sortDescriptor = nil
             // 別の種別を開いたのに前の Pod のログが下に残ると、
@@ -198,21 +200,46 @@ final class ClusterStore {
 
     /// 配置画面のノード。Pod のほうは `objects` に入れる（検索と選択を
     /// 一覧と同じ経路に載せるため）。
-    var placementNodes: [K8sObject] = []
+    var placementNodes: [K8sObject] = [] {
+        didSet { rebuildPlacementIndex() }
+    }
     /// ReplicaSet と Job。Pod の所有者を Deployment / CronJob まで辿るために持つ。
     /// **ReplicaSet 名で束ねない。** `<Deployment 名>-<ハッシュ>` なので、
     /// 更新のたびに別のまとまりに見える。
     var placementControllers: [K8sObject] = [] {
-        didSet { controllerIndex = Self.makeControllerIndex(placementControllers) }
+        didSet {
+            controllerIndex = Self.makeControllerIndex(placementControllers)
+            rebuildPlacementIndex()
+        }
     }
     /// Deployment / StatefulSet / DaemonSet / CronJob。
     /// **Pod から名前を起こすだけでは足りない。** レプリカ 0 のワークロードは
     /// Pod が 1 つも無く、Pod 側からは存在すら見えない（たどるの起点に
     /// 選べないうえ、「無い」のか「止めてある」のかも分からない）。
-    var placementWorkloads: [K8sObject] = []
+    var placementWorkloads: [K8sObject] = [] {
+        didSet { rebuildPlacementIndex() }
+    }
     /// 図に添えるもの（Service・Ingress・PVC）。関係は API に無いので、
     /// 取ってきたものどうしを突き合わせて結ぶ（`WorkloadRelations`）。
-    var placementRelated: [K8sObject] = []
+    var placementRelated: [K8sObject] = [] {
+        didSet { rebuildPlacementIndex() }
+    }
+    /// 配置の画面で、Pod 以外を詳細パネルに出すための索引。**選んだものを抱えない** ——
+    /// 取り直すたびにここから引き直すので、状態が古いまま残らない。
+    private var placementIndex: [K8sObject.ID: K8sObject] = [:]
+    /// 配置のまとめ取りに入っていないもの（ConfigMap・Secret・ServiceAccount・RBAC）。
+    /// こちらは押したときの中身のまま。
+    private var inspectedOutsider: K8sObject?
+
+    private func rebuildPlacementIndex() {
+        placementIndex = Dictionary(
+            (placementNodes + placementControllers + placementWorkloads + placementRelated)
+                .map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
+    }
+    /// メッシュの経路（HTTPRoute）。設定で有効にしたときだけ引く。
+    var placementRoutes: [TrafficRoute] = []
+    var routeAvailability: MeshRouteAvailability = .off
 
     /// いま開いている画面で、権限が無くて読めなかった種別。
     ///
@@ -268,9 +295,13 @@ final class ClusterStore {
     /// たどるが解く材料。**画面から都度組み立てない** — 同じ 1 回の kubectl で
     /// 取ったものだけを渡すことを、この型で担保する。
     var placementInventory: PlacementInventory {
-        PlacementInventory(
+        var routeProblem: String?
+        if case .unreadable(let reason) = routeAvailability { routeProblem = reason }
+        return PlacementInventory(
             pods: objects, nodes: placementNodes, generations: placementControllers,
-            workloads: placementWorkloads, related: placementRelated)
+            workloads: placementWorkloads, related: placementRelated,
+            routes: placementRoutes, routeProblem: routeProblem, scope: selectedNamespace,
+            servicesReadable: !(deniedKinds + failedKinds + unknownKinds).contains(.service))
     }
     var overview = OverviewSnapshot()
     var serverVersion: String = ""
@@ -447,6 +478,17 @@ final class ClusterStore {
         currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
     }
 
+    /// このオブジェクトを操作するときの種別。kubectl に渡す名前はここから取る。
+    ///
+    /// **配置の画面では開いている画面から決めない。** たどるの図から Service や
+    /// ノードを詳細に出すので、`actionTarget`（Pod）のままだと
+    /// `kubectl delete pods <Service の名前>` を投げることになる。
+    func actionTarget(for object: K8sObject) -> ResourceTarget? {
+        if let currentTarget { return currentTarget }
+        guard selection == .placement, let kind = object.kind else { return nil }
+        return .builtIn(kind)
+    }
+
     /// Namespace 列を出すのは「すべて」を見ているときだけ。
     var showsNamespaceColumn: Bool { selectedNamespace == nil }
 
@@ -472,7 +514,10 @@ final class ClusterStore {
 
     var selectedObject: K8sObject? {
         guard let selectedObjectID else { return nil }
-        return objectIndex[selectedObjectID]
+        if let object = objectIndex[selectedObjectID] { return object }
+        guard selection == .placement else { return nil }
+        if let object = placementIndex[selectedObjectID] { return object }
+        return inspectedOutsider?.id == selectedObjectID ? inspectedOutsider : nil
     }
 
     /// いま開いている一覧の列。**画面と store で 2 つ持たない** —
@@ -567,10 +612,44 @@ final class ClusterStore {
     ///   選択で、詳細を見に来たわけではない（メニューが開いている最中に
     ///   ウインドウが広がることになる）。
     func selectOnly(_ object: K8sObject, reveal: Bool = true) {
+        if inspectedOutsider?.id != object.id { inspectedOutsider = nil }
         selectedObjectIDs = [object.id]
         selectionAnchorID = object.id
         selectedObjectID = object.id
         if reveal { requestInspectorReveal() }
+    }
+
+    /// 配置の画面で、Pod 以外のものを詳細パネルに出す（たどるの図の器）。
+    func inspect(_ object: K8sObject) {
+        guard selection == .placement else { return }
+        let outsider = objectIndex[object.id] == nil && placementIndex[object.id] == nil
+        selectOnly(object)
+        if outsider { inspectedOutsider = object }
+    }
+
+    /// まとめ取りに入っていないもの（ConfigMap・Secret・ServiceAccount）を引いてから出す。
+    ///
+    /// **引けなかったことを黙らない。** 押しても何も出ないと、押せない器と
+    /// 見分けが付かない。
+    func inspect(_ kind: ResourceKind, name: String, namespace: String?) async {
+        guard selection == .placement else { return }
+        let token = generation
+        let context = currentContext
+        do {
+            let object = try await kubectl.object(
+                kind, name: name, namespace: namespace, context: context)
+            // 引いているあいだに Namespace や画面を移っていたら、前の話を出さない。
+            guard token == generation, selection == .placement else { return }
+            guard let object else {
+                let kindName = kind.displayName
+                errorMessage = String(localized: "\(kindName) \(name) は見つかりませんでした。")
+                return
+            }
+            inspect(object)
+        } catch {
+            guard token == generation else { return }
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// ⌘ クリック。入っていれば外し、無ければ足す。
@@ -614,6 +693,7 @@ final class ClusterStore {
         selectedObjectIDs = []
         selectionAnchorID = nil
         selectedObjectID = nil
+        inspectedOutsider = nil
     }
 
     /// 表示用の並び。既定は `sorted(_:kind:)`、見出しを押していればその列。
@@ -887,7 +967,10 @@ final class ClusterStore {
                 guard let self, !Task.isCancelled else { return }
                 guard var followUp = self.followUp, followUp.context == self.currentContext
                 else { break }
-                followUp.prune(loaded: self.objects, loadedGeneration: self.loadedGeneration)
+                // 配置の画面では、たどるから操作した Deployment や Service も追う。
+                let loaded = self.selection == .placement
+                    ? self.objects + Array(self.placementIndex.values) : self.objects
+                followUp.prune(loaded: loaded, loadedGeneration: self.loadedGeneration)
                 self.followUp = followUp
                 if followUp.isFinished(now: Date()) { break }
                 guard self.isWindowVisible, !self.isFetching else { continue }
@@ -911,6 +994,7 @@ final class ClusterStore {
     /// 一覧も引き直す。**`reload()` に混ぜない** —— あちらは種別や Namespace を
     /// 切り替えるたびにも走るので、そのたびに kubectl が 1 本増える。
     func refresh() {
+        MeshRouteLoader.forget()
         reload()
         let token = contextGeneration
         Task { await loadNamespaces(token: token) }
@@ -948,6 +1032,9 @@ final class ClusterStore {
                     self.serverVersion = snapshot.serverVersion
                     if let names = snapshot.namespaceNames { self.adoptNamespaces(names) }
                 case .placement:
+                    // 経路は設定で有効にしたときだけ、同じ取得の中で並行して引く。
+                    async let mesh = MeshRouteLoader.load(
+                        context: context, namespace: namespace)
                     // Pod・ノード・所有者を 1 回の kubectl でまとめて取る。
                     // 別々に投げるとプロセスがそのぶん増え、片方だけ新しい
                     // 状態が混ざる（同じ時点の絵にならない）。
@@ -974,8 +1061,11 @@ final class ClusterStore {
                                 // （`serviceAccountBindings`。ClusterRole の
                                 // rules を名前指定で引くのと同じ扱い）。
                         context: context, namespace: namespace)
+                    let routes = await mesh
                     guard token == self.generation else { return }
                     let loaded = listed.objects
+                    self.placementRoutes = routes.routes
+                    self.routeAvailability = routes.availability
                     self.objects = Self.sorted(
                         loaded.filter { $0.kind == .pod }, kind: .pod)
                     self.placementNodes = loaded
@@ -1502,9 +1592,11 @@ final class ClusterStore {
 
     // MARK: - 操作
 
-    /// 操作に使う種別名。オブジェクトからではなく、いま開いている一覧から取る。
-    /// CRD は組み込みの enum に無く、オブジェクト側からは引けない。
-    private var currentResourceName: String? { actionTarget?.resourceName }
+    /// 操作に使う種別名。一覧ではいま開いている種別から取る（CRD は組み込みの
+    /// enum に無く、オブジェクト側からは引けない）。配置の画面ではオブジェクトの種別。
+    private func resourceName(for object: K8sObject) -> String? {
+        actionTarget(for: object)?.resourceName
+    }
 
     // MARK: - どのクラスタを触っているか
 
@@ -1573,7 +1665,7 @@ final class ClusterStore {
     }
 
     func yaml(for object: K8sObject) async -> Result<String, Error> {
-        guard let resource = currentResourceName else {
+        guard let resource = resourceName(for: object) else {
             return .success("")
         }
         do {
@@ -1638,6 +1730,32 @@ final class ClusterStore {
         }
     }
 
+    /// Namespace のラベル（NetworkPolicy の namespaceSelector を解くため）。nil は読めていない。
+    ///
+    /// 配置のまとめ取りには入れない（RBAC と同じく、起点を開いたときだけ要る）。
+    func namespaceLabels() async -> [String: [String: String]]? {
+        let context = currentContext
+        if let cache = namespaceLabelCache, cache.context == context,
+           Date().timeIntervalSince(cache.loadedAt) < (cache.labels == nil ? 60 : 300) {
+            return cache.labels
+        }
+        let labels: [String: [String: String]]?
+        do {
+            let objects = try await kubectl.list(.namespace, context: context, namespace: nil)
+            labels = Dictionary(objects.map { ($0.name, $0.labels) }) { first, _ in first }
+        } catch {
+            labels = nil
+        }
+        guard context == currentContext else { return nil }
+        namespaceLabelCache = (context, Date(), labels)
+        return labels
+    }
+
+    @ObservationIgnored
+    private var namespaceLabelCache: (
+        context: String, loadedAt: Date, labels: [String: [String: String]]?
+    )?
+
     /// Binding が指しているロールの中身。
     ///
     /// **自動更新に載せない。** ClusterRole は rules を持つぶん重く（実測
@@ -1685,7 +1803,7 @@ final class ClusterStore {
     }
 
     func delete(_ object: K8sObject) async {
-        guard let resource = currentResourceName else { return }
+        guard let resource = resourceName(for: object) else { return }
         // **「削除しました」と言わない。** `--wait=false` で投げているので、
         // 戻ってきた時点ではまだ消えていない。行もしばらく残る（Terminating）。
         await perform(
@@ -1710,8 +1828,9 @@ final class ClusterStore {
     /// 動く経路がある）。捕まえた配列をそのまま持ち回れば、確認に出した
     /// ものと消えるものが必ず一致する。
     func delete(_ objects: [K8sObject]) async {
-        guard let resource = currentResourceName else { return }
-        guard !objects.isEmpty else { return }
+        guard let first = objects.first, let resource = resourceName(for: first) else { return }
+        // 種別の違うものを 1 つの種別名で消さない。
+        guard objects.allSatisfy({ resourceName(for: $0) == resource }) else { return }
         if objects.count == 1 {
             await delete(objects[0])
             return
@@ -1780,7 +1899,7 @@ final class ClusterStore {
     func patchResources(
         _ object: K8sObject, patch: String, dryRun: Bool
     ) async -> Result<String, Error> {
-        guard let resource = actionTarget?.resourceName else {
+        guard let resource = resourceName(for: object) else {
             return .failure(KubectlError.unsupportedRollout(object.kind?.displayName ?? ""))
         }
         if !dryRun, refuseIfReadOnly("資源の割り当ての変更") {

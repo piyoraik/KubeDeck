@@ -61,6 +61,11 @@ struct ResourceGlyph: View {
     }
 }
 
+enum DiagramMetrics {
+    /// 囲みの上の余白。箱の外に並べる行の高さを、中の行と合わせるのに使う。
+    static let boxTopInset: CGFloat = 20
+}
+
 /// 図の囲み。Namespace や ReplicaSet のような「範囲」を表す。
 ///
 /// **見出しを枠の中に入れない。** 参考にした図と同じく、枠の左上に重ねて
@@ -74,18 +79,31 @@ struct DiagramBox<Content: View>: View {
     /// 指す操作なので、見出しがその場所。
     var action: (() -> Void)?
     var help: String?
+    var isDashed = false
+    /// 枠の色。**範囲を表す囲みは薄くする**（`Palette.diagramFrame`）—— 枠がいちばん強く、
+    /// 関係を示す矢印がいちばん弱く出ていた。nil なら見出しと同じ色。
+    var stroke: Color?
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
-            .padding(.init(top: 18, leading: 14, bottom: 14, trailing: 14))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(tint.opacity(0.55), lineWidth: 1))
-            .overlay(alignment: .topLeading) {
-                label
-                    .offset(x: 10, y: -7)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            // 箱を見出しより狭くしない（狭いと、線の上に置いた見出しが折り返す）。
+            titleText
+                .fixedSize()
+                .frame(height: 0)
+                .hidden()
+            content
+        }
+        .padding(.init(top: DiagramMetrics.boxTopInset, leading: 16, bottom: 14, trailing: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(
+                    stroke ?? tint.opacity(0.55),
+                    style: StrokeStyle(lineWidth: 1, dash: isDashed ? [4, 3] : [])))
+        .overlay(alignment: .topLeading) {
+            label
+                .offset(x: 10, y: -8)
+        }
     }
 
     @ViewBuilder
@@ -102,10 +120,11 @@ struct DiagramBox<Content: View>: View {
     private var titleText: some View {
         HStack(spacing: 4) {
             if let symbol {
-                Image(systemName: symbol).font(.system(size: 8))
+                Image(systemName: symbol).font(.system(size: 9))
             }
             Text(title)
-                .font(.caption2.weight(.medium))
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
         }
         .foregroundStyle(tint)
         .padding(.horizontal, 5)
@@ -121,16 +140,16 @@ struct DiagramBox<Content: View>: View {
 /// 位置を計算し直すことになり、図のためだけにレイアウトの仕組みを持つ。
 struct DiagramArrow: View {
     var length: CGFloat = 26
-    var tint: Color = .secondary
+    var tint: Color = Palette.diagramLine
 
     var body: some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(tint.opacity(0.5))
-                .frame(width: length, height: 1)
+                .fill(tint)
+                .frame(width: length, height: 1.5)
             Image(systemName: "arrowtriangle.right.fill")
-                .font(.system(size: 6))
-                .foregroundStyle(tint.opacity(0.5))
+                .font(.system(size: 7))
+                .foregroundStyle(tint)
                 .offset(x: -1)
         }
     }

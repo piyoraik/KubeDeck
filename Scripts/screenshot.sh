@@ -8,6 +8,8 @@
 #   Scripts/screenshot.sh out.png                       いまの状態のまま撮る
 #   Scripts/screenshot.sh out.png pod                    Pod 一覧を開いて撮る
 #   Scripts/screenshot.sh out.png podDisruptionBudget ns  Namespace も指定して撮る
+#   Scripts/screenshot.sh out.png placement ns 'workload|ns|StatefulSet|db'
+#                                                         たどるの起点も決めて撮る（`TraceAnchor.id`）
 #
 # 種別の名前は `ResourceKind` の rawValue（`Selection.storageKey`）。
 # `overview` と `placement` も渡せる。
@@ -17,6 +19,7 @@ DOMAIN="com.piyoraik.KubeDeck"
 OUT="${1:?出力先の png を指定してください}"
 SELECTION="${2:-}"
 NAMESPACE="${3:-}"
+ANCHOR="${4:-}"
 
 APP="$(xcodebuild -project KubeDeck.xcodeproj -scheme KubeDeck \
   -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR /{print $3}')/KubeDeck.app"
@@ -37,7 +40,12 @@ if [ -n "$NAMESPACE" ]; then
   defaults write "$DOMAIN" selectedNamespace -string "$NAMESPACE"
 fi
 
-open "$APP"
+# たどるの起点は保存しない値なので、設定ではなく引数で渡す（その起動かぎり）。
+if [ -n "$ANCHOR" ]; then
+  open "$APP" --args -traceAnchor "$ANCHOR"
+else
+  open "$APP"
+fi
 
 # 一覧が埋まるまで待つ。**固定で待たない** —— 窓が出るまでの時間は
 # クラスタの応答で変わる。窓が見えてから、描画のぶんだけ足す。

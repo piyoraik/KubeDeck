@@ -166,7 +166,8 @@ struct InspectorView: View {
             // **出す中身を自分で決めない。** 種別ごとの出し分けは
             // `ResourceActionSet` が持ち、一覧の右クリックと同じものが並ぶ
             // （ログもここに含まれる。ボタンを 2 か所に置かない）。
-            ResourceActionBar(objects: actionTargets(for: object), target: store.actionTarget)
+            ResourceActionBar(
+                objects: actionTargets(for: object), target: store.actionTarget(for: object))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -364,7 +365,7 @@ private struct SummaryPane: View {
             total: request > 0 ? String(localized: "要求 \(format(request))") : "",
             ratio: Quantity.ratio(used, of: request),
             note: String(localized: "上限 未設定（ノードの空きまで使えます）"),
-            noteLevel: .warning)
+            noteLevel: .warning, colorsByThreshold: false)
     }
 
     /// 使用量が出る種別か。**`MetricsSnapshot.usage(for:)` と揃える** ——

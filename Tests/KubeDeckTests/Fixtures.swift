@@ -30,7 +30,8 @@ enum Fixture {
         initContainers: String = "[]",
         volumes: String = "[]",
         imagePullSecrets: [String] = [],
-        serviceAccount: String? = nil
+        serviceAccount: String? = nil,
+        podIP: String? = nil
     ) -> K8sObject {
         let accountJSON = serviceAccount.map { #""serviceAccountName":"\#($0)","# } ?? ""
         let pullNames = imagePullSecrets
@@ -45,6 +46,7 @@ enum Fixture {
         let deletionJSON = deleted ? #","deletionTimestamp":"2026-01-01T00:00:00Z""# : ""
         let reasonJSON = reason.map { #","reason":"\#($0)""# } ?? ""
         let nodeJSON = node.map { #""nodeName":"\#($0)","# } ?? ""
+        let ipJSON = podIP.map { #","podIP":"\#($0)""# } ?? ""
 
         return object(
             """
@@ -62,7 +64,7 @@ enum Fixture {
                         "initContainers": \(initContainers),
                         "volumes": \(volumes)\(pullJSON) },
               "status": {
-                "phase": "\(phase)"\(reasonJSON),
+                "phase": "\(phase)"\(reasonJSON)\(ipJSON),
                 "containerStatuses": \(containerStatuses),
                 "initContainerStatuses": \(initContainerStatuses)
               }
@@ -226,6 +228,21 @@ enum Fixture {
               "metadata": {"name": "\(name)", "namespace": "\(namespace)",
                            "uid": "\(namespace)-np-\(name)"},
               "spec": {"podSelector": {"matchLabels": \(dictionary(selector))}\(egressJSON)}
+            }
+            """, assuming: .networkPolicy)
+    }
+
+    /// spec をそのまま書く NetworkPolicy。規則の形を作り分けるため。
+    static func networkPolicy(
+        name: String, namespace: String = "default", spec: String
+    ) -> K8sObject {
+        object(
+            """
+            {
+              "kind": "NetworkPolicy",
+              "metadata": {"name": "\(name)", "namespace": "\(namespace)",
+                           "uid": "\(namespace)-np-\(name)"},
+              "spec": \(spec)
             }
             """, assuming: .networkPolicy)
     }

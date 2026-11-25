@@ -224,6 +224,88 @@ struct SelectionTests {
         #expect(store.contextMenuTargets(for: rows[3]).map(\.name) == ["pod-3"])
     }
 
+    // MARK: - たどるの図から Pod 以外を選ぶ
+
+    /// 配置の画面。Pod は一覧（`objects`）に、Service とノードはまとめ取りの側に居る。
+    private func placementStore(service: K8sObject, node: K8sObject) -> ClusterStore {
+        let store = ClusterStore()
+        store.selection = .placement
+        // `selection` の didSet は配置の中身を捨てるので、あとから入れる。
+        store.objects = [Fixture.pod(name: "web-0", namespace: "default")]
+        store.placementNodes = [node]
+        store.placementRelated = [service]
+        return store
+    }
+
+    /// **開いている画面の種別で kubectl を叩かない。** 配置の画面の種別は Pod なので、
+    /// そのままだと Service の削除が `kubectl delete pods web` になる。
+    @Test("配置の画面では、選んだものの種別で操作する")
+    func placementActsOnObjectKind() throws {
+        let service = Fixture.service(name: "web", selector: ["app": "web"])
+        let node = Fixture.node(name: "node-a")
+        let store = placementStore(service: service, node: node)
+        let pod = try #require(store.objects.first)
+
+        store.inspect(service)
+        #expect(store.selectedObject?.id == service.id)
+        #expect(store.actionTarget(for: service) == .builtIn(.service))
+        #expect(store.actionTarget(for: node) == .builtIn(.node))
+        #expect(store.actionTarget(for: pod) == .builtIn(.pod))
+    }
+
+    @Test("一覧では、開いている種別で操作する")
+    func listActsOnCurrentTarget() {
+        let store = self.store()
+        let service = Fixture.service(name: "web", selector: ["app": "web"])
+
+        // 一覧の種別が正（CRD はオブジェクトの側から種別を引けない）。
+        #expect(store.actionTarget(for: service) == .builtIn(.pod))
+        // 一覧に居ないものを詳細に出さない。
+        store.inspect(service)
+        #expect(store.selectedObject == nil)
+    }
+
+    /// **選んだものを抱えない。** 取り直すたびに引き直さないと、状態が古いまま残る。
+    @Test("取り直したら、選んでいるものの新しい中身を出す")
+    func placementSelectionFollowsReload() {
+        let service = Fixture.service(name: "web", selector: ["app": "web"])
+        let store = placementStore(service: service, node: Fixture.node(name: "node-a"))
+
+        store.inspect(service)
+        let updated = Fixture.service(name: "web", selector: ["app": "web-v2"])
+        store.placementRelated = [updated]
+
+        #expect(store.selectedObject?.spec?["selector"]?["app"]?.stringValue == "web-v2")
+    }
+
+    /// まとめ取りに入っていないもの（ConfigMap など）は、押したときの中身を出す。
+    @Test("まとめ取りの外のものも詳細に出し、選び直したら手放す")
+    func outsiderIsHeldUntilReplaced() throws {
+        let store = placementStore(
+            service: Fixture.service(name: "web", selector: ["app": "web"]),
+            node: Fixture.node(name: "node-a"))
+        let configMap = Fixture.object(
+            """
+            {"kind": "ConfigMap",
+             "metadata": {"name": "web-config", "namespace": "default", "uid": "cm-1"}}
+            """, assuming: .configMap)
+        let before = store.inspectorRevealRequests
+
+        store.inspect(configMap)
+        #expect(store.selectedObject?.id == configMap.id)
+        #expect(store.actionTarget(for: configMap) == .builtIn(.configMap))
+        #expect(store.inspectorRevealRequests == before + 1)
+
+        store.selectOnly(try #require(store.objects.first))
+        #expect(store.selectedObject?.kind == .pod)
+
+        store.inspect(configMap)
+        store.clearSelection()
+        store.selectOnly(configMap)
+        // 抱えていたものは選択を捨てた時点で手放している。
+        #expect(store.selectedObject == nil)
+    }
+
     // MARK: - 畳んでいる詳細パネルを出す合図
 
     /// **`selectedObjectID != nil` から導かない。** 導くと種別を移った直後の

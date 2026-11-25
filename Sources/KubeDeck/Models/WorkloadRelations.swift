@@ -202,23 +202,16 @@ enum WorkloadRelations {
     /// `spec.podSelector` が空なら**その Namespace のすべての Pod**。
     /// 同じ「空」で意味が正反対なので、ここで取り違えると
     /// **いちばん効きの強い設定を「効いていない」ことにする**。
+    ///
+    /// 判定は `LabelSelector`（`NetworkReachability` と同じ）。決まらないものは出す側に倒す。
     static func policies(for pods: [K8sObject], among all: [K8sObject]) -> [K8sObject] {
         guard !pods.isEmpty else { return [] }
         return all
             .filter { $0.kind == .networkPolicy }
             .filter { policy in
-                let selector = ResourceTable.policySelector(policy)
+                let selector = policy.spec?["podSelector"].map(LabelSelector.init) ?? LabelSelector()
                 return pods.contains { pod in
-                    guard pod.namespace == policy.namespace else { return false }
-                    // 空は「すべて」。ここが Service との違い。
-                    //
-                    // **`matchExpressions` だけのセレクタもここに入る**
-                    // （`policySelector` は `matchLabels` しか読まない）。
-                    // 式は評価しない方針なので、**多めに出す側に倒してある** ——
-                    // 効いているかもしれない設定を落とすより、出したうえで
-                    // 「式で指定」と書くほうがよい（`policyTargets`）。
-                    // 落とす側に変えると、いちばん効きの強い設定が消える。
-                    return selector.isEmpty || matches(selector, pod.labels)
+                    pod.namespace == policy.namespace && selector.evaluate(pod.labels) != false
                 }
             }
             .sorted { $0.name < $1.name }

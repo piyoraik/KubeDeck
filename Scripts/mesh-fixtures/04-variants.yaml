@@ -1,0 +1,218 @@
+# status の語彙を集めるための変種。親はそれぞれ別にしてある。
+---
+# 宛先の片方が存在しない
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: broken, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: broken, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 50}
+        - {name: nosuch, port: 8080, weight: 50}
+---
+# 別の Namespace の Service を、ReferenceGrant なしで宛先にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: crossns, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: crossns, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 50}
+        - {name: other, namespace: kubedeck-mesh-b, port: 8080, weight: 50}
+---
+# 規則が複数。ヘッダ付きは v2 へ、残りは 90:10。3 つ目は宛先を持たない（リダイレクト）
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: canary, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: canary, port: 8080}
+  rules:
+    - matches:
+        - headers:
+            - {name: x-canary, value: "true"}
+      backendRefs:
+        - {name: web-v2, port: 8080}
+    - matches:
+        - path: {type: PathPrefix, value: /old}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path: {type: ReplacePrefixMatch, replacePrefixMatch: /new}
+            statusCode: 302
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 90}
+        - {name: web-v2, port: 8080, weight: 10}
+---
+# 存在しない Gateway を親にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: ghost-gateway, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {name: ghost}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080}
+---
+# 存在しない Service を親にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: ghost-service, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: nosuchsvc, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080}
+---
+# 入口。LoadBalancer の実装が無いクラスタなので ClusterIP にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: kubedeck-mesh
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "*.example.com"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: edge-ok, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {name: edge}
+  hostnames: ["shop.example.com"]
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 90}
+        - {name: web-v2, port: 8080, weight: 10}
+---
+# ホスト名がリスナーと交わらない
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: edge-mismatch, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {name: edge}
+  hostnames: ["foo.other.test"]
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080}
+---
+# 別の Namespace から、許されていない Gateway を親にする
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: edge-from-b, namespace: kubedeck-mesh-b}
+spec:
+  parentRefs:
+    - {name: edge, namespace: kubedeck-mesh}
+  hostnames: ["b.example.com"]
+  rules:
+    - backendRefs:
+        - {name: other, port: 8080}
+---
+# waypoint を使わないと明示した Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: wp-none
+  namespace: kubedeck-mesh
+  labels:
+    istio.io/use-waypoint: none
+spec:
+  selector: {app: web}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: wp-none, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: wp-none, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 90}
+        - {name: web-v2, port: 8080, weight: 10}
+---
+# 存在しない waypoint を指した Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: wp-missing
+  namespace: kubedeck-mesh
+  labels:
+    istio.io/use-waypoint: nosuch
+spec:
+  selector: {app: web}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: wp-missing, namespace: kubedeck-mesh}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: wp-missing, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: web-v1, port: 8080, weight: 90}
+        - {name: web-v2, port: 8080, weight: 10}
+---
+# ambient に入れていない Namespace での同じ形
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubedeck-mesh-c
+  labels:
+    kubedeck.dev/purpose: route-verification
+---
+apiVersion: v1
+kind: Service
+metadata: {name: plain, namespace: kubedeck-mesh-c}
+spec:
+  selector: {app: plain}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: plain-v1, namespace: kubedeck-mesh-c}
+spec:
+  selector: {app: plain, version: v1}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: plain, namespace: kubedeck-mesh-c}
+spec:
+  parentRefs:
+    - {group: "", kind: Service, name: plain, port: 8080}
+  rules:
+    - backendRefs:
+        - {name: plain-v1, port: 8080}
+---
+# 後段のため: VirtualService に status が書かれるか
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: {name: vsonly, namespace: kubedeck-mesh}
+spec:
+  hosts: [vsonly]
+  http:
+    - route:
+        - destination: {host: web-v1, port: {number: 8080}}
+          weight: 80
+        - destination: {host: web-v2, port: {number: 8080}}
+          weight: 20

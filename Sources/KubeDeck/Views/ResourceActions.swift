@@ -600,7 +600,7 @@ struct ResourceActionBar: View {
 ///
 /// **`HStack` のままにしない。** 詳細パネルは 300pt まで縮むので、ボタンが
 /// 3 つ並ぶだけで 1 つずつ潰れ、どれも読めなくなる（配置の帯で踏んだのと同じ）。
-private struct ActionFlow: Layout {
+struct ActionFlow: Layout {
     var spacing: CGFloat = 6
     var lineSpacing: CGFloat = 6
 
