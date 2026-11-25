@@ -273,7 +273,8 @@ struct NetworkPolicySpec: Sendable, Identifiable {
 enum SideVerdict: Sendable, Hashable {
     /// この向きを制限する policy に選ばれていない。
     case unrestricted
-    case allowed(policies: [String], ports: PortSet)
+    /// `partial` は、決まらない規則も残っている（`ports` より多く通しているかもしれない）。
+    case allowed(policies: [String], ports: PortSet, partial: Bool = false)
     /// 制限されていて、どの規則にも当たらない。
     case denied(policies: [String])
     /// ラベルが読めないなどで決まらない。
@@ -282,9 +283,14 @@ enum SideVerdict: Sendable, Hashable {
     var ports: PortSet? {
         switch self {
         case .unrestricted: return .all
-        case .allowed(_, let ports): return ports
+        case .allowed(_, let ports, _): return ports
         case .denied, .undetermined: return nil
         }
+    }
+
+    var isPartial: Bool {
+        if case .allowed(_, _, true) = self { return true }
+        return false
     }
 }
 
@@ -373,6 +379,10 @@ enum NetworkReachability {
             return ConnectionVerdict(outcome: .undetermined, egress: egress, ingress: ingress)
         }
         let ports = outbound.intersection(inbound)
+        // 決まらない規則が残っている側があれば、重ならないとは言えない。
+        if ports.isEmpty, egress.isPartial || ingress.isPartial {
+            return ConnectionVerdict(outcome: .undetermined, egress: egress, ingress: ingress)
+        }
         return ConnectionVerdict(
             outcome: ports.isEmpty ? .blocked([.ports]) : .allowed(ports),
             egress: egress, ingress: ingress)
@@ -418,8 +428,16 @@ enum NetworkReachability {
         if restricting.isEmpty {
             return undetermined ? .undetermined(policies: []) : .unrestricted
         }
-        if !ports.isEmpty { return .allowed(policies: granting, ports: ports) }
+        if !ports.isEmpty {
+            return .allowed(policies: granting, ports: ports, partial: undetermined)
+        }
         return undetermined ? .undetermined(policies: restricting) : .denied(policies: restricting)
+    }
+
+    private static func addresses(of pod: K8sObject) -> [String] {
+        var result = (pod.status?["podIPs"]?.arrayValue ?? []).compactMap { $0["ip"]?.stringValue }
+        if let ip = pod.status?["podIP"]?.stringValue, !result.contains(ip) { result.insert(ip, at: 0) }
+        return result
     }
 
     /// 規則の相手 1 つが、この Pod に当たるか。
@@ -430,10 +448,17 @@ enum NetworkReachability {
         switch peer {
         case .ipBlock(let cidr, let except):
             // Pod の IP に ipBlock を当てるかは CNI 次第なので、範囲に入るなら決めない。
-            guard let ip = pod.status?["podIP"]?.stringValue,
-                  CIDR.contains(cidr, ip) == true,
-                  !except.contains(where: { CIDR.contains($0, ip) == true }) else { return false }
-            return nil
+            // dual-stack の `podIP` は片方の系だけなので `podIPs` も見る。読めない cidr でも決めない。
+            var unreadable = false
+            for ip in addresses(of: pod) {
+                switch CIDR.contains(cidr, ip) {
+                case true?:
+                    if !except.contains(where: { CIDR.contains($0, ip) == true }) { return nil }
+                case nil: unreadable = true
+                case false?: continue
+                }
+            }
+            return unreadable ? nil : false
         case .pods(let podSelector, let namespaceSelector):
             let namespace = pod.namespace ?? ""
             let namespaceHit: Bool?
@@ -623,19 +648,21 @@ extension NetworkReachability {
         guard !outcomes.isEmpty else { return nil }
 
         var allowed = 0
-        var undetermined = 0
+        var blocked = 0
         var blockers = Set<FlowBlocker>()
         for outcome in outcomes {
             switch outcome {
             case .allowed: allowed += 1
-            case .undetermined: undetermined += 1
-            case .blocked(let reasons): blockers.formUnion(reasons)
+            case .undetermined: break
+            case .blocked(let reasons):
+                blocked += 1
+                blockers.formUnion(reasons)
             }
         }
         if allowed == outcomes.count { return .allowed }
-        if undetermined == outcomes.count { return .undetermined }
-        if allowed == 0 && undetermined == 0 { return .blocked(blockers.sorted()) }
-        return .mixed
+        if blocked == outcomes.count { return .blocked(blockers.sorted()) }
+        // 「通るものと止まるものがある」は、両方が実際にあるときだけ。
+        return allowed > 0 && blocked > 0 ? .mixed : .undetermined
     }
 }
 
@@ -645,8 +672,10 @@ enum CIDR {
     /// nil は書式が読めない。
     static func contains(_ cidr: String, _ address: String) -> Bool? {
         let parts = cidr.split(separator: "/", maxSplits: 1).map(String.init)
-        guard let network = bytes(parts[0]), let host = bytes(address),
-              network.count == host.count else { return nil }
+        guard let first = parts.first, let network = bytes(first),
+              let host = bytes(address) else { return nil }
+        // 系が違えば（IPv6 の範囲に IPv4 のアドレス）、範囲には入らない。
+        guard network.count == host.count else { return false }
         let prefix = parts.count == 2 ? Int(parts[1]) : network.count * 8
         guard let prefix, (0...network.count * 8).contains(prefix) else { return nil }
 

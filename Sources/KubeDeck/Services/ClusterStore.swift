@@ -466,14 +466,10 @@ final class ClusterStore {
     /// 組み込み種別のときだけ返す。種別ごとの特別扱いの判定に使う。
     var currentKind: ResourceKind? { currentTarget?.builtIn }
 
-    /// 操作と絞り込みの相手。
+    /// 絞り込みの相手。配置の画面では `objects` に入っているのが Pod なので Pod に落とす。
     ///
-    /// **配置画面を蚊帳の外にしない。** あそこは一覧ではないので
-    /// `currentTarget` は nil だが、並べて選べるのは Pod なので、`objects` に
-    /// 入っているものの種別は決まっている。ここが nil のままだと、選んだ Pod の
-    /// ログも削除も YAML も**配置画面からだけ黙って効かない**（`ResourceActionSet`
-    /// は種別名が決まらないときは操作を出さないので、押せないほうに倒れる）。
-    /// 絞り込みが以前からこの既定で動いているので、同じ判断に揃える。
+    /// **操作の種別はここから取らない**（`actionTarget(for:)`）。配置の画面では
+    /// Pod 以外も詳細に出すので、ここを使うと別の種別の名前で kubectl を起こす。
     var actionTarget: ResourceTarget? {
         currentTarget ?? (selection == .placement ? .builtIn(.pod) : nil)
     }
@@ -633,13 +629,21 @@ final class ClusterStore {
     /// 見分けが付かない。
     func inspect(_ kind: ResourceKind, name: String, namespace: String?) async {
         guard selection == .placement else { return }
-        let token = generation
+        inspectRequests += 1
+        let request = inspectRequests
         let context = currentContext
+        let scope = selectedNamespace
+        let selected = selectedObjectID
+        // 引いているあいだに別のものを選んだ・移ったなら、前の話で選択を差し替えない
+        // （差し替えると削除の相手まで変わる）。一覧の世代は自動更新でも進むので使わない。
+        func isCurrent() -> Bool {
+            request == inspectRequests && context == currentContext && scope == selectedNamespace
+                && selection == .placement && selectedObjectID == selected
+        }
         do {
             let object = try await kubectl.object(
                 kind, name: name, namespace: namespace, context: context)
-            // 引いているあいだに Namespace や画面を移っていたら、前の話を出さない。
-            guard token == generation, selection == .placement else { return }
+            guard isCurrent() else { return }
             guard let object else {
                 let kindName = kind.displayName
                 errorMessage = String(localized: "\(kindName) \(name) は見つかりませんでした。")
@@ -647,10 +651,13 @@ final class ClusterStore {
             }
             inspect(object)
         } catch {
-            guard token == generation else { return }
+            guard isCurrent() else { return }
             errorMessage = error.localizedDescription
         }
     }
+
+    @ObservationIgnored
+    private var inspectRequests = 0
 
     /// ⌘ クリック。入っていれば外し、無ければ足す。
     func toggleSelection(of object: K8sObject) {
@@ -1746,7 +1753,8 @@ final class ClusterStore {
         } catch {
             labels = nil
         }
-        guard context == currentContext else { return nil }
+        // 起点を移って打ち切られたのは「読めない」ではない。覚えると次の起点が 1 分間それを読む。
+        guard context == currentContext, !Task.isCancelled else { return nil }
         namespaceLabelCache = (context, Date(), labels)
         return labels
     }

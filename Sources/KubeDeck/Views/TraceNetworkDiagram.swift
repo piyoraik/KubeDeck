@@ -309,8 +309,10 @@ private struct FlowEdge: View {
 
     private var help: String {
         var parts = [lane.explanation ?? lane.label].filter { !$0.isEmpty }
+        // 起点の側の policy であって、止めている側とは限らない（止める側の名前は判定が運んでいない）。
         if !lane.policies.isEmpty {
-            parts.append("NetworkPolicy: " + lane.policies.joined(separator: ", "))
+            let names = lane.policies.joined(separator: ", ")
+            parts.append(String(localized: "起点の側の NetworkPolicy: \(names)"))
         }
         return parts.joined(separator: " · ")
     }

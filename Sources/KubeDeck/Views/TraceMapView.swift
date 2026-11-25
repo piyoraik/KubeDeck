@@ -245,9 +245,15 @@ struct TraceMapView: View {
         HStack(spacing: 10) {
             if !history.isEmpty {
                 Button {
-                    guard let previous = history.popLast() else { return }
-                    anchorKind = previous.anchorKind
-                    focus = previous
+                    // 経路を引かなくなったあとは、経路の起点へは戻らない（選択肢に無い種別になる）。
+                    while let previous = history.popLast() {
+                        if previous.anchorKind == .route, store.routeAvailability != .loaded {
+                            continue
+                        }
+                        anchorKind = previous.anchorKind
+                        focus = previous
+                        return
+                    }
                 } label: {
                     Label("戻る", systemImage: "chevron.left")
                 }
@@ -293,6 +299,9 @@ struct TraceMapView: View {
     private func select(_ anchor: TraceAnchor) {
         if let object = PlacementTrace.object(for: anchor, in: inventory) {
             store.inspect(object)
+        } else {
+            // 実物を引けない起点（経路など）で、前に選んだものを詳細と操作の相手に残さない。
+            store.clearSelection()
         }
         guard anchor.id != focus?.id else { return }
         if let focus {
@@ -395,6 +404,8 @@ private struct TraceGraphView: View {
                 return
             }
             let labels = await store.namespaceLabels()
+            // 打ち切られた前の起点の結果で、いまの起点の図を上書きしない。
+            guard !Task.isCancelled else { return }
             // 複数のワークロードにまたがる起点は、まとめて判定せずワークロードごとに解く。
             if graph.branches.count > 1 {
                 branchNetworks = PlacementTrace.branchNetworks(

@@ -2333,18 +2333,18 @@
         }
       }
     },
-    "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。": {
+    "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を取り直すたびに（自動更新も含めて）取得が 1 種別ぶん増えます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reads Gateway API HTTPRoutes (implemented by Istio and others) and shows them with their shares at the entry points in Trace. The shares are the declared weights, not actual traffic. When on, opening Placement fetches one more resource type."
+            "value": "Reads Gateway API HTTPRoutes (implemented by Istio and others) and shows them with their shares at the entry points in Trace. The shares are the declared weights, not actual traffic. When on, every reload of Placement (including auto-refresh) fetches one more resource type."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。"
+            "value": "Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を取り直すたびに（自動更新も含めて）取得が 1 種別ぶん増えます。"
           }
         }
       }
@@ -14863,6 +14863,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "起点"
+          }
+        }
+      }
+    },
+    "起点の側の NetworkPolicy: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NetworkPolicy on the anchor's side: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点の側の NetworkPolicy: %@"
           }
         }
       }

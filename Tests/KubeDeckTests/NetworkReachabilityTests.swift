@@ -239,6 +239,38 @@ struct NetworkReachabilityTests {
         #expect(CIDR.contains("fd00::/8", "fe80::1") == false)
     }
 
+    /// 空の cidr は API の検証を通らないが、壊れた応答で落ちない。読めないなら決めない。
+    @Test("読めない cidr では決めず、落ちない")
+    func malformedCIDR() {
+        #expect(CIDR.contains("", "10.0.0.1") == nil)
+        #expect(CIDR.contains("not-a-cidr", "10.0.0.1") == nil)
+
+        let db = pod("db", labels: ["app": "db"])
+        let allow = policy("db", """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"ipBlock":{"cidr":"10.0.0.0/8","except":[""]}}]}]}
+            """)
+        let source = pod("src", labels: ["app": "src"], ip: "10.2.3.4")
+        #expect(outcome(source, db, inventory([source, db], [allow])) == .undetermined)
+    }
+
+    /// dual-stack の Pod は `podIP` に片方の系しか持たない。もう片方を見ずに「当たらない」にしない。
+    @Test("ipBlock は status.podIPs のすべてで当てる")
+    func ipBlockDualStack() {
+        let db = pod("db", labels: ["app": "db"])
+        let allow = policy("db", """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"ipBlock":{"cidr":"fd00:10::/64"}}]}]}
+            """)
+        let source = Fixture.object(#"""
+            {"kind":"Pod","metadata":{"name":"src","namespace":"default","labels":{"app":"src"}},
+             "spec":{"containers":[{"name":"app"}]},
+             "status":{"phase":"Running","podIP":"10.0.0.5",
+                       "podIPs":[{"ip":"10.0.0.5"},{"ip":"fd00:10::5"}]}}
+            """#)
+        #expect(outcome(source, db, inventory([source, db], [allow])) == .undetermined)
+    }
+
     // MARK: - ポート
 
     @Test("名前付きのポートは宛先のコンテナで解き、無ければ当たらない")
@@ -271,6 +303,34 @@ struct NetworkReachabilityTests {
                          "ports":[{"port":5432}]}]}
             """)
         #expect(outcome(web, db, inventory([web, db], [egress, ingress])) == .blocked([.ports]))
+    }
+
+    /// 決まった規則のポートだけで「重ならない」と言うと、決まらない規則が許しているかもしれない
+    /// ポートを捨てることになる。
+    @Test("一部の規則が決まらないときは、ポートが重ならないと断定しない")
+    func partialPortsStayUndetermined() {
+        let api = pod("api", labels: ["app": "api"])
+        let db = pod("db", labels: ["app": "db"])
+        let ingress = policy("db", """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"podSelector":{"matchLabels":{"app":"api"}}}],
+                         "ports":[{"port":5432}]},
+                        {"from":[{"namespaceSelector":{"matchLabels":{"team":"platform"}}}]}]}
+            """)
+        let egress = policy("api", """
+            {"podSelector":{"matchLabels":{"app":"api"}},"policyTypes":["Egress"],
+             "egress":[{"to":[{"podSelector":{"matchLabels":{"app":"db"}}}],"ports":[{"port":6432}]}]}
+            """)
+        let unreadable = inventory([api, db], [ingress, egress], namespaces: .none)
+        #expect(outcome(api, db, unreadable) == .undetermined)
+
+        // 重なるポートがあれば、決まっているぶんは通ると言える。
+        let overlapping = policy("api", """
+            {"podSelector":{"matchLabels":{"app":"api"}},"policyTypes":["Egress"],
+             "egress":[{"to":[{"podSelector":{"matchLabels":{"app":"db"}}}],"ports":[{"port":5432}]}]}
+            """)
+        #expect(outcome(api, db, inventory([api, db], [ingress, overlapping], namespaces: .none))
+            == .allowed(.only([PortRange(proto: Self.tcp, lower: 5432, upper: 5432)])))
     }
 
     @Test("endPort は範囲として扱い、プロトコルは既定で TCP")
@@ -339,6 +399,26 @@ struct NetworkReachabilityTests {
         #expect(groups.first { $0.key == "api" }?.outcome == .allowed)
         #expect(groups.first { $0.key == "web" }?.outcome == .blocked([.egress]))
         #expect(groups.first { $0.key == "web" }?.pods.count == 2)
+    }
+
+    /// 通る組が 1 つも無いのに「通るものと止まるものがある」と言わない。
+    @Test("止まる組と決まらない組だけなら、Pod によって違うとは言わない")
+    func mixedNeedsAllowedAndBlocked() {
+        let db0 = pod("db-0", labels: ["app": "db"], ip: "10.0.1.5")
+        let db1 = pod("db-1", labels: ["app": "db"], ip: "10.1.0.7")
+        let web = pod("web", labels: ["app": "web"])
+        let allow = policy("db", """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"podSelector":{"matchLabels":{"app":"web"}}}]}]}
+            """)
+        let webEgress = policy("web", """
+            {"podSelector":{"matchLabels":{"app":"web"}},"policyTypes":["Egress"],
+             "egress":[{"to":[{"ipBlock":{"cidr":"10.0.0.0/16"}}]}]}
+            """)
+        let summary = NetworkReachability.summary(
+            .ingress, of: [db0, db1], in: inventory([db0, db1, web], [allow, webEgress]),
+            groupKey: { $0.labels["app"] ?? "" })
+        #expect(summary.grants.flatMap(\.groups).first { $0.key == "web" }?.outcome == .undetermined)
     }
 
     @Test("相手の指定が無い規則は、Pod を並べずに 1 行にする")

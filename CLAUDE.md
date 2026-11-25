@@ -1548,7 +1548,7 @@ spec がそのまま見えるほうがまだ役に立つ。
 
 一覧の対象は `ResourceTarget`（組み込みの `ResourceKind` か、CRD 由来の `CustomResourceType`）。取得・YAML・削除は種別名の文字列だけで動くので、両者で経路を分けていない。
 
-**操作に使う種別名はオブジェクトから引かない。** `K8sObject.kind` は組み込みの enum で、CRD には対応する値が無い。いま開いている一覧（`currentResourceName`）から取る。
+**一覧では、操作に使う種別名をオブジェクトから引かない。** `K8sObject.kind` は組み込みの enum で、CRD には対応する値が無い。いま開いている一覧の種別から取る（`ClusterStore.actionTarget(for:)`）。**配置の画面だけは逆で、オブジェクトの種別から取る** —— たどるの図から Service やノードを詳細に出すので、画面の種別（Pod）を使うと `kubectl delete pods <Service の名前>` になる。
 
 **kubectl に渡す名前には API グループを付ける**（`applications.argoproj.io`）。別グループが同じ複数形を持つことがあり、短い名前だと別の種別を引く。
 
@@ -2016,8 +2016,8 @@ Namespace の選択は残ります」で、消えることに触れていなか�
 操作する対象を揃える**という同じ話。
 
 **配置画面を蚊帳の外にしない。** あそこは一覧ではないので `currentTarget` は
-nil だが、並べているのは Pod なので種別は決まっている（`ClusterStore.actionTarget`
-が絞り込みと同じ既定に落とす）。逆に、**種別名が本当に決まらないときは
+nil だが、操作の種別は選んだオブジェクトから決まる（`ClusterStore.actionTarget(for:)`。
+絞り込みの既定は別に `actionTarget` が Pod に落とす）。逆に、**種別名が本当に決まらないときは
 クラスタを動かす操作を出さない** —— kubectl に渡す名前が無いので、出しても
 押して何も起きないボタンになる。
 
@@ -3133,8 +3133,8 @@ Pod**。Service の `spec.selector` は空なら何も掴まない（別項）�
 
 同じ話が中身にもある。**`ingress: []`（規則ゼロ）は「未設定」ではなくすべて拒否**で、
 規則が 1 つあるより強い。**`from` の無い規則は「どこからでも」**でいちばん緩い。
-`policyTypes` が省略されているときは既定（`ingress` があれば Ingress、`egress` が
-あれば Egress）を補って書く。
+`policyTypes` が省略されているときは、API サーバと同じ既定（Ingress は必ず、
+Egress は `egress` に規則が 1 つ以上あるとき）を補って書く。
 
 #### NetworkPolicy は許可の宣言を解く（`Models/NetworkReachability.swift`）
 

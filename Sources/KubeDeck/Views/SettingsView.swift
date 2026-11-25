@@ -271,7 +271,7 @@ private struct PlacementSettings: View {
             } header: {
                 Text("Istio / Gateway API")
             } footer: {
-                Text("Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を開くたびに取得が 1 種別ぶん増えます。")
+                Text("Istio などが実装する Gateway API の HTTPRoute を読み、たどるの入口に割合つきで出します。出るのは宣言された割合で、実際の流量ではありません。入れると、配置を取り直すたびに（自動更新も含めて）取得が 1 種別ぶん増えます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
