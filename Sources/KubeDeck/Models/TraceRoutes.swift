@@ -233,24 +233,16 @@ extension PlacementTrace {
 
         return ordered(inventory.routes.filter(\.entersThroughGateway))
             .compactMap { route -> TraceRouteEntry? in
-                var fractions: [Int: Double] = [:]
-                var names: [String] = []
+                var targets: [(name: String, namespace: String)] = []
                 for service in services {
-                    guard let namespace = service.namespace else { continue }
-                    let shares = route.shares(toService: service.name, namespace: namespace)
-                    guard !shares.isEmpty else { continue }
-                    names.append(service.name)
-                    for share in shares {
-                        fractions[share.rule, default: 0] += share.fraction
-                    }
+                    guard let namespace = service.namespace,
+                          !route.shares(toService: service.name, namespace: namespace).isEmpty
+                    else { continue }
+                    targets.append((name: service.name, namespace: namespace))
                 }
-                guard !fractions.isEmpty else { return nil }
-                return TraceRouteEntry(
-                    route: route,
-                    shares: fractions.keys.sorted().map {
-                        TrafficRoute.Share(rule: $0, fraction: min(1, fractions[$0] ?? 0))
-                    },
-                    serviceNames: names)
+                let shares = route.shares(toServices: targets)
+                guard !shares.isEmpty else { return nil }
+                return TraceRouteEntry(route: route, shares: shares, serviceNames: targets.map(\.name))
             }
     }
 
@@ -258,7 +250,10 @@ extension PlacementTrace {
     static func routeTags(
         for services: [K8sObject], inventory: PlacementInventory
     ) -> [TraceRouteTag] {
-        let routes = ordered(inventory.routes.filter { !$0.entersThroughGateway })
+        // 親の無い経路（と、親が Gateway でも Service でもない経路）は何も振り分けないので札にしない。
+        let routes = ordered(inventory.routes.filter { route in
+            !route.entersThroughGateway && route.parents.contains { $0.kind == .service }
+        })
         guard !routes.isEmpty else { return [] }
 
         return services.flatMap { service -> [TraceRouteTag] in
@@ -521,7 +516,8 @@ extension PlacementTrace {
     }
 
     static func findingNotes(_ route: TrafficRoute) -> [TraceNote] {
-        let label = "\(route.kindLabel) \(route.name)"
+        // 断りは文で重複を除くので、Namespace が無いと別の Namespace の同名の経路が 1 つに潰れる。
+        let label = "\(route.kindLabel) \(route.namespace)/\(route.name)"
         return route.parents.flatMap { parent -> [TraceNote] in
             let parentLabel = describe(parent, in: route)
             return parent.findings.map { finding in

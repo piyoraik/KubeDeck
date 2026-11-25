@@ -145,8 +145,8 @@ enum ResourceActionSet {
         }
 
         // **種別名が決まらないときは、クラスタを動かす操作を出さない。**
-        // kubectl に渡す名前は開いている一覧から取る
-        // （`ClusterStore.currentResourceName`）ので、それが無いまま出すと
+        // kubectl に渡す名前は `ClusterStore.actionTarget(for:)` から取るので、
+        // それが無いまま出すと
         // 「押しても何も起きないボタン」になる。
         if let target {
             let kind = target.builtIn

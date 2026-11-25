@@ -143,6 +143,47 @@ struct TraceRoutesTests {
         #expect(graph.routeSplit == nil)
     }
 
+    /// どこにも付いていない経路は何も振り分けない。効いている振り分けのように札で出さない。
+    @Test("親の無い経路は、札にも入口にも出さない")
+    func parentlessRouteIsNotTagged() throws {
+        let orphan = try #require(TrafficRoute(object: Fixture.object("""
+            {"kind":"HTTPRoute","metadata":{"name":"orphan","namespace":"shop"},
+             "spec":{"rules":\(Self.splitRules)}}
+            """)))
+        let graph = PlacementTrace.graph(
+            for: workloadAnchor("web-v2"), inventory: inventory(routes: [orphan]),
+            controllers: index)
+        let branch = try #require(graph.branches.first)
+        #expect(branch.routeTags.isEmpty)
+        #expect(branch.routes.isEmpty)
+    }
+
+    /// 浮動小数のまま足すと 3/7 + 2/7 + 2/7 が 1 に届かず「>99.9%」と出る（足す順にもよる）。
+    @Test("枝の Service ぶんの割合は、重みを足してから割る")
+    func entrySharesSumWeights() throws {
+        let rules = """
+            [{"backendRefs":[{"name":"web","port":8080,"weight":3},
+                             {"name":"web-v1","port":8080,"weight":2},
+                             {"name":"bystander","port":8080,"weight":2}]}]
+            """
+        let graph = PlacementTrace.graph(
+            for: workloadAnchor("web-v1"),
+            inventory: inventory(
+                routes: [route("edge", parent: Self.gatewayParent, rules: rules)],
+                extra: [bystander]),
+            controllers: index)
+        let branch = try #require(graph.branches.first)
+        #expect(branch.routes.map(\.subtitle) == ["HTTPRoute · 100%"])
+    }
+
+    /// 同じ名前の経路は Namespace ごとにある。断りは文で重複を除くので、Namespace が無いと潰れる。
+    @Test("経路の断りには Namespace を添える")
+    func findingNotesNameNamespace() {
+        let notes = PlacementTrace.findingNotes(
+            route("web", rules: Self.splitRules, conditions: Self.rejected))
+        #expect(notes.first?.text.contains("shop/web") == true)
+    }
+
     @Test("親が Gateway の経路は、入口の列に器で出す")
     func gatewayRouteStaysAtEntrance() throws {
         let graph = PlacementTrace.graph(
@@ -438,7 +479,7 @@ struct TraceRoutesTests {
         #expect(graph.branches.first?.routeTags.first { $0.role == .destination }?.badge == .serious)
         let note = try #require(graph.anchorNotes.first)
         #expect(note.level == .serious)
-        #expect(note.text == "HTTPRoute web は Service web に付いていません（NoMatchingParent）: not found")
+        #expect(note.text == "HTTPRoute shop/web は Service web に付いていません（NoMatchingParent）: not found")
     }
 
     /// 実測: Istio の `ResolvedWaypoints` は、経路が効かないときも True のまま文言だけを変える。
@@ -456,7 +497,7 @@ struct TraceRoutesTests {
             controllers: index)
 
         #expect(graph.branches.first?.routeTags.first { $0.role == .destination }?.badge == .warning)
-        #expect(graph.anchorNotes.first?.text == "HTTPRoute web（ResolvedWaypoints）: \(message)")
+        #expect(graph.anchorNotes.first?.text == "HTTPRoute shop/web（ResolvedWaypoints）: \(message)")
     }
 
     @Test("読めなかったら、経路が無いのではなく読めないと書く")

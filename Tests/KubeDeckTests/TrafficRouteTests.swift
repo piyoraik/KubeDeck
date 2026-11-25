@@ -66,6 +66,18 @@ struct TrafficRouteTests {
         #expect(route.rules[2].matches.isEmpty)
     }
 
+    /// match は OR。1 つでも「すべてのパス」があれば、その規則はすべてのリクエストに当たる。
+    @Test("match に「すべてのパス」が 1 つでもあれば、条件なしとして読む")
+    func catchAllMatchMakesRuleUnconditional() throws {
+        let route = try #require(TrafficRoute(object: RouteFixture.object("""
+            {"kind":"HTTPRoute","metadata":{"name":"r","namespace":"shop"},
+             "spec":{"rules":[{"matches":[{"path":{"type":"PathPrefix","value":"/"}},
+                                          {"headers":[{"name":"x-canary","value":"true"}]}],
+                               "backendRefs":[{"name":"web-v2","port":8080}]}]}}
+            """)))
+        #expect(route.rules[0].matches.isEmpty)
+    }
+
     @Test("宛先を持たない規則（リダイレクト）は、宛先なしとして読む（実物）")
     func redirectRuleHasNoBackends() throws {
         let route = try #require(TrafficRoute(object: RouteFixture.canary))

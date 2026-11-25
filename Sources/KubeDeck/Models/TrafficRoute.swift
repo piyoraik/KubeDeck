@@ -139,9 +139,16 @@ extension TrafficRoute {
 
     /// この経路がその Service に流す割合。規則ごとに違いうるので 1 つにまとめない。
     func shares(toService name: String, namespace: String) -> [Share] {
+        shares(toServices: [(name: name, namespace: namespace)])
+    }
+
+    /// 複数の Service へ流す割合の合計。重みを整数のまま足してから割る（割合を足すと 1 に届かない）。
+    func shares(toServices targets: [(name: String, namespace: String)]) -> [Share] {
         rules.compactMap { rule in
-            let matching = rule.backends.filter {
-                $0.isService && $0.name == name && $0.namespace == namespace
+            let matching = rule.backends.filter { backend in
+                backend.isService && targets.contains {
+                    $0.name == backend.name && $0.namespace == backend.namespace
+                }
             }
             guard !matching.isEmpty else { return nil }
             let total = rule.totalWeight
@@ -279,9 +286,8 @@ extension TrafficRoute {
         self.rules = (object.spec?["rules"]?.arrayValue ?? []).enumerated().map { index, rule in
             Rule(
                 number: index + 1,
-                matches: (rule["matches"]?.arrayValue ?? [])
-                    .map(Self.describe(match:))
-                    .filter { !$0.isEmpty },
+                // match は OR なので、1 つでも「すべてのパス」があれば規則ごと条件なし。
+                matches: Self.describe(matches: rule["matches"]?.arrayValue ?? []),
                 filters: (rule["filters"]?.arrayValue ?? [])
                     .compactMap { $0["type"]?.stringValue },
                 backends: (rule["backendRefs"]?.arrayValue ?? []).compactMap { raw in
@@ -299,6 +305,11 @@ extension TrafficRoute {
     }
 
     /// 既定の「すべてのパス」（PathPrefix /）は条件として数えない。
+    private static func describe(matches: [JSONValue]) -> [String] {
+        let described = matches.map(describe(match:))
+        return described.contains("") ? [] : described
+    }
+
     private static func describe(match: JSONValue) -> String {
         var parts: [String] = []
         if let path = match["path"] {
