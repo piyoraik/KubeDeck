@@ -163,6 +163,7 @@ struct TraceNetworkFigureTests {
         #expect(branches[0].network.policies == ["db"])
         #expect(branches[0].network.ingress.tally == .peers(count: 2, stopped: 1, unsettled: 0))
         #expect(branches[0].network.egress.tally == .unrestricted)
-        #expect(branches[1].network.ingress.tally == .unrestricted)
+        // web 自身は制限されていないが、batch の出口で止まる。一覧の分類は自分の policy で決める。
+        #expect(branches[1].network.ingress.tally == .peers(count: 1, stopped: 1, unsettled: 0))
     }
 }

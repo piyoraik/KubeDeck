@@ -301,7 +301,8 @@ final class ClusterStore {
             pods: objects, nodes: placementNodes, generations: placementControllers,
             workloads: placementWorkloads, related: placementRelated,
             routes: placementRoutes, routeProblem: routeProblem, scope: selectedNamespace,
-            servicesReadable: !(deniedKinds + failedKinds + unknownKinds).contains(.service))
+            servicesReadable: !(deniedKinds + failedKinds + unknownKinds).contains(.service),
+            routesLoaded: routeAvailability == .loaded)
     }
     var overview = OverviewSnapshot()
     var serverVersion: String = ""

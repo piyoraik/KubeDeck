@@ -421,6 +421,24 @@ struct NetworkReachabilityTests {
         #expect(summary.grants.flatMap(\.groups).first { $0.key == "web" }?.outcome == .undetermined)
     }
 
+    /// 起点の側に制限が無くても、相手の側で止まる通信はある。「制限なし」の 1 行で済ませない。
+    @Test("起点が制限されていなくても、相手の側で止まる相手を拾う")
+    func exceptionsWhenOriginIsOpen() {
+        let frontend = pod("frontend", labels: ["app": "frontend"])
+        let db = pod("db", labels: ["app": "db"])
+        let api = pod("api", labels: ["app": "api"])
+        let dbIngress = policy("db", """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"podSelector":{"matchLabels":{"app":"api"}}}]}]}
+            """)
+        let summary = NetworkReachability.summary(
+            .egress, of: [frontend], in: inventory([frontend, db, api], [dbIngress]),
+            groupKey: { $0.labels["app"] ?? "" })
+        #expect(summary.isUnrestricted)
+        #expect(summary.exceptions.map(\.key) == ["db"])
+        #expect(summary.exceptions.first?.outcome == .blocked([.ingress]))
+    }
+
     @Test("相手の指定が無い規則は、Pod を並べずに 1 行にする")
     func summaryAnywhere() {
         let db = pod("db", labels: ["app": "db"])
@@ -550,6 +568,98 @@ struct TraceNetworkTests {
         #expect(blocked.name == "batch-0")
         #expect(rows[1].policies == ["a", "b"])
         #expect(rows[1].ports?.count == 2)
+    }
+
+    @Test("制限なしの行を先頭に残し、相手の側で止まるものをその後ろに足す")
+    func unrestrictedKeepsExceptions() {
+        let frontend = pod("frontend-0", app: "frontend")
+        let db = pod("db-0", app: "db", owner: "db")
+        let lockdown = Fixture.networkPolicy(name: "db", spec: """
+            {"podSelector":{"matchLabels":{"app":"db"}},"ingress":[]}
+            """)
+        let egress = network(anchor: [frontend], pods: [frontend, db], policies: [lockdown]).egress
+        #expect(egress.rows.first?.id == "unrestricted")
+        #expect(egress.rows.first?.isOthers == true)
+        guard case .workload(let peer, .blocked([.ingress]), _)? = egress.rows.dropFirst().first?.subject
+        else {
+            Issue.record("相手の入口で止まる行が無い")
+            return
+        }
+        #expect(peer.name == "db")
+    }
+
+    @Test("通る線のポートは、両側で重なるもの。Pod の組で違えばそう印を付ける")
+    func allowedRowsShowEffectivePorts() {
+        let db = pod("db-0", app: "db", owner: "db")
+        let dbIngress = Fixture.networkPolicy(name: "db", spec: """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"podSelector":{"matchLabels":{"app":"api"}}}]}]}
+            """)
+        func egress(_ name: String, role: String, port: Int) -> K8sObject {
+            Fixture.networkPolicy(name: name, spec: """
+                {"podSelector":{"matchLabels":{"role":"\(role)"}},"policyTypes":["Egress"],
+                 "egress":[{"to":[{"podSelector":{"matchLabels":{"app":"db"}}}],"ports":[{"port":\(port)}]}]}
+                """)
+        }
+        func api(_ name: String, role: String) -> K8sObject {
+            Fixture.pod(
+                name: name, labels: ["app": "api", "role": role],
+                owner: (kind: "StatefulSet", name: "api"))
+        }
+
+        let a = api("api-0", role: "a")
+        let same = network(anchor: [db], pods: [db, a], policies: [dbIngress, egress("a", role: "a", port: 5432)])
+        #expect(same.ingress.rows.first?.ports == [PolicyPort(target: .number(5432))])
+        #expect(same.ingress.rows.first?.portsVary == false)
+
+        let b = api("api-1", role: "b")
+        let varied = network(
+            anchor: [db], pods: [db, a, b],
+            policies: [dbIngress, egress("a", role: "a", port: 5432), egress("b", role: "b", port: 6432)])
+        #expect(varied.ingress.rows.first?.ports?.count == 2)
+        #expect(varied.ingress.rows.first?.portsVary == true)
+    }
+
+    /// 自分自身との組を数えないので、レプリカ 1 の自分への許可が「当たらない」になっていた。
+    @Test("起点自身だけに当たる規則は、起点自身の行にして両側を評価する")
+    func selfOnlyRuleBecomesSelfRow() {
+        let db = pod("db-0", app: "db", owner: "db")
+        let allow = Fixture.networkPolicy(name: "db", spec: """
+            {"podSelector":{"matchLabels":{"app":"db"}},
+             "ingress":[{"from":[{"podSelector":{"matchLabels":{"app":"db"}}}],"ports":[{"port":7000}]}]}
+            """)
+        let rows = network(anchor: [db], pods: [db], policies: [allow]).ingress.rows
+        #expect(rows.map(\.id) == ["self"])
+        guard case .anchorSelf(.allowed)? = rows.first?.subject else {
+            Issue.record("起点自身の行が無い")
+            return
+        }
+        #expect(rows.first?.ports == [PolicyPort(target: .number(7000))])
+
+        // 出口を閉じていれば、自分自身でも止まる。
+        let closed = Fixture.networkPolicy(name: "db-egress", spec: """
+            {"podSelector":{"matchLabels":{"app":"db"}},"policyTypes":["Egress"]}
+            """)
+        let blocked = network(anchor: [db], pods: [db], policies: [allow, closed]).ingress.rows
+        guard case .anchorSelf(.blocked([.egress]))? = blocked.first?.subject else {
+            Issue.record("自分の出口で止まる起点自身の行が無い")
+            return
+        }
+    }
+
+    @Test("効いている Pod は、policy に実際に選ばれているものだけ数える")
+    func restrictedPodCountOnlySelected() {
+        let primary = Fixture.pod(
+            name: "db-0", labels: ["app": "db", "role": "primary"],
+            owner: (kind: "StatefulSet", name: "db"))
+        let replica = Fixture.pod(
+            name: "db-1", labels: ["app": "db", "role": "replica"],
+            owner: (kind: "StatefulSet", name: "db"))
+        let allow = Fixture.networkPolicy(name: "primary", spec: """
+            {"podSelector":{"matchLabels":{"role":"primary"}},"ingress":[]}
+            """)
+        let result = network(anchor: [primary, replica], pods: [primary, replica], policies: [allow])
+        #expect(result.restrictedPodCount == 1)
     }
 
     @Test("取得していない Namespace の行は、Pod の絞りも持つ")

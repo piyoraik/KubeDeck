@@ -199,15 +199,21 @@ struct TraceRouteSplitView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(split.origins) { origin in
                 let label = HStack(spacing: 8) {
-                    ResourceGlyph(symbol: origin.symbol, size: 26)
+                    if origin.isPresent {
+                        ResourceGlyph(symbol: origin.symbol, size: 26, badge: origin.level)
+                    } else {
+                        // 手元に無い呼び出し先は、宛先と同じく破線で描く。
+                        MissingGlyph(symbol: origin.symbol, size: 26, badge: origin.level)
+                    }
                     VStack(alignment: .leading, spacing: 0) {
                         Text(origin.name)
                             .font(.callout)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text(origin.kindLabel)
+                        Text(origin.detail.map { "\(origin.kindLabel) · \($0)" } ?? origin.kindLabel)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(
+                                origin.isPresent ? Color.secondary : Palette.textColor(for: .warning))
                     }
                 }
                 if let target = origin.anchor {
@@ -401,8 +407,38 @@ private struct Hatch: Shape {
 }
 
 extension TraceAnchorKind {
-    /// 起点の一覧に出す種別。経路は、読めているときだけ出す（押しても空になるものを出さない）。
+    /// 起点の一覧に出す種別。経路は、入れていてクラスタに種別があるときだけ出す。
+    /// **一時的に読めないときは残す。** 消すと、選んでいた経路の起点が 1 回の失敗で外れる。
     static func offered(routes: MeshRouteAvailability) -> [TraceAnchorKind] {
-        allCases.filter { $0 != .route || routes == .loaded }
+        allCases.filter { $0 != .route || routes.offersRoutes }
+    }
+}
+
+/// 手元に無いものの器。中を塗らず、縁を破線にする。
+private struct MissingGlyph: View {
+    let symbol: String
+    let size: CGFloat
+    let badge: StatusLevel?
+
+    var body: some View {
+        Heptagon()
+            .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2.5]))
+            .overlay(
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.36, weight: .semibold))
+                    .foregroundStyle(.secondary))
+            .frame(width: size, height: size)
+            .overlay(alignment: .topTrailing) {
+                if let badge, badge != .good, badge != .neutral {
+                    Image(systemName: badge.symbol)
+                        .font(.system(size: size * 0.28))
+                        .foregroundStyle(Palette.color(for: badge))
+                        .background(
+                            Circle()
+                                .fill(Color(nsColor: .windowBackgroundColor))
+                                .frame(width: size * 0.34, height: size * 0.34))
+                        .offset(x: size * 0.08, y: -size * 0.04)
+                }
+            }
     }
 }

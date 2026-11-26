@@ -151,6 +151,22 @@
         }
       }
     },
+    "%@ · %lld Pod（効いているのは %lld 個）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %2$lld Pods (%3$lld covered)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %2$lld Pod（効いているのは %3$lld 個）"
+          }
+        }
+      }
+    },
     "%@ · %lld 件選択中": {
       "localizations": {
         "en": {
@@ -455,6 +471,22 @@
         }
       }
     },
+    "%@ の %@ は前の版についての判定です。コントローラはまだこの版を処理していません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The %2$@ condition of %1$@ is about an earlier version. The controller has not processed this version yet."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ の %2$@ は前の版についての判定です。コントローラはまだこの版を処理していません。"
+          }
+        }
+      }
+    },
     "%@ の Role": {
       "localizations": {
         "en": {
@@ -753,18 +785,18 @@
         }
       }
     },
-    "%@ を %@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ません）。": {
+    "%@ を %@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ないか、まだ処理されていません）。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "There is no record of %2$@ accepting %1$@ (the parent does not exist, or no controller handles it)."
+            "value": "There is no record of %2$@ accepting %1$@ (the parent does not exist, no controller handles it, or it has not been processed yet)."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@ を %2$@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ません）。"
+            "value": "%1$@ を %2$@ が受け付けた記録がありません（親が存在しないか、担当するコントローラが居ないか、まだ処理されていません）。"
           }
         }
       }
@@ -2205,6 +2237,38 @@
         }
       }
     },
+    "HTTPRoute を読めません: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoutes could not be read: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute を読めません: %@"
+          }
+        }
+      }
+    },
+    "HTTPRoute を読めません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoutes could not be read."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPRoute を読めません。"
+          }
+        }
+      }
+    },
     "Homebrew・krew・gcloud SDK の場所は自動で探します。指定した場所が実行できないときは、自動探索に戻ります。": {
       "localizations": {
         "en": {
@@ -2685,18 +2749,18 @@
         }
       }
     },
-    "Pod %lld 個のうち、NetworkPolicy が効いているのは %lld 個です。押すと、そのワークロードの図を開きます。": {
+    "Pod %lld 個のうち、どちらかの向きで NetworkPolicy が効いているのは %lld 個です。押すと、そのワークロードの図を開きます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A NetworkPolicy applies to %2$lld of %1$lld Pods. Click a workload to open its diagram."
+            "value": "A NetworkPolicy applies, in at least one direction, to %2$lld of %1$lld Pods. Click a workload to open its diagram."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pod %1$lld 個のうち、NetworkPolicy が効いているのは %2$lld 個です。押すと、そのワークロードの図を開きます。"
+            "value": "Pod %1$lld 個のうち、どちらかの向きで NetworkPolicy が効いているのは %2$lld 個です。押すと、そのワークロードの図を開きます。"
           }
         }
       }
@@ -2809,6 +2873,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pod の情報"
+          }
+        }
+      }
+    },
+    "Pod の組によって通るポートが違います。線には、通るポートをまとめて書いています。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The allowed ports differ between Pod pairs. The line shows all of them together."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pod の組によって通るポートが違います。線には、通るポートをまとめて書いています。"
           }
         }
       }
@@ -3145,6 +3225,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Service がありません。この %@ は 500 を返します"
+          }
+        }
+      }
+    },
+    "Service を読めていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Services could not be read"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Service を読めていません"
           }
         }
       }
@@ -5429,6 +5525,54 @@
         }
       }
     },
+    "ほかはどこからでも": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anyone else"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほかはどこからでも"
+          }
+        }
+      }
+    },
+    "ほかはどこへでも": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anywhere else"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほかはどこへでも"
+          }
+        }
+      }
+    },
+    "ほかは制限なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Others unrestricted"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほかは制限なし"
+          }
+        }
+      }
+    },
     "まだありません": {
       "localizations": {
         "en": {
@@ -7083,6 +7227,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "ポートが重ならない"
+          }
+        }
+      }
+    },
+    "ポートは Pod によって違う": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ports differ by Pod"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ポートは Pod によって違う"
           }
         }
       }
@@ -13595,6 +13755,22 @@
         }
       }
     },
+    "自分自身との通信を許す規則": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule allowing traffic to itself"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自分自身との通信を許す規則"
+          }
+        }
+      }
+    },
     "自動": {
       "localizations": {
         "en": {
@@ -14883,6 +15059,38 @@
         }
       }
     },
+    "起点の側は制限していない": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not restricted on the anchor side"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点の側は制限していない"
+          }
+        }
+      }
+    },
+    "起点の側は制限していません。相手の側で止まるものは、別の線で出しています。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The anchor side does not restrict this. Traffic stopped on the other side is shown as separate lines."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点の側は制限していません。相手の側で止まるものは、別の線で出しています。"
+          }
+        }
+      }
+    },
     "起点の入口で止まる": {
       "localizations": {
         "en": {
@@ -14911,6 +15119,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "起点の出口で止まる"
+          }
+        }
+      }
+    },
+    "起点自身": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The anchor itself"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点自身"
           }
         }
       }
@@ -15135,6 +15359,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "選んだ行の詳細・設定・イベント・YAML を出す欄です。列の多い一覧を見るときは下、縦に長い一覧を見るときは右のほうが読めます。下に置いたときはログと同じ帯に横並びで入り（上下に積むとどちらも数行しか残らないため）、仕切りを掴めば高さと幅を変えられます。出す／畳むはツールバーの「詳細」で、置き場所もその ▾ から選べます。行を選んだときに出るのは畳んでいるときだけで、勝手に畳むことはありません（列を広く見たいときは切ってください）。"
+          }
+        }
+      }
+    },
+    "選んでいた %@ は、次に読めたらそのまま戻ります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, which you had selected, comes back once they can be read again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選んでいた %@ は、次に読めたらそのまま戻ります。"
           }
         }
       }

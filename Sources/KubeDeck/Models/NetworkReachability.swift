@@ -119,6 +119,12 @@ enum PortSet: Sendable, Hashable {
         }
     }
 
+    /// 並び順を揃えたもの。同じポートの集まりかを比べるときに使う。
+    var normalized: PortSet {
+        guard case .only(let ranges) = self else { return self }
+        return .only(ranges.sorted { ($0.proto, $0.lower, $0.upper) < ($1.proto, $1.lower, $1.upper) })
+    }
+
     private static func unique(_ ranges: [PortRange]) -> [PortRange] {
         var seen = Set<PortRange>()
         return ranges.filter { seen.insert($0).inserted }
@@ -499,6 +505,10 @@ struct FlowPeerGroup: Identifiable, Sendable {
     let key: String
     let pods: [K8sObject]
     let outcome: Outcome
+    /// 通る組で、両側が許すポートを重ねたもの（組をまたいだ和集合）。通る組が無ければ nil。
+    var ports: PortSet? = nil
+    /// 通る組のあいだで、通るポートが違う。
+    var portsVary = false
 
     var id: String { key }
 }
@@ -524,6 +534,8 @@ struct FlowGrant: Identifiable, Sendable {
     /// 当たるが、中の Pod を取得していない Namespace。相手側の policy は分からない。
     let outOfScopeNamespaces: [String]
     let gaps: [FlowGap]
+    /// 当たったのが起点の Pod 自身だけのとき、自分自身との組を両側で評価したもの。
+    var anchorSelf: FlowPeerGroup? = nil
 
     var id: String { "\(policy)#\(ruleIndex).\(peerIndex)" }
 }
@@ -536,6 +548,10 @@ struct FlowSummary: Sendable {
     let unrestrictedCount: Int
     let totalCount: Int
     let grants: [FlowGrant]
+    /// 起点の側が相手を問わない（制限なし・相手の指定が無い規則）のに、相手の側で止まる・決まらない相手。
+    let exceptions: [FlowPeerGroup]
+    /// どちらかの policy に選ばれている起点の Pod。
+    let restrictedIDs: Set<String>
 
     var isUnrestricted: Bool { restrictingPolicies.isEmpty }
 }
@@ -576,10 +592,29 @@ extension NetworkReachability {
             }
         }
 
+        // 起点の側が相手を問わないなら、相手の側を見ないと「制限なし」は言い切れない（両側を見る）。
+        var exceptions: [FlowPeerGroup] = []
+        if restrictedTargets.count < targets.count || grants.contains(where: { $0.peer == nil }) {
+            let covered = Set(grants.flatMap(\.groups).map(\.key))
+            let targetIDs = Set(targets.map(\.id))
+            let candidates = inventory.pods.filter { !targetIDs.contains($0.id) }
+            exceptions = Dictionary(grouping: candidates, by: groupKey)
+                .filter { !covered.contains($0.key) }
+                .compactMap { key, pods -> FlowPeerGroup? in
+                    guard let group = groupOutcome(
+                        direction, key: key, peers: pods, targets: targets, inventory: inventory),
+                          group.outcome != .allowed
+                    else { return nil }
+                    return group
+                }
+                .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+        }
+
         return FlowSummary(
             direction: direction, restrictingPolicies: restricting,
             unrestrictedCount: targets.count - restrictedTargets.count,
-            totalCount: targets.count, grants: grants)
+            totalCount: targets.count, grants: grants, exceptions: exceptions,
+            restrictedIDs: restrictedTargets)
     }
 
     private static func grant(
@@ -598,10 +633,18 @@ extension NetworkReachability {
         }
         let groups = Dictionary(grouping: matched, by: groupKey)
             .compactMap { key, pods in
-                groupOutcome(direction, peers: pods, targets: targets, inventory: inventory)
-                    .map { FlowPeerGroup(key: key, pods: pods, outcome: $0) }
+                groupOutcome(direction, key: key, peers: pods, targets: targets, inventory: inventory)
             }
             .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+
+        // 自分自身との組は上で数えないので、当たったのが起点の Pod だけなら別に評価する（両側を見る）。
+        let targetIDs = Set(targets.map(\.id))
+        var anchorSelf: FlowPeerGroup?
+        if groups.isEmpty, !matched.isEmpty, matched.allSatisfy({ targetIDs.contains($0.id) }) {
+            anchorSelf = aggregate(
+                key: "self", pods: matched,
+                outcomes: matched.map { connection(from: $0, to: $0, in: inventory).outcome })
+        }
 
         var outOfScope: [String] = []
         var gaps: [FlowGap] = []
@@ -628,14 +671,15 @@ extension NetworkReachability {
 
         return FlowGrant(
             policy: policy.id, ruleIndex: ruleIndex, peer: peer, peerIndex: peerIndex,
-            ports: rule.ports, groups: groups, outOfScopeNamespaces: outOfScope, gaps: gaps)
+            ports: rule.ports, groups: groups, outOfScopeNamespaces: outOfScope, gaps: gaps,
+            anchorSelf: anchorSelf)
     }
 
     /// 相手のまとまりと起点の Pod の、すべての組み合わせ。自分自身との組は数えない（nil は組が無い）。
     private static func groupOutcome(
-        _ direction: FlowDirection, peers: [K8sObject], targets: [K8sObject],
+        _ direction: FlowDirection, key: String, peers: [K8sObject], targets: [K8sObject],
         inventory: NetworkInventory
-    ) -> FlowPeerGroup.Outcome? {
+    ) -> FlowPeerGroup? {
         var outcomes: [ConnectionVerdict.Outcome] = []
         for peer in peers {
             for target in targets where target.id != peer.id {
@@ -645,24 +689,40 @@ extension NetworkReachability {
                 outcomes.append(verdict.outcome)
             }
         }
+        return aggregate(key: key, pods: peers, outcomes: outcomes)
+    }
+
+    /// 組ごとの判定を 1 つのまとまりに畳む。組が無ければ nil。
+    private static func aggregate(
+        key: String, pods: [K8sObject], outcomes: [ConnectionVerdict.Outcome]
+    ) -> FlowPeerGroup? {
         guard !outcomes.isEmpty else { return nil }
 
-        var allowed = 0
+        var allowed: [PortSet] = []
         var blocked = 0
         var blockers = Set<FlowBlocker>()
         for outcome in outcomes {
             switch outcome {
-            case .allowed: allowed += 1
+            case .allowed(let ports): allowed.append(ports)
             case .undetermined: break
             case .blocked(let reasons):
                 blocked += 1
                 blockers.formUnion(reasons)
             }
         }
-        if allowed == outcomes.count { return .allowed }
-        if blocked == outcomes.count { return .blocked(blockers.sorted()) }
-        // 「通るものと止まるものがある」は、両方が実際にあるときだけ。
-        return allowed > 0 && blocked > 0 ? .mixed : .undetermined
+        let result: FlowPeerGroup.Outcome
+        if allowed.count == outcomes.count {
+            result = .allowed
+        } else if blocked == outcomes.count {
+            result = .blocked(blockers.sorted())
+        } else {
+            // 「通るものと止まるものがある」は、両方が実際にあるときだけ。
+            result = !allowed.isEmpty && blocked > 0 ? .mixed : .undetermined
+        }
+        let ports = allowed.dropFirst().reduce(allowed.first) { $0?.union($1) }
+        return FlowPeerGroup(
+            key: key, pods: pods, outcome: result, ports: ports,
+            portsVary: Set(allowed.map(\.normalized)).count > 1)
     }
 }
 

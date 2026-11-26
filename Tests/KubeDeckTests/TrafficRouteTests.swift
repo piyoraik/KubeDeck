@@ -255,6 +255,35 @@ struct TrafficRouteTests {
         #expect(route.parents.first?.findings == [.undecided(type: "Accepted", message: "waiting")])
     }
 
+    /// spec を直した直後は、前の版についての判定が status に残る。いまの判定として出さない。
+    @Test("observedGeneration が spec の世代より古い条件は、前の版の判定として扱う")
+    func outdatedConditionsAreNotCurrent() throws {
+        func route(observed: String) throws -> TrafficRoute {
+            try #require(TrafficRoute(object: RouteFixture.object("""
+                {"kind":"HTTPRoute","metadata":{"name":"r","namespace":"shop","generation":2},
+                 "spec":{"parentRefs":[{"name":"edge"}],
+                         "rules":[{"backendRefs":[{"name":"web-v2","port":8080}]}]},
+                 "status":{"parents":[{"controllerName":"c",
+                   "parentRef":{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"edge"},
+                   "conditions":[{"type":"Accepted","status":"True","reason":"Accepted",
+                                  "message":"ok"\(observed)},
+                                 {"type":"ResolvedRefs","status":"False","reason":"BackendNotFound",
+                                  "message":"backend(web-v3) not found"\(observed)}]}]}}
+                """)))
+        }
+
+        let stale = try route(observed: #","observedGeneration":1"#)
+        #expect(stale.parents.first?.findings == [.outdated(type: "Accepted"), .outdated(type: "ResolvedRefs")])
+        #expect(!stale.reportsUnresolvedBackends)
+
+        let current = try route(observed: #","observedGeneration":2"#)
+        #expect(current.reportsUnresolvedBackends)
+
+        // 書かない実装もあるので、無いだけで前の版とはみなさない。
+        let unstamped = try route(observed: "")
+        #expect(unstamped.reportsUnresolvedBackends)
+    }
+
     // MARK: - 宛先を手元の Service に解く
 
     @Test("全 Namespace を取得していれば、別の Namespace の宛先も解ける")
