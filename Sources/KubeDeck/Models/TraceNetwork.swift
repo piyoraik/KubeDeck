@@ -26,6 +26,8 @@ struct TraceFlowRow: Identifiable, Sendable {
         case ipBlock(cidr: String, except: [String])
         /// 規則はあるが、手元の Pod に 1 つも当たらない。
         case unmatched(String)
+        /// 規則が当たったのは起点の Pod 自身だけ。自分自身との組を両側で評価したもの。
+        case anchorSelf(FlowPeerGroup.Outcome)
     }
 
     let id: String
@@ -34,6 +36,12 @@ struct TraceFlowRow: Identifiable, Sendable {
     var ports: [PolicyPort]?
     /// 許可している（`denyAll` なら制限している）policy の名前。
     var policies: [String]
+    /// 相手の側で止まる行がほかにあるので、「制限なし」「相手を問わない」は残りの相手の話になる。
+    var isOthers = false
+    /// 起点の側が相手を問わないのに、相手の側で止まる・決まらない相手。ポートは書かない。
+    var isException = false
+    /// 通る組のあいだで、通るポートが違う。
+    var portsVary = false
 }
 
 struct TraceFlowColumn: Sendable {
@@ -46,6 +54,8 @@ struct TraceNetwork: Sendable {
     let egress: TraceFlowColumn
     /// 起点の Pod に効いている policy の名前（どちらかの向きを制限しているもの）。
     let policies: [String]
+    /// どちらかの向きで policy に選ばれている起点の Pod の数。
+    var restrictedPodCount = 0
 }
 
 extension PlacementTrace {
@@ -85,37 +95,74 @@ extension PlacementTrace {
         return TraceNetwork(
             ingress: column(ingress, network: network, peers: peers),
             egress: column(egress, network: network, peers: peers),
-            policies: policies)
+            policies: policies,
+            restrictedPodCount: ingress.restrictedIDs.union(egress.restrictedIDs).count)
     }
 
     static func column(
         _ summary: FlowSummary, network: NetworkInventory, peers: [String: TracePeer]
     ) -> TraceFlowColumn {
         guard summary.totalCount > 0 else { return TraceFlowColumn() }
+        let hasExceptions = !summary.exceptions.isEmpty
+
+        // 起点の側が相手を問わなくても、相手の側で止まるものは別の行で出す（「制限なし」の後ろ）。
+        func exceptionRows(excluding taken: [TraceFlowRow]) -> [TraceFlowRow] {
+            summary.exceptions.compactMap { group in
+                guard let peer = peers[group.key], !taken.contains(where: { $0.id == group.key })
+                else { return nil }
+                var row = TraceFlowRow(
+                    id: group.key, subject: .workload(peer, group.outcome, podCount: group.pods.count),
+                    ports: nil, policies: [])
+                row.isException = true
+                return row
+            }
+            .sorted { order(of: $0) < order(of: $1) }
+        }
+
         guard !summary.isUnrestricted else {
-            return TraceFlowColumn(
-                rows: [TraceFlowRow(
-                    id: "unrestricted", subject: .unrestricted(count: nil), ports: nil,
-                    policies: [])])
+            var unrestricted = TraceFlowRow(
+                id: "unrestricted", subject: .unrestricted(count: nil), ports: nil, policies: [])
+            unrestricted.isOthers = hasExceptions
+            return TraceFlowColumn(rows: [unrestricted] + exceptionRows(excluding: []))
         }
 
         var column = TraceFlowColumn()
         if summary.unrestrictedCount > 0 {
-            column.rows.append(TraceFlowRow(
+            var unrestricted = TraceFlowRow(
                 id: "unrestricted", subject: .unrestricted(count: summary.unrestrictedCount),
-                ports: nil, policies: []))
+                ports: nil, policies: [])
+            unrestricted.isOthers = hasExceptions
+            column.rows.append(unrestricted)
         }
         guard !summary.grants.isEmpty else {
             column.rows.append(TraceFlowRow(
                 id: "deny", subject: .denyAll, ports: nil,
                 policies: summary.restrictingPolicies.map(policyName)))
+            column.rows += exceptionRows(excluding: column.rows)
             return column
         }
 
         var rows: [TraceFlowRow] = []
-        func add(_ id: String, _ subject: TraceFlowRow.Subject, _ grant: FlowGrant) {
-            let ports = grant.ports.isEmpty ? nil : grant.ports
+        /// `effective` は、判定が出した実際に通るポート（通る線にはこちらを書く）。
+        func add(
+            _ id: String, _ subject: TraceFlowRow.Subject, _ grant: FlowGrant,
+            effective: FlowPeerGroup? = nil
+        ) {
             let policy = policyName(grant.policy)
+            if let group = effective, group.outcome == .allowed, let passing = group.ports {
+                let ports = policyPorts(passing)
+                if let index = rows.firstIndex(where: { $0.id == id }) {
+                    rows[index].ports = ports
+                    rows[index].portsVary = group.portsVary
+                    if !rows[index].policies.contains(policy) { rows[index].policies.append(policy) }
+                } else {
+                    var row = TraceFlowRow(id: id, subject: subject, ports: ports, policies: [policy])
+                    row.portsVary = group.portsVary
+                    rows.append(row)
+                }
+                return
+            }
+            let ports = grant.ports.isEmpty ? nil : grant.ports
             if let index = rows.firstIndex(where: { $0.id == id }) {
                 if let existing = rows[index].ports, let ports {
                     rows[index].ports = existing + ports.filter { !existing.contains($0) }
@@ -124,7 +171,9 @@ extension PlacementTrace {
                 }
                 if !rows[index].policies.contains(policy) { rows[index].policies.append(policy) }
             } else {
-                rows.append(TraceFlowRow(id: id, subject: subject, ports: ports, policies: [policy]))
+                var row = TraceFlowRow(id: id, subject: subject, ports: ports, policies: [policy])
+                if case .anywhere = subject { row.isOthers = hasExceptions }
+                rows.append(row)
             }
         }
 
@@ -138,14 +187,19 @@ extension PlacementTrace {
             case .pods(let podSelector, _)?:
                 for group in grant.groups {
                     guard let peer = peers[group.key] else { continue }
-                    add(group.key, .workload(peer, group.outcome, podCount: group.pods.count), grant)
+                    add(
+                        group.key, .workload(peer, group.outcome, podCount: group.pods.count), grant,
+                        effective: group)
+                }
+                if let me = grant.anchorSelf {
+                    add("self", .anchorSelf(me.outcome), grant, effective: me)
                 }
                 let pods = podSelector.map(selectorText).flatMap { $0.isEmpty ? nil : $0 }
                 for name in grant.outOfScopeNamespaces {
                     add("ns|\(name)|\(pods ?? "")", .namespace(name, pods: pods), grant)
                 }
                 if grant.groups.isEmpty && grant.outOfScopeNamespaces.isEmpty
-                    && grant.gaps.isEmpty, let peer = grant.peer,
+                    && grant.gaps.isEmpty && grant.anchorSelf == nil, let peer = grant.peer,
                    let policy = network.policies.first(where: { $0.id == grant.policy }) {
                     add("unmatched|\(grant.id)",
                         .unmatched(describe(peer, policyNamespace: policy.namespace)), grant)
@@ -158,7 +212,21 @@ extension PlacementTrace {
         }
 
         column.rows += rows.sorted { order(of: $0) < order(of: $1) }
+        column.rows += exceptionRows(excluding: column.rows)
         return column
+    }
+
+    /// 判定が出したポートを、図の行の書き方に戻す。nil はすべてのポート。
+    static func policyPorts(_ set: PortSet) -> [PolicyPort]? {
+        guard case .only(let ranges) = set else { return nil }
+        return ranges.map { range in
+            if range.lower == 1 && range.upper == 65535 {
+                return PolicyPort(proto: range.proto, target: .any)
+            }
+            return PolicyPort(
+                proto: range.proto, target: .number(range.lower),
+                endPort: range.upper == range.lower ? nil : range.upper)
+        }
     }
 
     /// 止まっているものを先に。「なぜ繋がらないか」を探しに来た人が最初に見る。
@@ -174,6 +242,13 @@ extension PlacementTrace {
             case .allowed: rank = 4
             }
             return (rank, "\(peer.namespace ?? "")/\(peer.name)")
+        case .anchorSelf(let outcome):
+            switch outcome {
+            case .blocked: return (1, "~self")
+            case .mixed: return (2, "~self")
+            case .undetermined: return (3, "~self")
+            case .allowed: return (4, "~self")
+            }
         case .namespace(let name, _): return (5, name)
         case .anywhere: return (6, row.id)
         case .ipBlock(let cidr, _): return (7, cidr)

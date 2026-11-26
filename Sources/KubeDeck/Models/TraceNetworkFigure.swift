@@ -84,7 +84,7 @@ extension TraceFlowColumn {
                 continue
             case .denyAll:
                 denied = true
-            case .workload(_, let outcome, _):
+            case .workload(_, let outcome, _), .anchorSelf(let outcome):
                 count += 1
                 switch outcome {
                 case .blocked: stopped += 1
@@ -142,15 +142,25 @@ extension PlacementTrace {
 
         switch row.subject {
         case .unrestricted(let count):
+            // 相手の側で止まる行がほかにあるなら「どこからでも」とは言えない（下の破線と食い違う）。
+            let name = row.isOthers ? String(localized: "ほかは制限なし") : anyone
             let detail: String
             if let count {
                 detail = String(localized: "\(count) 個の Pod は制限なし")
+            } else if row.isOthers {
+                detail = String(localized: "起点の側は制限していない")
             } else {
                 detail = String(localized: "制限する NetworkPolicy なし")
             }
-            return FlowLane(
+            var lane = FlowLane(
                 id: row.id, place: .nowhere, symbol: "globe", isResolved: false,
-                name: anyone, detail: detail, label: String(localized: "制限なし"), line: .open)
+                name: name, detail: detail, label: String(localized: "制限なし"), line: .open)
+            if row.isOthers {
+                lane.explanation = String(localized: """
+                    起点の側は制限していません。相手の側で止まるものは、別の線で出しています。
+                    """)
+            }
+            return lane
 
         case .denyAll:
             return FlowLane(
@@ -162,9 +172,10 @@ extension PlacementTrace {
                 line: .stopped(.origin))
 
         case .anywhere:
+            let others = inbound ? String(localized: "ほかはどこからでも") : String(localized: "ほかはどこへでも")
             return FlowLane(
                 id: row.id, place: .nowhere, symbol: "globe", isResolved: false,
-                name: anyone, detail: String(localized: "相手を問わない規則"),
+                name: row.isOthers ? others : anyone, detail: String(localized: "相手を問わない規則"),
                 label: ports, line: .open)
 
         case .workload(let peer, let outcome, let count):
@@ -172,23 +183,20 @@ extension PlacementTrace {
                 id: row.id, place: peer.namespace.map(FlowLane.Place.namespace) ?? .nowhere,
                 symbol: peer.symbol, isResolved: true,
                 name: count > 1 ? "\(peer.name) ×\(count)" : peer.name,
-                detail: peer.kindLabel, label: ports, line: line(for: outcome, direction: direction))
+                detail: peer.kindLabel, label: row.isException ? "" : ports,
+                line: line(for: outcome, direction: direction))
             lane.anchor = peer.anchor
-            switch outcome {
-            case .allowed:
-                break
-            case .blocked(let blockers):
-                lane.note = stopNote(stop(blockers, direction: direction), direction: direction)
-                lane.explanation = stopExplanation(blockers, direction: direction)
-            case .mixed:
-                lane.note = String(localized: "Pod によって違う")
-                lane.explanation = String(localized: "Pod によって通るものと止まるものがあります")
-            case .undetermined:
-                lane.note = String(localized: "決まらない")
-                lane.explanation = String(localized: "ラベルを読めないため、通るか決まりません")
-            }
+            describe(outcome, of: row, direction: direction, into: &lane)
             return lane
 
+        case .anchorSelf(let outcome):
+            var lane = FlowLane(
+                id: row.id, place: .nowhere, symbol: "arrow.clockwise", isResolved: false,
+                name: String(localized: "起点自身"),
+                detail: String(localized: "自分自身との通信を許す規則"), label: ports,
+                line: line(for: outcome, direction: direction))
+            describe(outcome, of: row, direction: direction, into: &lane)
+            return lane
         case .namespace(let name, let pods):
             var lane = FlowLane(
                 id: row.id, place: .namespace(name), symbol: ResourceKind.pod.symbol,
@@ -221,6 +229,31 @@ extension PlacementTrace {
                 label: ports, line: .unsettled)
             lane.detailLevel = .warning
             return lane
+        }
+    }
+
+    /// 線の下の短い断りと、ツールチップ。通る線でも、組によってポートが違えばそう言う。
+    private static func describe(
+        _ outcome: FlowPeerGroup.Outcome, of row: TraceFlowRow, direction: FlowDirection,
+        into lane: inout FlowLane
+    ) {
+        switch outcome {
+        case .allowed:
+            if row.portsVary {
+                lane.note = String(localized: "ポートは Pod によって違う")
+                lane.explanation = String(localized: """
+                    Pod の組によって通るポートが違います。線には、通るポートをまとめて書いています。
+                    """)
+            }
+        case .blocked(let blockers):
+            lane.note = stopNote(stop(blockers, direction: direction), direction: direction)
+            lane.explanation = stopExplanation(blockers, direction: direction)
+        case .mixed:
+            lane.note = String(localized: "Pod によって違う")
+            lane.explanation = String(localized: "Pod によって通るものと止まるものがあります")
+        case .undetermined:
+            lane.note = String(localized: "決まらない")
+            lane.explanation = String(localized: "ラベルを読めないため、通るか決まりません")
         }
     }
 

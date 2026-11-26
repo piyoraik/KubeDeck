@@ -7,6 +7,9 @@ struct TraceNetworkDiagram: View {
     let network: TraceNetwork
     let anchor: TraceAnchor
     let select: (TraceAnchor) -> Void
+    // 横並びと縦積みで 1 つずつ持つと、押した側と違う並べ方に切り替わったときに畳まれて見える。
+    @State private var showsAllIngress = false
+    @State private var showsAllEgress = false
 
     var body: some View {
         let stopped = network.ingress.tally.stopped + network.egress.tally.stopped
@@ -15,21 +18,21 @@ struct TraceNetworkDiagram: View {
             // 横に入らなければ上下に積む（横スクロールにすると Spacer が無限に伸びて図が消える）。
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 0) {
-                    FlowSide(direction: .ingress, column: network.ingress, select: select)
+                    FlowSide(direction: .ingress, column: network.ingress, showsAll: $showsAllIngress, select: select)
                     origin
-                    FlowSide(direction: .egress, column: network.egress, select: select)
+                    FlowSide(direction: .egress, column: network.egress, showsAll: $showsAllEgress, select: select)
                 }
                 .fixedSize()
 
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .top, spacing: 0) {
-                        FlowSide(direction: .ingress, column: network.ingress, select: select)
+                        FlowSide(direction: .ingress, column: network.ingress, showsAll: $showsAllIngress, select: select)
                         origin
                     }
                     .fixedSize()
                     HStack(alignment: .top, spacing: 0) {
                         origin
-                        FlowSide(direction: .egress, column: network.egress, select: select)
+                        FlowSide(direction: .egress, column: network.egress, showsAll: $showsAllEgress, select: select)
                     }
                     .fixedSize()
                 }
@@ -40,6 +43,11 @@ struct TraceNetworkDiagram: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        // 取り直しでは閉じない。起点を変えたときだけ閉じる。
+        .onChange(of: anchor.id) {
+            showsAllIngress = false
+            showsAllEgress = false
         }
     }
 
@@ -83,8 +91,8 @@ struct TraceNetworkDiagram: View {
 private struct FlowSide: View {
     let direction: FlowDirection
     let column: TraceFlowColumn
+    @Binding var showsAll: Bool
     let select: (TraceAnchor) -> Void
-    @State private var showsAll = false
 
     static let rowHeight: CGFloat = 36
     static let rowSpacing: CGFloat = 6
@@ -401,8 +409,9 @@ struct TraceNetworkIndex: View {
         let restricted = branches.filter(\.isRestricted)
         let free = branches.filter { !$0.isRestricted }
         let total = branches.reduce(0) { $0 + $1.podCount }
-        let covered = restricted.reduce(0) { $0 + $1.podCount }
-        let freePods = total - covered
+        // ワークロードの Pod を全部ではなく、policy に実際に選ばれている Pod だけを数える。
+        let covered = restricted.reduce(0) { $0 + $1.network.restrictedPodCount }
+        let freePods = free.reduce(0) { $0 + $1.podCount }
 
         VStack(alignment: .leading, spacing: 10) {
             Group {
@@ -410,7 +419,7 @@ struct TraceNetworkIndex: View {
                     Text("どのワークロードにも NetworkPolicy は効いていません。")
                 } else {
                     Text("""
-                        Pod \(total) 個のうち、NetworkPolicy が効いているのは \(covered) 個です。\
+                        Pod \(total) 個のうち、どちらかの向きで NetworkPolicy が効いているのは \(covered) 個です。\
                         押すと、そのワークロードの図を開きます。
                         """)
                 }
@@ -442,6 +451,13 @@ struct TraceNetworkIndex: View {
         }
     }
 
+    private func podDetail(_ branch: BranchNetwork, place: String) -> String {
+        let total = branch.podCount
+        let covered = branch.network.restrictedPodCount
+        guard covered < total else { return "\(place) · \(total) Pod" }
+        return String(localized: "\(place) · \(total) Pod（効いているのは \(covered) 個）")
+    }
+
     private func row(_ branch: BranchNetwork) -> some View {
         let ingress = branch.network.ingress.tally
         let egress = branch.network.egress.tally
@@ -458,7 +474,7 @@ struct TraceNetworkIndex: View {
                 FlowLine(line: line(for: ingress))
                     .frame(width: 48, height: 10)
                 FigureNode(
-                    name: workload.displayName, detail: "\(place) · \(branch.podCount) Pod",
+                    name: workload.displayName, detail: podDetail(branch, place: place),
                     symbol: workload.symbol, maxWidth: 250)
                     .frame(minWidth: 150, maxWidth: 260, alignment: .leading)
                 Label(policies, systemImage: ResourceKind.networkPolicy.symbol)

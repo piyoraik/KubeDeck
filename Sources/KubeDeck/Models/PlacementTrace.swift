@@ -22,6 +22,8 @@ struct PlacementInventory: Sendable {
     var scope: String?
     /// Service を読めているか。読めていなければ、宛先を「無い」とは言えない。
     var servicesReadable = true
+    /// 経路を設定で入れていて、読めている（0 件でも）。
+    var routesLoaded = false
 }
 
 /// たどるの起点にできる種別。

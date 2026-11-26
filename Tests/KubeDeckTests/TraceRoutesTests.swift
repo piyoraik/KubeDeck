@@ -184,6 +184,46 @@ struct TraceRoutesTests {
         #expect(notes.first?.text.contains("shop/web") == true)
     }
 
+    /// 宛先と同じく、手元に無い呼び出し先を手元にあるように描かない。
+    @Test("手元に無い呼び出し先は、理由と受け付けの結果を器に添える")
+    func missingParentIsMarked() throws {
+        let missing = #"{"group":"","kind":"Service","name":"web-old","port":8080}"#
+        let rejected = route("web", parent: missing, rules: Self.splitRules, conditions: Self.rejected)
+        let origin = try #require(
+            try routeGraph("web", in: inventory(routes: [rejected])).routeSplit?.origins.first)
+        #expect(origin.detail == "取得した一覧にありません")
+        #expect(origin.level == .serious)
+        #expect(!origin.isPresent)
+
+        let elsewhere = #"{"group":"","kind":"Service","name":"web","namespace":"edge","port":8080}"#
+        let scoped = route("web", parent: elsewhere, rules: Self.splitRules)
+        let outside = try #require(
+            try routeGraph("web", in: inventory(routes: [scoped], scope: "shop")).routeSplit?.origins.first)
+        #expect(outside.detail == "いまの取得範囲の外です")
+
+        let present = try #require(
+            try routeGraph("web", in: inventory(routes: [split])).routeSplit?.origins.first)
+        #expect(present.detail == nil)
+        #expect(present.level == nil)
+        #expect(present.isPresent)
+    }
+
+    /// 別の Namespace（ゲートウェイ用など）に経路を置く運用だと、何も描かれないのと見分けが付かない。
+    @Test("経路を引いていて絞っていれば、経路が描かれていない図でも取得範囲の外を断る")
+    func scopeNoteWithoutRoutes() {
+        let note = "ほかの Namespace に置かれた経路は、いまの取得範囲の外です。"
+        var loaded = inventory(routes: [], scope: "shop")
+        loaded.routesLoaded = true
+        let graph = PlacementTrace.graph(
+            for: workloadAnchor("web-v2"), inventory: loaded, controllers: index)
+        #expect(graph.anchorNotes.contains { $0.text == note })
+
+        let off = PlacementTrace.graph(
+            for: workloadAnchor("web-v2"), inventory: inventory(routes: [], scope: "shop"),
+            controllers: index)
+        #expect(!off.anchorNotes.contains { $0.text == note })
+    }
+
     @Test("親が Gateway の経路は、入口の列に器で出す")
     func gatewayRouteStaysAtEntrance() throws {
         let graph = PlacementTrace.graph(
@@ -514,12 +554,13 @@ struct TraceRoutesTests {
 
     // MARK: - 出すかどうか
 
-    @Test("起点の種別に経路を出すのは、読めているときだけ")
+    /// 一時的に読めないだけで種別を消すと、選んでいた経路の起点が 1 回の失敗で外れる。
+    @Test("起点の種別に経路を出すのは、入れていて種別があるとき。一時的に読めなくても残す")
     func routeKindIsOfferedOnlyWhenLoaded() {
         #expect(TraceAnchorKind.offered(routes: .loaded).contains(.route))
         #expect(!TraceAnchorKind.offered(routes: .off).contains(.route))
         #expect(!TraceAnchorKind.offered(routes: .absent).contains(.route))
-        #expect(!TraceAnchorKind.offered(routes: .unreadable("x")).contains(.route))
+        #expect(TraceAnchorKind.offered(routes: .unreadable("x")).contains(.route))
         #expect(TraceAnchorKind.offered(routes: .off).count == TraceAnchorKind.allCases.count - 1)
     }
 

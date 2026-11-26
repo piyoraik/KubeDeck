@@ -46,6 +46,9 @@ extension TrafficRoute {
         let status: Status
         let reason: String
         let message: String
+        let observedGeneration: Int?
+        /// spec の世代より前の版についての判定（直した直後に残る）。いまの判定として使わない。
+        fileprivate(set) var isOutdated = false
     }
 
     /// 親 1 つについて、画面に出すべきこと。reason と message はコントローラの文字のまま運ぶ。
@@ -54,6 +57,8 @@ extension TrafficRoute {
         case unresolvedReferences(reason: String, message: String)
         case advisory(type: String, message: String)
         case undecided(type: String, message: String)
+        /// コントローラがまだこの版を処理していない（条件が前の版についてのもの）。
+        case outdated(type: String)
         case noRecord
     }
 
@@ -70,6 +75,10 @@ extension TrafficRoute.Parent {
             var advisories: [TrafficRoute.Finding] = []
             var isRejected = false
             for condition in report.conditions {
+                if condition.isOutdated {
+                    result.append(.outdated(type: condition.type))
+                    continue
+                }
                 switch (condition.type, condition.status) {
                 case (_, .unknown):
                     result.append(.undecided(type: condition.type, message: condition.message))
@@ -214,7 +223,9 @@ extension TrafficRoute {
     var reportsUnresolvedBackends: Bool {
         parents.contains { parent in
             parent.reports.contains { report in
-                report.conditions.contains { $0.type == "ResolvedRefs" && $0.status == .no }
+                report.conditions.contains {
+                    $0.type == "ResolvedRefs" && $0.status == .no && !$0.isOutdated
+                }
             }
         }
     }
@@ -252,6 +263,8 @@ extension TrafficRoute {
         self.namespace = namespace
         self.name = object.name
 
+        // 書かない実装もあるので、どちらかが無ければ前の版とはみなさない。
+        let generation = object.raw["metadata"]?["generation"]?.intValue
         let references = (object.spec?["parentRefs"]?.arrayValue ?? []).compactMap {
             Reference($0, routeNamespace: namespace)
         }
@@ -265,7 +278,15 @@ extension TrafficRoute {
                     Report(
                         controller: entry["controllerName"]?.stringValue ?? "",
                         conditions: (entry["conditions"]?.arrayValue ?? [])
-                            .compactMap(Condition.init(raw:)))
+                            .compactMap(Condition.init(raw:))
+                            .map { condition in
+                                var condition = condition
+                                if let generation, let observed = condition.observedGeneration,
+                                   observed < generation {
+                                    condition.isOutdated = true
+                                }
+                                return condition
+                            })
                 )
             }
 
@@ -385,5 +406,6 @@ extension TrafficRoute.Condition {
         }
         self.reason = raw["reason"]?.stringValue ?? ""
         self.message = raw["message"]?.stringValue ?? ""
+        self.observedGeneration = raw["observedGeneration"]?.intValue
     }
 }

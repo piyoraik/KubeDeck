@@ -8,6 +8,14 @@ enum MeshRouteAvailability: Sendable, Equatable {
     /// クラスタがその種別を知らない（Gateway API が入っていない）。
     case absent
     case unreadable(String)
+
+    /// 経路を起点の種別に出すか。切ってある・種別が無いと分かったときだけ出さない。
+    var offersRoutes: Bool {
+        switch self {
+        case .loaded, .unreadable: return true
+        case .off, .absent: return false
+        }
+    }
 }
 
 /// 経路（Gateway API の HTTPRoute）の取得。設定で有効にしたときだけ引く。

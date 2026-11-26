@@ -65,6 +65,13 @@ struct TraceMapView: View {
 
     private var inventory: PlacementInventory { store.placementInventory }
 
+    private func routeProblem(_ reason: String) -> String {
+        let first = reason.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        return first.isEmpty
+            ? String(localized: "HTTPRoute を読めません。")
+            : String(localized: "HTTPRoute を読めません: \(first)")
+    }
+
     /// **1 度だけ解く。** Service を起点にする一覧は「掴んでいる Pod の数」を
     /// 出すので、Service × Pod のラベル照合が要る。body の中で何度も呼ぶと、
     /// そのぶん繰り返すことになる。
@@ -95,7 +102,23 @@ struct TraceMapView: View {
         return VStack(spacing: 0) {
             kindSelector
             Rectangle().fill(Palette.hairline).frame(height: 1)
-            if visible.isEmpty {
+            if anchors.isEmpty, anchorKind == .route,
+               case .unreadable(let reason) = store.routeAvailability {
+                // 「無い」と言わない。読めていないだけで、選んでいた経路は次に読めたら戻る。
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(routeProblem(reason), systemImage: StatusLevel.warning.symbol)
+                        .foregroundStyle(Palette.textColor(for: .warning))
+                    if let focus, focus.anchorKind == .route {
+                        let name = focus.displayName
+                        Text("選んでいた \(name) は、次に読めたらそのまま戻ります。")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if visible.isEmpty {
                 Text(anchors.isEmpty
                         ? anchorKind.emptyMessage
                         : String(localized: "一致するものがありません。"))
@@ -126,6 +149,9 @@ struct TraceMapView: View {
         // 全体で見る** — 打ち込んだ文字で起点が勝手に変わると図が飛ぶ。
         .onChange(of: anchors.map(\.id), initial: true) { _, ids in
             if let focus, ids.contains(focus.id) { return }
+            // 経路を一時的に読めないだけなら、選んでいた経路を外さない。
+            if let focus, focus.anchorKind == .route,
+               case .unreadable = store.routeAvailability { return }
             focus = anchors.first { $0.id == TraceLaunch.anchorID } ?? anchors.first
             // 起点が入れ替わったら跡も捨てる。無い場所へ戻れても仕方がない。
             history = []
@@ -140,9 +166,9 @@ struct TraceMapView: View {
                 }
             }
             .labelsHidden()
-            // 経路を引かなくなったら選んだままにしない（選択肢に無い値が残る）。
+            // 経路を引かなくなったら選んだままにしない（選択肢に無い値が残る）。一時的に読めないだけなら残す。
             .onChange(of: store.routeAvailability) { _, availability in
-                if anchorKind == .route, availability != .loaded { anchorKind = .workload }
+                if anchorKind == .route, !availability.offersRoutes { anchorKind = .workload }
             }
             // **セグメントにしない。** 7 つを 236pt に詰めると記号だけになり、
             // どれが何なのか読めなくなる。
@@ -247,7 +273,7 @@ struct TraceMapView: View {
                 Button {
                     // 経路を引かなくなったあとは、経路の起点へは戻らない（選択肢に無い種別になる）。
                     while let previous = history.popLast() {
-                        if previous.anchorKind == .route, store.routeAvailability != .loaded {
+                        if previous.anchorKind == .route, !store.routeAvailability.offersRoutes {
                             continue
                         }
                         anchorKind = previous.anchorKind
@@ -406,21 +432,34 @@ private struct TraceGraphView: View {
             let labels = await store.namespaceLabels()
             // 打ち切られた前の起点の結果で、いまの起点の図を上書きしない。
             guard !Task.isCancelled else { return }
+            // **画面の処理の上で解かない。** 相手の側で止まる通信を拾うのに範囲内の Pod を
+            // 総当たりするので、ノード起点でワークロードが多いと秒の単位になる（Debug で
+            // Pod 300・60 ワークロードが 1.07 秒）。
+            let snapshot = graph
+            let inventory = store.placementInventory
+            let controllers = store.controllerIndex
+            let scope = store.selectedNamespace
             // 複数のワークロードにまたがる起点は、まとめて判定せずワークロードごとに解く。
-            if graph.branches.count > 1 {
-                branchNetworks = PlacementTrace.branchNetworks(
-                    for: graph, inventory: store.placementInventory,
-                    controllers: store.controllerIndex, scope: store.selectedNamespace,
-                    namespaceLabels: labels)
+            if snapshot.branches.count > 1 {
+                let solved = await Task.detached(priority: .userInitiated) {
+                    PlacementTrace.branchNetworks(
+                        for: snapshot, inventory: inventory, controllers: controllers,
+                        scope: scope, namespaceLabels: labels)
+                }.value
+                guard !Task.isCancelled else { return }
+                branchNetworks = solved
                 network = nil
             } else {
-                network = PlacementTrace.network(
-                    for: graph.pods, inventory: store.placementInventory,
-                    controllers: store.controllerIndex, scope: store.selectedNamespace,
-                    namespaceLabels: labels)
+                let solved = await Task.detached(priority: .userInitiated) {
+                    PlacementTrace.network(
+                        for: snapshot.pods, inventory: inventory, controllers: controllers,
+                        scope: scope, namespaceLabels: labels)
+                }.value
+                guard !Task.isCancelled else { return }
+                network = solved
                 branchNetworks = []
             }
-            networkAnchorID = graph.anchor.id
+            networkAnchorID = snapshot.anchor.id
         }
     }
 

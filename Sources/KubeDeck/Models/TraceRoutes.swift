@@ -140,6 +140,12 @@ struct TraceRouteSplit: Sendable {
         let symbol: String
         /// 押したときの起点。手元に実物がある Service だけ。
         let anchor: TraceAnchor?
+        /// 手元に無い理由（無い・取得範囲の外・読めていない）。
+        var detail: String? = nil
+        /// その親について、コントローラが受け付けていないなどと言っているか。
+        var level: StatusLevel? = nil
+        /// 手元に無いと分かっている（破線で描く）。範囲の外や読めていないだけなら true のまま。
+        var isPresent = true
 
         var id: String { "\(kindLabel)/\(name)" }
     }
@@ -430,24 +436,38 @@ extension PlacementTrace {
             .map { parent -> TraceRouteSplit.Origin in
                 let name = parent.namespace == route.namespace
                     ? parent.name : "\(parent.namespace)/\(parent.name)"
+                var origin: TraceRouteSplit.Origin
                 switch parent.kind {
                 case .service:
                     let service = inventory.related.first {
                         $0.kind == .service && $0.namespace == parent.namespace
                             && $0.name == parent.name
                     }
-                    return TraceRouteSplit.Origin(
+                    origin = TraceRouteSplit.Origin(
                         kindLabel: "Service", name: name, symbol: ResourceKind.service.symbol,
                         anchor: service.map(serviceAnchor))
+                    // 宛先と同じく、手元に無いものを手元にあるように描かない。
+                    if service == nil {
+                        if !inventory.servicesReadable {
+                            origin.detail = String(localized: "Service を読めていません")
+                        } else if let scope = inventory.scope, scope != parent.namespace {
+                            origin.detail = String(localized: "いまの取得範囲の外です")
+                        } else {
+                            origin.detail = String(localized: "取得した一覧にありません")
+                            origin.isPresent = false
+                        }
+                    }
                 case .gateway:
                     // Gateway は引いていないので、入口のしるしだけを借りる。
-                    return TraceRouteSplit.Origin(
+                    origin = TraceRouteSplit.Origin(
                         kindLabel: "Gateway", name: name, symbol: ResourceKind.ingress.symbol,
                         anchor: nil)
                 case .other(let kind):
-                    return TraceRouteSplit.Origin(
+                    origin = TraceRouteSplit.Origin(
                         kindLabel: kind, name: name, symbol: "square.dashed", anchor: nil)
                 }
+                origin.level = level(of: parent)
+                return origin
             }
             .filter { seen.insert($0.id).inserted }
 
@@ -487,7 +507,18 @@ extension PlacementTrace {
         for route in drawn where !rated.contains(where: { $0.id == route.id }) {
             rated.append(route)
         }
-        guard !rated.isEmpty || !tags.isEmpty else { return notes }
+        let scopeNote = TraceNote(
+            text: String(localized: "ほかの Namespace に置かれた経路は、いまの取得範囲の外です。"),
+            level: .neutral)
+        guard !rated.isEmpty || !tags.isEmpty else {
+            // 別の Namespace（ゲートウェイ用など）に置く運用だと、描かれないのと見分けが付かない。
+            // 経路が付きうる Service のある図にだけ出す（断りで埋めない）。
+            if inventory.routesLoaded, inventory.scope != nil,
+               branches.contains(where: { !$0.services.isEmpty }) {
+                notes.append(scopeNote)
+            }
+            return notes
+        }
 
         // 起点が経路なら、その経路のことだけを言う。宛先ごとの事情は、振り分けの図の行に出る。
         for route in anchored.map({ [$0] }) ?? rated {
@@ -504,11 +535,7 @@ extension PlacementTrace {
                     level: .neutral))
         }
         if inventory.scope != nil {
-            notes.append(
-                TraceNote(
-                    text: String(
-                        localized: "ほかの Namespace に置かれた経路は、いまの取得範囲の外です。"),
-                    level: .neutral))
+            notes.append(scopeNote)
         }
 
         var seen = Set<String>()
@@ -541,11 +568,18 @@ extension PlacementTrace {
                         text: String(
                             localized: "\(label) の \(type) は、まだ決まっていません: \(message)"),
                         level: .warning)
+                case .outdated(let type):
+                    return TraceNote(
+                        text: String(localized: """
+                            \(label) の \(type) は前の版についての判定です。\
+                            コントローラはまだこの版を処理していません。
+                            """),
+                        level: .warning)
                 case .noRecord:
                     return TraceNote(
                         text: String(localized: """
                             \(label) を \(parentLabel) が受け付けた記録がありません\
-                            （親が存在しないか、担当するコントローラが居ません）。
+                            （親が存在しないか、担当するコントローラが居ないか、まだ処理されていません）。
                             """),
                         level: .neutral)
                 }
@@ -557,12 +591,15 @@ extension PlacementTrace {
 
     /// 経路の器に付けるしるしの重み。記録が無いだけなら nil（壊れているとは言わない）。
     static func level(of route: TrafficRoute) -> StatusLevel? {
-        route.parents
-            .flatMap(\.findings)
+        route.parents.compactMap(level(of:)).max()
+    }
+
+    static func level(of parent: TrafficRoute.Parent) -> StatusLevel? {
+        parent.findings
             .compactMap { finding -> StatusLevel? in
                 switch finding {
                 case .notAccepted, .unresolvedReferences: return .serious
-                case .advisory, .undecided: return .warning
+                case .advisory, .undecided, .outdated: return .warning
                 case .noRecord: return nil
                 }
             }
